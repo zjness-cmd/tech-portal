@@ -3,7 +3,7 @@ import { useGoogleLogin } from "@react-oauth/google";
 
 export default function Login({ onLoginSuccess }) {
   const login = useGoogleLogin({
-    scope: "https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file profile email",
+    scope: "https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive profile email",
     onSuccess: async (tokenResponse) => {
       const profileRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
         headers: { Authorization: "Bearer " + tokenResponse.access_token },
