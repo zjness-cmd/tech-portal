@@ -14,7 +14,7 @@ const STATUS_STYLES = {
   "Checked Out": { bg: "#F0F4FF", color: "#185FA5" },
 };
 
-const MAPS_API_KEY = "AIzaSyD1mr-FCQV3DR4kv9oR_9Bpc7euW_j5Trk";
+const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
 let mapsApiLoaded = false;
 function loadMapsApi() {
