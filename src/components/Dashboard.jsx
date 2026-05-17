@@ -11,7 +11,23 @@ const STATUS_STYLES = {
   "In Progress": { bg: "#FAEEDA", color: "#633806" },
   Done: { bg: "#EAF3DE", color: "#27500A" },
   "Checked In": { bg: "#EAF3DE", color: "#27500A" },
+  "Checked Out": { bg: "#F0F4FF", color: "#185FA5" },
 };
+
+const MAPS_API_KEY = "AIzaSyD1mr-FCQV3DR4kv9oR_9Bpc7euW_j5Trk";
+
+let mapsApiLoaded = false;
+function loadMapsApi() {
+  if (mapsApiLoaded || window.google?.maps) { mapsApiLoaded = true; return Promise.resolve(); }
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://maps.googleapis.com/maps/api/js?key=" + MAPS_API_KEY + "&libraries=geometry";
+    script.async = true;
+    script.onload = () => { mapsApiLoaded = true; resolve(); };
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
+}
 
 function calcMiles(lat1, lng1, lat2, lng2) {
   const R = 3958.8;
@@ -21,23 +37,45 @@ function calcMiles(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
+async function getDrivingMiles(fromLat, fromLng, toLat, toLng) {
+  try {
+    await loadMapsApi();
+    return await new Promise((resolve) => {
+      const service = new window.google.maps.DistanceMatrixService();
+      service.getDistanceMatrix({
+        origins: [new window.google.maps.LatLng(fromLat, fromLng)],
+        destinations: [new window.google.maps.LatLng(toLat, toLng)],
+        travelMode: window.google.maps.TravelMode.DRIVING,
+        unitSystem: window.google.maps.UnitSystem.IMPERIAL,
+      }, (res, status) => {
+        if (status === "OK" && res.rows[0].elements[0].status === "OK") {
+          const meters = res.rows[0].elements[0].distance.value;
+          resolve(Math.round((meters / 1609.344) * 10) / 10);
+        } else {
+          resolve(Math.round(calcMiles(fromLat, fromLng, toLat, toLng) * 10) / 10);
+        }
+      });
+    });
+  } catch (e) {
+    return Math.round(calcMiles(fromLat, fromLng, toLat, toLng) * 10) / 10;
+  }
+}
+
 export default function Dashboard({ user, accessToken, onLogout }) {
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [filter, setFilter] = useState("All");
   const [location, setLocation] = useState(null);
   const [locationError, setLocationError] = useState(null);
   const [checkedIn, setCheckedIn] = useState({});
+  const [checkedOut, setCheckedOut] = useState({});
   const [completed, setCompleted] = useState({});
-  const [cashPaid, setCashPaid] = useState({});
-
-  // FIX 2: Persist mileage log to sessionStorage so it survives page refresh
   const [mileageLog, setMileageLog] = useState(() => {
     try {
-      const saved = sessionStorage.getItem("mileageLog");
+      const todayKey = "mileageLog_" + new Date().toDateString();
+      const saved = localStorage.getItem(todayKey);
       return saved ? JSON.parse(saved) : [];
     } catch { return []; }
   });
-
   const [navStart, setNavStart] = useState({});
   const [monthlyCount, setMonthlyCount] = useState(null);
   const [monthlyCompleted, setMonthlyCompleted] = useState(0);
@@ -46,12 +84,13 @@ export default function Dashboard({ user, accessToken, onLogout }) {
   const [invoicedJobs, setInvoicedJobs] = useState({});
   const [dayStarted, setDayStarted] = useState(false);
   const [dayFinished, setDayFinished] = useState(false);
-  const [logSheetId, setLogSheetId] = useState(null);
+  const [logSheetId, setLogSheetId] = useState(() => localStorage.getItem("techportal_logSheetId") || null);
   const [dayStatus, setDayStatus] = useState("");
   const [modalType, setModalType] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [statusLoading, setStatusLoading] = useState(true);
-  const lastPositionRef = useRef(null); // FIX 3: start as null, not HOME
+  const lastPositionRef = useRef(null);
+  const locationRef = useRef(null);
   const pendingStatusRef = useRef({});
   const saveTimerRef = useRef(null);
   const { jobs, loading, error, refresh } = useCalendarJobs(accessToken, selectedDate);
@@ -62,7 +101,6 @@ export default function Dashboard({ user, accessToken, onLogout }) {
   const monthName = selectedDate.toLocaleDateString("en-US", { month: "long", year: "numeric" });
   const totalCompleted = Object.keys(completed).length + monthlyCompleted;
   const remaining = monthlyCount !== null ? Math.max(0, monthlyCount - totalCompleted) : null;
-
   const now = new Date();
   const completedEvents = monthlyEvents.filter((e) => { const end = new Date(e.end?.dateTime || e.end?.date); return end < now; });
   const remainingEvents = monthlyEvents.filter((e) => { const end = new Date(e.end?.dateTime || e.end?.date); return end >= now; });
@@ -70,41 +108,37 @@ export default function Dashboard({ user, accessToken, onLogout }) {
   useEffect(() => {
     if (!navigator.geolocation) { setLocationError("GPS not supported."); return; }
     const watchId = navigator.geolocation.watchPosition(
-      (pos) => { setLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: Math.round(pos.coords.accuracy) }); setLocationError(null); },
+      (pos) => {
+        const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: Math.round(pos.coords.accuracy) };
+        locationRef.current = coords;
+        setLocation(coords);
+        setLocationError(null);
+      },
       () => setLocationError("Location access denied."),
-      { enableHighAccuracy: true, maximumAge: 30000 }
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
     );
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
 
-  // FIX 1: Clear all per-day state immediately when the date changes
   useEffect(() => {
     setCheckedIn({});
+    setCheckedOut({});
     setCompleted({});
-    setCashPaid({});
     setNavStart({});
     setDayStarted(false);
     setDayFinished(false);
     setDayStatus("");
     setStatusLoading(true);
-    // Only clear mileage log when navigating away from today
-    if (new Date().toDateString() !== selectedDate.toDateString()) {
-      saveMileage([]);
-    }
+    if (new Date().toDateString() !== selectedDate.toDateString()) saveMileage([]);
   }, [selectedDate]);
 
   useEffect(() => { if (!accessToken) return; fetchMonthlyCount(accessToken); }, [accessToken, selectedDate]);
+  useEffect(() => { if (!accessToken || loading) return; loadJobStatuses(); }, [accessToken, selectedDate, loading]);
 
-  useEffect(() => {
-    if (!accessToken || loading) return;
-    loadJobStatuses();
-  }, [accessToken, selectedDate, loading]);
-
-  // FIX 2: Wrapper that saves mileage to sessionStorage on every update
   const saveMileage = (updater) => {
     setMileageLog(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
-      try { sessionStorage.setItem("mileageLog", JSON.stringify(next)); } catch {}
+      try { const todayKey = "mileageLog_" + new Date().toDateString(); localStorage.setItem(todayKey, JSON.stringify(next)); } catch {}
       return next;
     });
   };
@@ -126,103 +160,78 @@ export default function Dashboard({ user, accessToken, onLogout }) {
     } catch (e) { setMonthlyCount(null); }
   };
 
+  const setAndCacheLogSheetId = (id) => {
+    if (id) localStorage.setItem("techportal_logSheetId", id);
+    setLogSheetId(id);
+  };
+
   const getOrCreateLogSheet = async () => {
     if (logSheetId) return logSheetId;
     try {
-      const searchRes = await fetch("https://www.googleapis.com/drive/v3/files?q=name='" + LOG_SHEET_NAME + "'+and+mimeType='application/vnd.google-apps.spreadsheet'&fields=files(id,name)", {
-        headers: { Authorization: "Bearer " + accessToken }
-      });
+      const searchRes = await fetch("https://www.googleapis.com/drive/v3/files?q=name='" + LOG_SHEET_NAME + "'+and+mimeType='application/vnd.google-apps.spreadsheet'&fields=files(id,name)", { headers: { Authorization: "Bearer " + accessToken } });
       const searchData = await searchRes.json();
-      if (searchData.files && searchData.files.length > 0) {
-        const id = searchData.files[0].id;
-        setLogSheetId(id);
-        return id;
-      }
-      const createRes = await fetch("https://sheets.googleapis.com/v4/spreadsheets", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
-        body: JSON.stringify({ properties: { title: LOG_SHEET_NAME }, sheets: [{ properties: { title: "Job Log" } }] })
-      });
+      if (searchData.files && searchData.files.length > 0) { const id = searchData.files[0].id; setAndCacheLogSheetId(id); return id; }
+      const createRes = await fetch("https://sheets.googleapis.com/v4/spreadsheets", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken }, body: JSON.stringify({ properties: { title: LOG_SHEET_NAME }, sheets: [{ properties: { title: "Job Log" } }] }) });
       const createData = await createRes.json();
       const newId = createData.spreadsheetId;
-      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + newId + "/values/A1:F1?valueInputOption=USER_ENTERED", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
-        body: JSON.stringify({ values: [["Date", "Job", "Check-in Time", "Distance (mi)", "Invoice Sent", "Notes"]] })
-      });
-      setLogSheetId(newId);
+      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + newId + "/values/A1:F1?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken }, body: JSON.stringify({ values: [["Date", "Job", "Check-in Time", "Distance (mi)", "Invoice Sent", "Notes"]] }) });
+      setAndCacheLogSheetId(newId);
       return newId;
     } catch (e) { console.error("Log sheet error:", e); return null; }
   };
 
   const ensureStatusTab = async (sheetId) => {
-    const infoRes = await fetch(
-      "https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "?fields=sheets.properties",
-      { headers: { Authorization: "Bearer " + accessToken } }
-    );
+    const infoRes = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "?fields=sheets.properties", { headers: { Authorization: "Bearer " + accessToken } });
     const info = await infoRes.json();
     const sheets = info.sheets || [];
     const hasTab = sheets.find(s => s.properties.title === STATUS_SHEET_NAME);
     if (!hasTab) {
-      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + ":batchUpdate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
-        body: JSON.stringify({ requests: [{ addSheet: { properties: { title: STATUS_SHEET_NAME } } }] })
-      });
-      await fetch(
-        "https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A1:D1?valueInputOption=USER_ENTERED",
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
-          body: JSON.stringify({ values: [["Date", "Job ID", "Status", "Extra"]] })
-        }
-      );
+      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + ":batchUpdate", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken }, body: JSON.stringify({ requests: [{ addSheet: { properties: { title: STATUS_SHEET_NAME } } }] }) });
+      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A1:D1?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken }, body: JSON.stringify({ values: [["Date", "Job ID", "Status", "Extra"]] }) });
     }
   };
 
-  const loadJobStatuses = async () => {
+  const loadJobStatuses = async (isRetry = false) => {
     setStatusLoading(true);
     try {
       const sheetId = await getOrCreateLogSheet();
-      if (!sheetId) return;
+      if (!sheetId) { setStatusLoading(false); return; }
       await ensureStatusTab(sheetId);
-
       const dateKey = selectedDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-      const res = await fetch(
-        "https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A:D",
-        { headers: { Authorization: "Bearer " + accessToken } }
-      );
+      const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A:D", { headers: { Authorization: "Bearer " + accessToken } });
+      if (!res.ok) { localStorage.removeItem("techportal_logSheetId"); setLogSheetId(null); setStatusLoading(false); return; }
       const data = await res.json();
       const rows = data.values || [];
-
-      const newCheckedIn = {};
-      const newCompleted = {};
-      let loadedDayStarted = false;
-      let loadedDayFinished = false;
-      let loadedDayStatus = "";
-
-      rows.forEach(row => {
-        const [rowDate, jobId, status, extra] = row;
-        if (rowDate !== dateKey) return;
+      const todayRows = rows.filter(r => r[0] === dateKey);
+      if (todayRows.length === 0 && !isRetry && localStorage.getItem("techportal_logSheetId")) {
+        localStorage.removeItem("techportal_logSheetId"); setLogSheetId(null); setStatusLoading(false); loadJobStatuses(true); return;
+      }
+      const newCheckedIn = {}; const newCheckedOut = {}; const newCompleted = {}; const newInvoiced = {};
+      let loadedDayStarted = false; let loadedDayFinished = false; let loadedDayStatus = "";
+      todayRows.forEach(row => {
+        const [, jobId, status, extra] = row;
         if (jobId === "__DAY_STARTED__") { loadedDayStarted = true; loadedDayStatus = "Day started at " + extra; }
         if (jobId === "__DAY_FINISHED__") { loadedDayStarted = true; loadedDayFinished = true; loadedDayStatus = extra; }
         if (jobId && !jobId.startsWith("__")) {
-          if (status === "checkedIn") newCheckedIn[jobId] = extra || "—";
-          if (status === "completed") { newCheckedIn[jobId] = extra || "—"; newCompleted[jobId] = true; }
+          const baseJobId = jobId.replace(/__ci$/, "").replace(/__co$/, "").replace(/__done$/, "").replace(/__invoice$/, "").replace(/_\d{8}T\d{6}Z/, "");
+          if (status === "checkedIn")  newCheckedIn[baseJobId] = extra || "—";
+          if (status === "checkedOut") newCheckedOut[baseJobId] = extra || "—";
+          if (status === "completed")  { newCompleted[baseJobId] = true; newCheckedIn[baseJobId] = newCheckedIn[baseJobId] || "—"; }
+          if (status === "invoiced")   newInvoiced[baseJobId] = extra || "";
+          if (status === "undone")     { delete newCheckedIn[baseJobId]; delete newCheckedOut[baseJobId]; delete newCompleted[baseJobId]; }
         }
       });
-
-      setCheckedIn(newCheckedIn);
-      setCompleted(newCompleted);
-      if (loadedDayStarted) setDayStarted(true);
+      setCheckedIn(newCheckedIn); setCheckedOut(newCheckedOut); setCompleted(newCompleted); setInvoicedJobs(newInvoiced);
+      if (loadedDayStarted) { setDayStarted(true); if (!lastPositionRef.current && locationRef.current) lastPositionRef.current = { lat: locationRef.current.lat, lng: locationRef.current.lng }; }
       if (loadedDayFinished) setDayFinished(true);
       if (loadedDayStatus) setDayStatus(loadedDayStatus);
-    } catch (e) { console.error("Could not load job statuses:", e); }
+    } catch (e) { console.error("[TechPortal] Could not load job statuses:", e); }
     setStatusLoading(false);
   };
 
   const queueStatusSave = (jobId, status, extra) => {
-    pendingStatusRef.current[jobId] = { status, extra: extra || "" };
+    const cleanId = jobId.replace(/_\d{8}T\d{6}Z$/, "");
+    pendingStatusRef.current[cleanId] = { status, extra: extra || "" };
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => flushStatusSaves(), 800);
   };
@@ -231,94 +240,83 @@ export default function Dashboard({ user, accessToken, onLogout }) {
     const pending = { ...pendingStatusRef.current };
     pendingStatusRef.current = {};
     if (Object.keys(pending).length === 0) return;
-
     try {
       const sheetId = await getOrCreateLogSheet();
       if (!sheetId) return;
       const dateKey = selectedDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-
-      const res = await fetch(
-        "https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A:D",
-        { headers: { Authorization: "Bearer " + accessToken } }
-      );
+      const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A:D", { headers: { Authorization: "Bearer " + accessToken } });
       const data = await res.json();
       const rows = data.values || [];
-
       const existingIndex = {};
-      rows.forEach((row, i) => {
-        if (row[0] === dateKey && row[1]) existingIndex[row[1]] = i;
-      });
-
-      const updateRequests = [];
-      const appendRows = [];
-
+      rows.forEach((row, i) => { if (row[0] === dateKey && row[1]) existingIndex[row[1]] = i; });
+      const updateRequests = []; const appendRows = [];
       Object.entries(pending).forEach(([jobId, { status, extra }]) => {
         const newRow = [dateKey, jobId, status, extra];
-        if (existingIndex[jobId] !== undefined) {
-          const rowNum = existingIndex[jobId] + 1;
-          updateRequests.push({ range: "'" + STATUS_SHEET_NAME + "'!A" + rowNum + ":D" + rowNum, values: [newRow] });
-        } else {
-          appendRows.push(newRow);
-        }
+        if (existingIndex[jobId] !== undefined) { updateRequests.push({ range: "'" + STATUS_SHEET_NAME + "'!A" + (existingIndex[jobId] + 1) + ":D" + (existingIndex[jobId] + 1), values: [newRow] }); }
+        else { appendRows.push(newRow); }
       });
-
-      if (updateRequests.length > 0) {
-        await fetch(
-          "https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values:batchUpdate",
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
-            body: JSON.stringify({ valueInputOption: "USER_ENTERED", data: updateRequests })
-          }
-        );
-      }
-
-      if (appendRows.length > 0) {
-        await fetch(
-          "https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A:D:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS",
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
-            body: JSON.stringify({ values: appendRows })
-          }
-        );
-      }
+      if (updateRequests.length > 0) await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values:batchUpdate", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken }, body: JSON.stringify({ valueInputOption: "USER_ENTERED", data: updateRequests }) });
+      if (appendRows.length > 0) await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A:D:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken }, body: JSON.stringify({ values: appendRows }) });
     } catch (e) { console.error("Could not flush status saves:", e); }
   };
 
   const appendToLog = async (row) => {
     const sheetId = await getOrCreateLogSheet();
     if (!sheetId) return;
-    await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/A:F:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
-      body: JSON.stringify({ values: [row] })
-    });
+    await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/A:F:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken }, body: JSON.stringify({ values: [row] }) });
   };
 
-  // FIX 3: Only set lastPositionRef to actual GPS location, never fake-HOME
+  const updateCalendarEvent = async (job, fields) => {
+    if (!job?.id || !job?.calendarId) return;
+    try {
+      const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(job.calendarId) + "/events/" + job.id, { headers: { Authorization: "Bearer " + accessToken } });
+      if (!res.ok) return;
+      const event = await res.json();
+      const existingDesc = event.description || "";
+      const stripped = existingDesc.replace(/\n?---TechPortal---[\s\S]*?---End TechPortal---/g, "").trimEnd();
+      const lines = ["---TechPortal---"];
+      if (fields.checkIn) lines.push("🟢 Check-in: " + fields.checkIn);
+      if (fields.checkOut) lines.push("🔴 Check-out: " + fields.checkOut);
+      if (fields.completed) lines.push("✅ Completed");
+      if (fields.invoiceUrl) lines.push("📄 Invoice: " + fields.invoiceUrl);
+      lines.push("---End TechPortal---");
+      const newDesc = stripped ? stripped + "\n\n" + lines.join("\n") : lines.join("\n");
+      await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(job.calendarId) + "/events/" + job.id, { method: "PATCH", headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken }, body: JSON.stringify({ description: newDesc }) });
+    } catch (e) { console.warn("Could not update calendar event:", e); }
+  };
+
   const handleStartDay = async () => {
     const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-    if (location) lastPositionRef.current = { lat: location.lat, lng: location.lng };
+    let livePos = locationRef.current;
+    if (!livePos) {
+      await new Promise(resolve => {
+        const timeout = setTimeout(resolve, 5000);
+        const check = setInterval(() => { if (locationRef.current) { clearTimeout(timeout); clearInterval(check); resolve(); } }, 200);
+      });
+      livePos = locationRef.current;
+    }
+    if (livePos) lastPositionRef.current = { lat: livePos.lat, lng: livePos.lng };
     setDayStarted(true);
-    const status = "Day started at " + time;
-    setDayStatus(status);
+    setDayStatus("Day started at " + time);
     await appendToLog([date, "🏠 Start Day (Home)", time, "0", "", "Departed home"]);
-    queueStatusSave("__DAY_STARTED__", "started", time);
+    pendingStatusRef.current["__DAY_STARTED__"] = { status: "started", extra: time };
+    await flushStatusSaves();
   };
 
   const handleFinishDay = async () => {
     const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-    const currentPos = location || lastPositionRef.current || HOME;
-    const milesHome = Math.round(calcMiles(currentPos.lat, currentPos.lng, HOME.lat, HOME.lng) * 10) / 10;
+    const livePos = locationRef.current;
+    const currentPos = livePos || lastPositionRef.current || HOME;
+    const milesHome = await getDrivingMiles(currentPos.lat, currentPos.lng, HOME.lat, HOME.lng);
     const total = Math.round((totalMiles + milesHome) * 10) / 10;
     setDayFinished(true);
     const status = "Day finished at " + time + " · Total: " + total + " mi";
     setDayStatus(status);
     await appendToLog([date, "🏠 Finish Day (Home)", time, milesHome, "", "Total day: " + total + " mi"]);
-    queueStatusSave("__DAY_FINISHED__", "finished", status);
+    pendingStatusRef.current["__DAY_FINISHED__"] = { status: "finished", extra: status };
+    await flushStatusSaves();
   };
 
   const goToPrevDay = () => { const d = new Date(selectedDate); d.setDate(d.getDate() - 1); setSelectedDate(d); setFilter("All"); };
@@ -330,70 +328,96 @@ export default function Dashboard({ user, accessToken, onLogout }) {
     const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
     setCheckedIn((prev) => ({ ...prev, [jobId]: time }));
-    const currentPos = location || lastPositionRef.current || HOME;
+    const livePos = locationRef.current;
+    const currentPos = livePos || lastPositionRef.current || HOME;
+    const accuracyOk = !livePos || livePos.accuracy <= 500;
     let miles = 0;
-    if (dayStarted && lastPositionRef.current) {
-      // FIX 3: Only calculate miles if we have a real last position
-      miles = Math.round(calcMiles(lastPositionRef.current.lat, lastPositionRef.current.lng, currentPos.lat, currentPos.lng) * 10) / 10;
-      if (miles > 0.05) {
-        saveMileage((prev) => [...prev, { jobId, jobTitle, miles, time }]);
-        lastPositionRef.current = currentPos; // only advance ref when distance was real
-      }
-    } else if (navStart[jobId] && location) {
-      miles = Math.round(calcMiles(navStart[jobId].lat, navStart[jobId].lng, location.lat, location.lng) * 10) / 10;
-      if (miles > 0.05) {
-        saveMileage((prev) => [...prev, { jobId, jobTitle, miles, time }]);
-      }
+    if (dayStarted && lastPositionRef.current && accuracyOk) {
+      miles = await getDrivingMiles(lastPositionRef.current.lat, lastPositionRef.current.lng, currentPos.lat, currentPos.lng);
+      if (miles > 0.05 && miles < 150) saveMileage((prev) => [...prev, { jobId, jobTitle, miles, time }]);
+    } else if (navStart[jobId] && livePos && accuracyOk) {
+      miles = await getDrivingMiles(navStart[jobId].lat, navStart[jobId].lng, livePos.lat, livePos.lng);
+      if (miles > 0.05 && miles < 150) saveMileage((prev) => [...prev, { jobId, jobTitle, miles, time }]);
     }
-    // Always update ref to current position after a check-in
-    if (location) lastPositionRef.current = { lat: location.lat, lng: location.lng };
-    await appendToLog([date, jobTitle, time, miles > 0.05 ? miles : "", invoicedJobs[jobId] ? "Yes" : "No", ""]);
-    queueStatusSave(jobId, "checkedIn", time);
+    if (livePos) lastPositionRef.current = { lat: livePos.lat, lng: livePos.lng };
+    await appendToLog([date, jobTitle, time, miles > 0.05 && miles < 150 ? miles : "", invoicedJobs[jobId] ? "Yes" : "No", ""]);
+    pendingStatusRef.current[jobId + "__ci"] = { status: "checkedIn", extra: time };
+    flushStatusSaves();
+    const job = jobs.find(j => j.id === jobId);
+    updateCalendarEvent(job, { checkIn: time });
+  };
+
+  const handleCheckOut = async (jobId, jobTitle) => {
+    const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    setCheckedOut((prev) => ({ ...prev, [jobId]: time }));
+    const livePos = locationRef.current;
+    if (livePos) lastPositionRef.current = { lat: livePos.lat, lng: livePos.lng };
+    await appendToLog([date, jobTitle + " (check-out)", time, "", invoicedJobs[jobId] ? "Yes" : "No", ""]);
+    pendingStatusRef.current[jobId + "__co"] = { status: "checkedOut", extra: time };
+    flushStatusSaves();
+    const job = jobs.find(j => j.id === jobId);
+    updateCalendarEvent(job, { checkIn: checkedIn[jobId], checkOut: time });
   };
 
   const handleComplete = (jobId) => {
     setCompleted((prev) => ({ ...prev, [jobId]: true }));
-    queueStatusSave(jobId, "completed", checkedIn[jobId] || "");
+    pendingStatusRef.current[jobId + "__done"] = { status: "completed", extra: checkedIn[jobId] || "" };
+    flushStatusSaves();
+    const job = jobs.find(j => j.id === jobId);
+    updateCalendarEvent(job, { checkIn: checkedIn[jobId], checkOut: checkedOut[jobId], completed: true, invoiceUrl: invoicedJobs[jobId] });
   };
 
   const handleUndo = (jobId) => {
     setCompleted((prev) => { const n = { ...prev }; delete n[jobId]; return n; });
     setCheckedIn((prev) => { const n = { ...prev }; delete n[jobId]; return n; });
+    setCheckedOut((prev) => { const n = { ...prev }; delete n[jobId]; return n; });
     saveMileage((prev) => prev.filter((m) => m.jobId !== jobId));
-    queueStatusSave(jobId, "undone", "");
+    pendingStatusRef.current[jobId + "__ci"] = { status: "undone", extra: "" };
+    pendingStatusRef.current[jobId + "__co"] = { status: "undone", extra: "" };
+    pendingStatusRef.current[jobId + "__done"] = { status: "undone", extra: "" };
+    flushStatusSaves();
+    const job = jobs.find(j => j.id === jobId);
+    updateCalendarEvent(job, {});
   };
 
-  const handleInvoice = (job) => { setInvoiceJob(job); };
+  const handleInvoice = (job) => {
+    setInvoiceJob({ ...job, checkInTime: checkedIn[job.id] || null, checkOutTime: checkedOut[job.id] || null });
+  };
   const handleInvoiceClose = () => { setInvoiceJob(null); };
-
-  const handleCashPaid = async (jobId, jobTitle) => {
-    setCashPaid((prev) => ({ ...prev, [jobId]: true }));
-    const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-    const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    await appendToLog([date, jobTitle, checkedIn[jobId] || time, "", "Yes", "💵 Paid Cash/Check"]);
+  const handleInvoiceCreated = (jobId, invoiceUrl) => {
+    setInvoicedJobs((prev) => ({ ...prev, [jobId]: invoiceUrl }));
+    pendingStatusRef.current[jobId.replace(/_\d{8}T\d{6}Z$/, "") + "__invoice"] = { status: "invoiced", extra: invoiceUrl };
+    flushStatusSaves();
+    const job = jobs.find(j => normalizeId(j.id) === jobId);
+    updateCalendarEvent(job, { checkIn: checkedIn[jobId], checkOut: checkedOut[jobId], completed: !!completed[jobId], invoiceUrl });
   };
+
+  const normalizeId = (id) => id ? id.replace(/_\d{8}T\d{6}Z/, "") : id;
 
   const getStatus = (job) => {
-    if (completed[job.id]) return "Done";
-    if (checkedIn[job.id]) return "Checked In";
+    const id = normalizeId(job.id);
+    if (completed[id]) return "Done";
+    if (checkedOut[id]) return "Checked Out";
+    if (checkedIn[id]) return "Checked In";
     return "Scheduled";
   };
 
   const counts = {
     total: jobs.length,
-    done: jobs.filter((j) => completed[j.id]).length,
-    inProgress: jobs.filter((j) => checkedIn[j.id] && !completed[j.id]).length,
-    scheduled: jobs.filter((j) => !checkedIn[j.id] && !completed[j.id]).length,
+    done: jobs.filter((j) => getStatus(j) === "Done").length,
+    inProgress: jobs.filter((j) => getStatus(j) === "Checked In").length,
+    scheduled: jobs.filter((j) => getStatus(j) === "Scheduled").length,
   };
 
-  const filtered = filter === "All" ? jobs : jobs.filter((j) => { const s = getStatus(j); return s === filter || (filter === "Done" && completed[j.id]); });
+  const filtered = filter === "All" ? jobs : jobs.filter((j) => { const s = getStatus(j); return s === filter || (filter === "Done" && completed[normalizeId(j.id)]); });
   const dotStyle = { width: 8, height: 8, borderRadius: "50%", background: location ? "#27500A" : "#888", display: "inline-block", marginRight: 4 };
   const modalEvents = modalType === "completed" ? completedEvents : remainingEvents;
   const modalTitleText = modalType === "completed" ? "Completed This Month" : "Remaining This Month";
 
   return (
     React.createElement("div", { style: styles.page },
-      invoiceJob && React.createElement(InvoiceModal, { job: invoiceJob, accessToken: accessToken, onClose: handleInvoiceClose }),
+      invoiceJob && React.createElement(InvoiceModal, { job: invoiceJob, accessToken: accessToken, onClose: handleInvoiceClose, onInvoiceCreated: handleInvoiceCreated }),
 
       menuOpen && React.createElement("div", { style: styles.menuOverlay, onClick: () => setMenuOpen(false) },
         React.createElement("div", { style: styles.menuDrawer, onClick: (e) => e.stopPropagation() },
@@ -403,46 +427,20 @@ export default function Dashboard({ user, accessToken, onLogout }) {
           ),
           React.createElement("div", { style: styles.menuSection },
             React.createElement("div", { style: styles.menuSectionLabel }, "📊 Logs & Reports"),
-            React.createElement("a", {
-              href: "#", style: styles.menuItem,
-              onClick: async (e) => {
-                e.preventDefault();
-                const id = logSheetId || await getOrCreateLogSheet();
-                if (id) window.open("https://docs.google.com/spreadsheets/d/" + id + "/edit", "_blank");
-                setMenuOpen(false);
-              }
-            }, "📋 Job Log"),
-            React.createElement("a", {
-              href: "#", style: styles.menuItem,
-              onClick: async (e) => {
-                e.preventDefault();
-                const id = logSheetId || await getOrCreateLogSheet();
-                if (id) window.open("https://docs.google.com/spreadsheets/d/" + id + "/edit", "_blank");
-                setMenuOpen(false);
-              }
-            }, "💰 Accounts Receivable")
+            React.createElement("a", { href: "#", style: styles.menuItem, onClick: async (e) => { e.preventDefault(); const id = logSheetId || await getOrCreateLogSheet(); if (id) window.open("https://docs.google.com/spreadsheets/d/" + id + "/edit", "_blank"); setMenuOpen(false); } }, "📋 Job Log"),
+            React.createElement("a", { href: "#", style: styles.menuItem, onClick: async (e) => { e.preventDefault(); const id = logSheetId || await getOrCreateLogSheet(); if (id) window.open("https://docs.google.com/spreadsheets/d/" + id + "/edit", "_blank"); setMenuOpen(false); } }, "💰 Accounts Receivable")
           ),
           React.createElement("div", { style: styles.menuSection },
             React.createElement("div", { style: styles.menuSectionLabel }, "⛳ Golf"),
-            React.createElement("a", {
-              href: "/golf",
-              style: styles.menuItem,
-              onClick: () => setMenuOpen(false)
-            }, "⛳ Golf Scorecard")
+            React.createElement("a", { href: "/golf", style: styles.menuItem, onClick: () => setMenuOpen(false) }, "⛳ Golf Scorecard")
           ),
           React.createElement("div", { style: styles.menuSection },
             React.createElement("div", { style: styles.menuSectionLabel }, "📅 Calendar"),
-            React.createElement("a", {
-              href: "https://calendar.google.com/calendar/r", target: "_blank", rel: "noreferrer",
-              style: styles.menuItem, onClick: () => setMenuOpen(false)
-            }, "📆 Google Calendar")
+            React.createElement("a", { href: "https://calendar.google.com/calendar/r", target: "_blank", rel: "noreferrer", style: styles.menuItem, onClick: () => setMenuOpen(false) }, "📆 Google Calendar")
           ),
           React.createElement("div", { style: styles.menuSection },
             React.createElement("div", { style: styles.menuSectionLabel }, "⚙️ Account"),
-            React.createElement("button", {
-              style: { ...styles.menuItem, background: "none", border: "none", width: "100%", textAlign: "left", cursor: "pointer", fontFamily: "system-ui, sans-serif" },
-              onClick: () => { setMenuOpen(false); onLogout(); }
-            }, "🚪 Sign Out")
+            React.createElement("button", { style: { ...styles.menuItem, background: "none", border: "none", width: "100%", textAlign: "left", cursor: "pointer", fontFamily: "system-ui, sans-serif" }, onClick: () => { setMenuOpen(false); onLogout(); } }, "🚪 Sign Out")
           )
         )
       ),
@@ -493,9 +491,15 @@ export default function Dashboard({ user, accessToken, onLogout }) {
       React.createElement("div", { style: styles.locationBar },
         React.createElement("span", { style: dotStyle }),
         location
-          ? React.createElement("span", { style: styles.locationText }, "GPS active \u00B7 \u00B1" + location.accuracy + "m  ", React.createElement("a", { href: "https://www.google.com/maps?q=" + location.lat + "," + location.lng, target: "_blank", rel: "noreferrer", style: styles.locationLink }, "View my location"))
+          ? React.createElement("span", { style: styles.locationText },
+              "GPS active \u00B7 \u00B1" + location.accuracy + "m",
+              location.accuracy > 200 && React.createElement("span", { style: { color: "#c0392b", marginLeft: 6 } }, "⚠️ Poor accuracy — mileage paused"),
+              "  ",
+              React.createElement("a", { href: "https://www.google.com/maps?q=" + location.lat + "," + location.lng, target: "_blank", rel: "noreferrer", style: styles.locationLink }, "View my location")
+            )
           : React.createElement("span", { style: styles.locationText }, locationError || "Getting your location...")
       ),
+
       React.createElement("div", { style: styles.monthBar },
         React.createElement("div", null, React.createElement("div", { style: styles.monthText }, monthName), React.createElement("div", { style: styles.monthSub }, monthlyCount !== null ? monthlyCount + " total jobs" : "Loading...")),
         React.createElement("div", { style: styles.monthRight },
@@ -507,9 +511,17 @@ export default function Dashboard({ user, accessToken, onLogout }) {
           React.createElement("button", { style: styles.monthStatBtn, onClick: () => setModalType("remaining") },
             React.createElement("div", { style: { ...styles.monthStatVal, color: "#FAEEDA" } }, remaining !== null ? remaining : "-"),
             React.createElement("div", { style: styles.monthStatLabel }, "remaining")
+          ),
+          isToday && totalMiles > 0 && React.createElement(React.Fragment, null,
+            React.createElement("div", { style: styles.monthDivider }),
+            React.createElement("div", { style: styles.monthStatBtn },
+              React.createElement("div", { style: { ...styles.monthStatVal, color: "#7dd3fc" } }, (Math.round(totalMiles * 10) / 10) + " mi"),
+              React.createElement("div", { style: styles.monthStatLabel }, "today")
+            )
           )
         )
       ),
+
       isToday && React.createElement("div", { style: styles.dayBar },
         !dayStarted
           ? React.createElement("button", { style: styles.startBtn, onClick: handleStartDay }, "🚗 Start Day")
@@ -519,51 +531,65 @@ export default function Dashboard({ user, accessToken, onLogout }) {
         dayStatus && React.createElement("div", { style: styles.dayStatus }, dayStatus),
         logSheetId && React.createElement("a", { href: "https://docs.google.com/spreadsheets/d/" + logSheetId, target: "_blank", rel: "noreferrer", style: styles.sheetLink }, "📊 View Job Log")
       ),
-      totalMiles > 0 && React.createElement("div", { style: styles.mileageBar },
+
+      isToday && React.createElement("div", { style: styles.mileageBar },
         React.createElement("div", { style: styles.mileageTitle }, "Today's mileage log"),
-        mileageLog.map((m, i) => React.createElement("div", { key: i, style: styles.mileageRow }, React.createElement("span", null, m.jobTitle), React.createElement("span", { style: styles.mileageVal }, m.miles + " mi"))),
+        mileageLog.length === 0
+          ? React.createElement("div", { style: styles.mileageEmpty }, "No mileage logged yet")
+          : mileageLog.map((m, i) => React.createElement("div", { key: i, style: styles.mileageRow }, React.createElement("span", null, m.jobTitle), React.createElement("span", { style: styles.mileageVal }, m.miles + " mi"))),
         React.createElement("div", { style: styles.mileageTotal }, React.createElement("span", null, "Total"), React.createElement("span", null, (Math.round(totalMiles * 10) / 10) + " mi"))
       ),
+
       React.createElement("div", { style: styles.statsGrid },
         [{ label: "Today's jobs", val: counts.total }, { label: "Completed", val: counts.done }, { label: "In progress", val: counts.inProgress }, { label: "Scheduled", val: counts.scheduled }]
           .map((s) => React.createElement("div", { key: s.label, style: styles.statCard }, React.createElement("div", { style: styles.statLabel }, s.label), React.createElement("div", { style: styles.statVal }, s.val)))
       ),
+
       React.createElement("div", { style: styles.filterRow },
         ["All", "Scheduled", "Checked In", "Done"].map((f) =>
           React.createElement("button", { key: f, style: { ...styles.filterBtn, ...(filter === f ? styles.filterActive : {}) }, onClick: () => setFilter(f) }, f)
         )
       ),
+
       React.createElement("div", { style: styles.dateNav },
         React.createElement("button", { style: styles.navBtn, onClick: goToPrevDay }, "\u2190 Prev"),
         React.createElement("div", { style: styles.dateCenter }, React.createElement("div", { style: styles.dateLabel }, displayDate), !isToday && React.createElement("button", { style: styles.todayBtn, onClick: goToToday }, "Back to today")),
         React.createElement("button", { style: styles.navBtn, onClick: goToNextDay }, "Next \u2192")
       ),
+
       React.createElement("div", { style: styles.jobList },
         (loading || statusLoading) && React.createElement("div", { style: styles.message }, "Loading..."),
         error && React.createElement("div", { style: { ...styles.message, color: "#c0392b" } }, error),
         !loading && !statusLoading && !error && filtered.length === 0 && React.createElement("div", { style: styles.message }, "No jobs found for this day."),
-        !loading && !statusLoading && filtered.map((job) =>
-          React.createElement(JobCard, {
+        !loading && !statusLoading && filtered.map((job) => {
+          const nid = normalizeId(job.id);
+          return React.createElement(JobCard, {
             key: job.id, job: job, location: location, status: getStatus(job),
-            checkedIn: checkedIn[job.id], completed: completed[job.id],
-            invoiced: invoicedJobs[job.id], cashPaid: cashPaid[job.id],
-            onCheckIn: () => handleCheckIn(job.id, job.title),
-            onComplete: () => handleComplete(job.id),
-            onNavigate: () => handleNavigate(job.id),
-            onUndo: () => handleUndo(job.id),
-            onInvoice: () => handleInvoice(job),
-            onCashPaid: () => handleCashPaid(job.id, job.title)
-          })
-        )
+            checkedIn: checkedIn[nid], checkedOut: checkedOut[nid], completed: completed[nid],
+            invoiceUrl: invoicedJobs[nid],
+            onCheckIn: () => handleCheckIn(nid, job.title),
+            onCheckOut: () => handleCheckOut(nid, job.title),
+            onComplete: () => handleComplete(nid),
+            onNavigate: () => handleNavigate(nid),
+            onUndo: () => handleUndo(nid),
+            onInvoice: () => handleInvoice({ ...job, id: nid }),
+          });
+        })
       )
     )
   );
 }
 
-function JobCard({ job, location, status, checkedIn, completed, invoiced, cashPaid, onCheckIn, onComplete, onNavigate, onUndo, onInvoice, onCashPaid }) {
+function JobCard({ job, location, status, checkedIn, checkedOut, completed, invoiceUrl, onCheckIn, onCheckOut, onComplete, onNavigate, onUndo, onInvoice }) {
   const badge = STATUS_STYLES[status] || STATUS_STYLES["Scheduled"];
+  const cleanDesc = job.description ? job.description.replace(/\n?---TechPortal---[\s\S]*?---End TechPortal---/g, "").trim() : "";
   let navigateUrl = null;
   if (job.location) { navigateUrl = location ? "https://www.google.com/maps/dir/" + location.lat + "," + location.lng + "/" + encodeURIComponent(job.location) : "https://www.google.com/maps/search/" + encodeURIComponent(job.location); }
+
+  const streetViewUrl = job.location
+    ? "https://maps.googleapis.com/maps/api/streetview?" + new URLSearchParams({ location: job.location, size: "600x120", scale: "2", fov: "90", pitch: "0", key: MAPS_API_KEY })
+    : null;
+
   return (
     React.createElement("div", { style: styles.card },
       React.createElement("div", { style: styles.cardTop },
@@ -572,20 +598,38 @@ function JobCard({ job, location, status, checkedIn, completed, invoiced, cashPa
       ),
       React.createElement("div", { style: styles.cardTitle }, job.title),
       job.location && React.createElement("div", { style: styles.cardMeta }, "\uD83D\uDCCD " + job.location),
-      job.description && React.createElement("div", { style: styles.cardDesc }, job.description.slice(0, 120) + (job.description.length > 120 ? "\u2026" : "")),
+
+      // Street View image — clicking opens the Google Calendar event
+      streetViewUrl && React.createElement("a", {
+        href: job.calendarLink, target: "_blank", rel: "noreferrer", style: { display: "block", marginBottom: 8 }
+      },
+        React.createElement("img", {
+          src: streetViewUrl,
+          alt: "Street View",
+          style: { width: "100%", height: 110, objectFit: "cover", borderRadius: 8, display: "block", cursor: "pointer" },
+          onError: (e) => { e.target.parentElement.style.display = "none"; }
+        })
+      ),
+
+      cleanDesc && React.createElement("div", { style: styles.cardDesc }, cleanDesc.slice(0, 120) + (cleanDesc.length > 120 ? "\u2026" : "")),
+      (checkedIn || checkedOut) && React.createElement("div", { style: styles.timesRow },
+        checkedIn && React.createElement("span", { style: styles.timeChip }, "🟢 In: " + checkedIn),
+        checkedOut && React.createElement("span", { style: styles.timeChip }, "🔴 Out: " + checkedOut)
+      ),
       React.createElement("div", { style: styles.actionRow },
         navigateUrl && !completed && React.createElement("a", { href: navigateUrl, target: "_blank", rel: "noreferrer", style: styles.navButton, onClick: onNavigate }, "\uD83D\uddFA\uFE0F Navigate"),
         !checkedIn && !completed && React.createElement("button", { style: styles.checkInBtn, onClick: onCheckIn }, "\uD83D\uDCCD Check in"),
-        checkedIn && !completed && React.createElement("button", { style: styles.completeBtn, onClick: onComplete }, "\u2705 Mark complete"),
-        checkedIn && !completed && React.createElement("button", { style: styles.undoBtn, onClick: onUndo }, "\u21A9 Undo"),
-        completed && React.createElement("span", { style: styles.checkedInLabel }, "\u2705 Completed" + (checkedIn ? " \u00B7 " + checkedIn : "")),
+        checkedIn && !checkedOut && !completed && React.createElement("button", { style: styles.checkOutBtn, onClick: onCheckOut }, "\uD83D\uDEAA Check out"),
+        checkedOut && !completed && React.createElement("button", { style: styles.completeBtn, onClick: onComplete }, "\u2705 Mark complete"),
+        (checkedIn || checkedOut) && !completed && React.createElement("button", { style: styles.undoBtn, onClick: onUndo }, "\u21A9 Undo"),
+        completed && React.createElement("span", { style: styles.checkedInLabel }, "\u2705 Completed"),
         completed && React.createElement("button", { style: styles.undoBtn, onClick: onUndo }, "\u21A9 Undo"),
-        React.createElement("button", { style: { ...styles.invoiceBtn, ...(invoiced ? { background: "#EAF3DE", color: "#27500A" } : {}) }, onClick: onInvoice }, invoiced ? "\u2705 Invoiced" : "\uD83D\uDCB5 Invoice"),
-        React.createElement("button", {
-          style: { ...styles.cashBtn, ...(cashPaid ? { background: "#EAF3DE", color: "#27500A", cursor: "default" } : {}) },
-          onClick: cashPaid ? undefined : onCashPaid, disabled: cashPaid
-        }, cashPaid ? "✅ Cash/Check Paid" : "💵 Paid Cash/Check"),
-        React.createElement("a", { href: job.calendarLink, target: "_blank", rel: "noreferrer", style: styles.calLink }, "\uD83D\uDCC5 Event")
+        invoiceUrl
+          ? React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
+              React.createElement("a", { href: invoiceUrl, target: "_blank", rel: "noreferrer", style: styles.viewInvoiceBtn }, "\uD83D\uDCC4 View Invoice"),
+              React.createElement("button", { style: styles.reInvoiceBtn, onClick: onInvoice, title: "Create new invoice" }, "\u270F\uFE0F")
+            )
+          : React.createElement("button", { style: styles.invoiceBtn, onClick: onInvoice }, "\uD83D\uDCB5 Invoice")
       )
     )
   );
@@ -623,6 +667,7 @@ const styles = {
   sheetLink: { fontSize: 12, color: "#185FA5", marginLeft: "auto" },
   mileageBar: { margin: "1rem 1.5rem 0", background: "#fff", border: "0.5px solid #e0e0e0", borderRadius: 12, padding: "0.75rem 1rem" },
   mileageTitle: { fontSize: 12, fontWeight: 600, color: "#888", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 },
+  mileageEmpty: { fontSize: 13, color: "#bbb", fontStyle: "italic", paddingBottom: 6 },
   mileageRow: { display: "flex", justifyContent: "space-between", fontSize: 13, color: "#444", padding: "3px 0" }, mileageVal: { color: "#1a1a1a", fontWeight: 500 },
   mileageTotal: { display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 600, color: "#1a1a1a", borderTop: "0.5px solid #e0e0e0", marginTop: 6, paddingTop: 6 },
   statsGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 12, padding: "1.25rem 1.5rem 0" },
@@ -644,10 +689,14 @@ const styles = {
   actionRow: { display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" },
   navButton: { fontSize: 12, padding: "6px 12px", borderRadius: 8, background: "#185FA5", color: "#fff", textDecoration: "none", fontWeight: 500 },
   checkInBtn: { fontSize: 12, padding: "6px 12px", borderRadius: 8, background: "#FAEEDA", color: "#633806", border: "none", cursor: "pointer", fontWeight: 500 },
+  checkOutBtn: { fontSize: 12, padding: "6px 12px", borderRadius: 8, background: "#E6F1FB", color: "#0C447C", border: "none", cursor: "pointer", fontWeight: 500 },
+  timesRow: { display: "flex", gap: 8, margin: "6px 0 2px", flexWrap: "wrap" },
+  timeChip: { fontSize: 12, color: "#444", background: "#f5f5f3", padding: "3px 8px", borderRadius: 6 },
   completeBtn: { fontSize: 12, padding: "6px 12px", borderRadius: 8, background: "#EAF3DE", color: "#27500A", border: "none", cursor: "pointer", fontWeight: 500 },
   undoBtn: { fontSize: 12, padding: "6px 12px", borderRadius: 8, background: "#f5f5f3", color: "#888", border: "none", cursor: "pointer" },
   invoiceBtn: { fontSize: 12, padding: "6px 12px", borderRadius: 8, background: "#F0F4FF", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 500 },
-  cashBtn: { fontSize: 12, padding: "6px 12px", borderRadius: 8, background: "#FFF8E1", color: "#7B5800", border: "none", cursor: "pointer", fontWeight: 500 },
+  viewInvoiceBtn: { fontSize: 12, padding: "6px 12px", borderRadius: 8, background: "#EAF3DE", color: "#27500A", textDecoration: "none", fontWeight: 500, display: "inline-block" },
+  reInvoiceBtn: { fontSize: 12, padding: "6px 8px", borderRadius: 8, background: "#F0F4FF", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 500 },
   checkedInLabel: { fontSize: 12, color: "#27500A", padding: "6px 0", fontWeight: 500 },
   calLink: { fontSize: 12, padding: "6px 12px", borderRadius: 8, background: "#f5f5f3", color: "#555", textDecoration: "none" },
   overlay: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: "1rem" },
