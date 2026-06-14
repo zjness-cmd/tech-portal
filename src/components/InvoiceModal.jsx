@@ -3,7 +3,9 @@ import React, { useState, useEffect } from "react";
 const TEMPLATE_ID = "1mk7ZUarysG0TTAYHlmJAfCjNXAXTWTzq-b6vtewW95c";
 const BUSINESS = { name: "Ness Draft Beer Service", address1: "PO Box 222", address2: "Albertville, MN 55301", phone: "612-293-9459" };
 
-export default function InvoiceModal({ job, accessToken, onClose }) {
+export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreated }) {
+  const checkInTime = job.checkInTime || null;
+  const checkOutTime = job.checkOutTime || null;
   const [step, setStep] = useState("type");
   const [invoiceType, setInvoiceType] = useState(null);
   const [taps, setTaps] = useState("");
@@ -14,11 +16,17 @@ export default function InvoiceModal({ job, accessToken, onClose }) {
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [searching, setSearching] = useState(false);
   const [sending, setSending] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [done, setDone] = useState(null);
   const [sheetUrl, setSheetUrl] = useState(null);
+  const [newSheetId, setNewSheetId] = useState(null);
   const [error, setError] = useState(null);
   const [squareToken, setSquareToken] = useState("");
   const [squareLocation, setSquareLocation] = useState("");
+  const [paymentStatus, setPaymentStatus] = useState(null);
+  const [savingStatus, setSavingStatus] = useState(false);
+  const [statusSaved, setStatusSaved] = useState(false);
+  const [arSheetUrl, setArSheetUrl] = useState(null);
 
   const total = taps && pricePerTap ? (parseFloat(taps) * parseFloat(pricePerTap)).toFixed(2) : null;
   const now = new Date();
@@ -95,6 +103,12 @@ export default function InvoiceModal({ job, accessToken, onClose }) {
         headers: { "Content-Type": "application/json", "Authorization": "Bearer " + squareToken },
         body: JSON.stringify({ version: invoiceData.invoice.version, idempotency_key: "pub-" + Date.now().toString() })
       });
+
+      // Notify Dashboard so the View Invoice button lights up
+      // Square invoices have a public_url after publishing; fall back to dashboard
+      const invoiceUrl = invoiceData.invoice.public_url || "https://squareup.com/dashboard/invoices";
+      if (onInvoiceCreated) onInvoiceCreated(job.id, invoiceUrl);
+
       setDone("Square invoice sent to " + (selectedCustomer.email_address || selectedCustomer.company_name || "customer") + "!");
     } catch (e) { setError(e.message || "Failed to send invoice."); }
     setSending(false);
@@ -107,7 +121,6 @@ export default function InvoiceModal({ job, accessToken, onClose }) {
     try {
       const invoiceTitle = monthName + " " + now.getFullYear() + " " + clientName + " Beer Line Cleaning Invoice";
 
-      // Copy the template
       const copyRes = await fetch("https://www.googleapis.com/drive/v3/files/" + TEMPLATE_ID + "/copy?supportsAllDrives=true", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
@@ -115,11 +128,15 @@ export default function InvoiceModal({ job, accessToken, onClose }) {
       });
       const copyData = await copyRes.json();
       if (!copyData.id) throw new Error("Could not copy template. Make sure the template is shared.");
-      const newSheetId = copyData.id;
+      const createdSheetId = copyData.id;
 
-      // Fill in the values
+      const serviceTimeStr = checkInTime && checkOutTime
+        ? "Service time: " + checkInTime + " – " + checkOutTime
+        : checkInTime
+          ? "Check-in: " + checkInTime
+          : "";
+
       const values = [
-        { range: "A1", values: [[`=IMAGE("https://drive.google.com/uc?export=view&id=1fRo4xZH0Xcl-DK-hVgKWVLLkMOvX2ihZ")`]] },
         { range: "F4", values: [[dateStr]] },
         { range: "F5", values: [[invoiceNumber]] },
         { range: "F6", values: [[clientName]] },
@@ -127,18 +144,127 @@ export default function InvoiceModal({ job, accessToken, onClose }) {
         { range: "C16", values: [[description]] },
         { range: "E16", values: [["$" + total]] },
         { range: "E20", values: [["=SUM(E16:E19)"]] },
+        ...(serviceTimeStr ? [{ range: "B17", values: [[serviceTimeStr]] }] : []),
       ];
 
-      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + newSheetId + "/values:batchUpdate", {
+      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + createdSheetId + "/values:batchUpdate", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
         body: JSON.stringify({ valueInputOption: "USER_ENTERED", data: values })
       });
 
-      setSheetUrl("https://docs.google.com/spreadsheets/d/" + newSheetId + "/edit");
+      const createdUrl = "https://docs.google.com/spreadsheets/d/" + createdSheetId + "/edit";
+      setNewSheetId(createdSheetId);
+      setSheetUrl(createdUrl);
       setDone("Invoice created!");
+
+      // Notify Dashboard so the View Invoice button lights up
+      if (onInvoiceCreated) onInvoiceCreated(job.id, createdUrl);
     } catch (e) { setError(e.message || "Failed to create invoice."); }
     setSending(false);
+  };
+
+  // Get or create the job log sheet and ensure AR tab exists
+  const getLogSheetAndEnsureAR = async () => {
+    const logSearchRes = await fetch(
+      "https://www.googleapis.com/drive/v3/files?q=name='TechPortal Job Log 2026'+and+mimeType='application/vnd.google-apps.spreadsheet'&fields=files(id)",
+      { headers: { Authorization: "Bearer " + accessToken } }
+    );
+    const logSearchData = await logSearchRes.json();
+    if (!logSearchData.files || logSearchData.files.length === 0) return null;
+    const logSheetId = logSearchData.files[0].id;
+
+    const sheetInfoRes = await fetch(
+      "https://sheets.googleapis.com/v4/spreadsheets/" + logSheetId + "?fields=sheets.properties",
+      { headers: { Authorization: "Bearer " + accessToken } }
+    );
+    const sheetInfo = await sheetInfoRes.json();
+    const sheets = sheetInfo.sheets || [];
+    const arSheet = sheets.find(s => s.properties.title === "Accounts Receivable");
+
+    if (!arSheet) {
+      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + logSheetId + ":batchUpdate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
+        body: JSON.stringify({
+          requests: [{ addSheet: { properties: { title: "Accounts Receivable" } } }]
+        })
+      });
+      await fetch(
+        "https://sheets.googleapis.com/v4/spreadsheets/" + logSheetId + "/values/'Accounts Receivable'!A1:E1?valueInputOption=USER_ENTERED",
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
+          body: JSON.stringify({ values: [["Date", "Client", "Amount", "Invoice #", "Status"]] })
+        }
+      );
+    }
+
+    return logSheetId;
+  };
+
+  const savePaymentStatus = async (status) => {
+    setPaymentStatus(status);
+    setSavingStatus(true);
+    try {
+      const date = now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+      const statusLabel = status === "paid" ? "✅ Paid" : "⏳ Awaiting Payment";
+
+      const logSheetId = await getLogSheetAndEnsureAR();
+      if (!logSheetId) throw new Error("Could not find log sheet");
+
+      setArSheetUrl("https://docs.google.com/spreadsheets/d/" + logSheetId + "/edit#gid=0");
+
+      await fetch(
+        "https://sheets.googleapis.com/v4/spreadsheets/" + logSheetId + "/values/'Accounts Receivable'!A:E:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
+          body: JSON.stringify({
+            values: [[date, clientName, "$" + (total || ""), invoiceNumber, statusLabel]]
+          })
+        }
+      );
+
+      await fetch(
+        "https://sheets.googleapis.com/v4/spreadsheets/" + logSheetId + "/values/A:F:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
+          body: JSON.stringify({
+            values: [[date, clientName + " Invoice", "", "", statusLabel, "$" + (total || "")]]
+          })
+        }
+      );
+
+      setStatusSaved(true);
+    } catch (e) {
+      setError("Could not save payment status: " + e.message);
+    }
+    setSavingStatus(false);
+  };
+
+  const downloadAsPdf = async () => {
+    if (!newSheetId) return;
+    setDownloading(true);
+    try {
+      await new Promise((r) => setTimeout(r, 3000));
+      const pdfUrl = "https://docs.google.com/spreadsheets/d/" + newSheetId + "/export?format=pdf&size=letter&portrait=true&fitw=true&sheetnames=false&printtitle=false&pagenumbers=false&gridlines=false&fzr=false";
+      const res = await fetch(pdfUrl, { headers: { Authorization: "Bearer " + accessToken } });
+      if (!res.ok) throw new Error("Could not export PDF");
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = monthName + " " + now.getFullYear() + " " + clientName + " Invoice.pdf";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (e) {
+      setError("PDF download failed. Try opening the sheet and downloading manually.");
+    }
+    setDownloading(false);
   };
 
   return (
@@ -151,13 +277,55 @@ export default function InvoiceModal({ job, accessToken, onClose }) {
         React.createElement("div", { style: styles.jobInfo },
           React.createElement("div", { style: styles.jobName }, job.title),
           job.location && React.createElement("div", { style: styles.jobLoc }, "\uD83D\uDCCD " + job.location),
-          React.createElement("div", { style: styles.jobDate }, now.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }))
+          React.createElement("div", { style: styles.jobDate }, now.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })),
+          (checkInTime || checkOutTime) && React.createElement("div", { style: styles.jobTimes },
+            checkInTime && React.createElement("span", null, "🟢 In: " + checkInTime),
+            checkInTime && checkOutTime && React.createElement("span", null, " · "),
+            checkOutTime && React.createElement("span", null, "🔴 Out: " + checkOutTime)
+          )
         ),
+
         done ? (
           React.createElement("div", { style: styles.successBox },
             React.createElement("div", { style: styles.successIcon }, "\u2705"),
             React.createElement("div", { style: styles.successText }, done),
+
+            !statusSaved ? (
+              React.createElement("div", { style: styles.paymentSection },
+                React.createElement("div", { style: styles.paymentLabel }, "Payment status"),
+                React.createElement("div", { style: styles.paymentRow },
+                  React.createElement("button", {
+                    style: { ...styles.paymentBtn, ...(paymentStatus === "paid" ? styles.paymentBtnPaid : {}) },
+                    onClick: () => !savingStatus && savePaymentStatus("paid"),
+                    disabled: savingStatus
+                  }, "✅ Paid"),
+                  React.createElement("button", {
+                    style: { ...styles.paymentBtn, ...(paymentStatus === "pending" ? styles.paymentBtnPending : {}) },
+                    onClick: () => !savingStatus && savePaymentStatus("pending"),
+                    disabled: savingStatus
+                  }, "⏳ Awaiting Payment")
+                ),
+                savingStatus && React.createElement("div", { style: styles.savingText }, "Saving...")
+              )
+            ) : (
+              React.createElement("div", null,
+                React.createElement("div", { style: {
+                  ...styles.statusSavedBadge,
+                  background: paymentStatus === "paid" ? "#EAF3DE" : "#FAEEDA",
+                  color: paymentStatus === "paid" ? "#27500A" : "#633806"
+                }}, paymentStatus === "paid" ? "✅ Marked as Paid" : "⏳ Marked as Awaiting Payment"),
+                arSheetUrl && React.createElement("a", {
+                  href: arSheetUrl, target: "_blank", rel: "noreferrer", style: styles.arLink
+                }, "📊 View Accounts Receivable")
+              )
+            ),
+
             sheetUrl && React.createElement("a", { href: sheetUrl, target: "_blank", rel: "noreferrer", style: styles.openSheetBtn }, "\uD83D\uDCC4 Open Invoice in Sheets"),
+            newSheetId && React.createElement("button", {
+              style: { ...styles.openSheetBtn, background: "#27500A", border: "none", cursor: "pointer", display: "block", margin: "0 auto 12px", textAlign: "center" },
+              onClick: downloadAsPdf,
+              disabled: downloading
+            }, downloading ? "⏳ Generating PDF..." : "⬇️ Download as PDF"),
             React.createElement("button", { style: styles.doneBtn, onClick: onClose }, "Done")
           )
         ) : step === "type" ? (
@@ -237,6 +405,7 @@ const styles = {
   jobName: { fontSize: 15, fontWeight: 600, color: "#1a1a1a", marginBottom: 2 },
   jobLoc: { fontSize: 13, color: "#666", marginBottom: 2 },
   jobDate: { fontSize: 12, color: "#888" },
+  jobTimes: { fontSize: 12, color: "#185FA5", marginTop: 4, fontWeight: 500 },
   sectionLabel: { fontSize: 13, color: "#888", padding: "1rem 1.25rem 0.5rem" },
   typeRow: { display: "flex", gap: 12, padding: "0 1.25rem 1.25rem" },
   typeBtn: { flex: 1, padding: "1rem", border: "0.5px solid #e0e0e0", borderRadius: 12, background: "#fff", cursor: "pointer", textAlign: "center" },
@@ -263,6 +432,15 @@ const styles = {
   successBox: { padding: "2rem 1.25rem", textAlign: "center" },
   successIcon: { fontSize: 40, marginBottom: 12 },
   successText: { fontSize: 14, color: "#27500A", marginBottom: 16, lineHeight: 1.5 },
+  paymentSection: { margin: "0 0 16px", padding: "1rem", background: "#f5f5f3", borderRadius: 12 },
+  paymentLabel: { fontSize: 12, color: "#888", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 10 },
+  paymentRow: { display: "flex", gap: 8 },
+  paymentBtn: { flex: 1, padding: "10px 12px", borderRadius: 8, border: "0.5px solid #ccc", background: "#fff", color: "#555", cursor: "pointer", fontSize: 13, fontWeight: 500 },
+  paymentBtnPaid: { background: "#EAF3DE", color: "#27500A", borderColor: "#27500A" },
+  paymentBtnPending: { background: "#FAEEDA", color: "#633806", borderColor: "#633806" },
+  savingText: { fontSize: 12, color: "#888", marginTop: 8 },
+  statusSavedBadge: { margin: "0 0 12px", padding: "0.75rem 1rem", borderRadius: 8, fontSize: 14, fontWeight: 500 },
+  arLink: { display: "block", margin: "0 auto 16px", fontSize: 13, color: "#185FA5", fontWeight: 500 },
   openSheetBtn: { display: "block", margin: "0 auto 12px", padding: "10px 20px", background: "#185FA5", color: "#fff", borderRadius: 8, textDecoration: "none", fontSize: 14, fontWeight: 500 },
   doneBtn: { padding: "10px 24px", background: "#f5f5f3", color: "#555", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14 },
 };

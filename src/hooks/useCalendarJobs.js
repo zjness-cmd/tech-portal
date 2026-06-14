@@ -17,13 +17,14 @@ export function useCalendarJobs(accessToken, selectedDate) {
       const startOfDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
       const endOfDay = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1);
 
-      const params = new URLSearchParams({
+      // Two separate param sets — one for timed events, one for all-day
+      const baseParams = {
         timeMin: startOfDay.toISOString(),
         timeMax: endOfDay.toISOString(),
         singleEvents: "true",
-        orderBy: "startTime",
         maxResults: "50",
-      });
+        fields: "items(id,summary,description,location,start,end,htmlLink,attachments,organizer)",
+      };
 
       const calendarIds = [
         "primary",
@@ -31,26 +32,49 @@ export function useCalendarJobs(accessToken, selectedDate) {
       ];
 
       const results = await Promise.all(
-        calendarIds.map((id) =>
+        calendarIds.map((calendarId) =>
           fetch(
-            `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(id)}/events?${params}`,
+            `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events?${new URLSearchParams(baseParams)}`,
             { headers: { Authorization: `Bearer ${token}` } }
-          ).then((res) => {
-            if (!res.ok) return { items: [] };
-            return res.json();
+          ).then(async (res) => {
+            if (!res.ok) {
+              console.warn("[TechPortal] Calendar fetch failed for", calendarId, res.status);
+              return { items: [], calendarId };
+            }
+            const data = await res.json();
+            console.log("[TechPortal] Calendar", calendarId, "returned", data.items?.length, "events");
+            return { ...data, calendarId };
           })
         )
       );
 
-      const allEvents = results.flatMap((data) => data.items || []);
-      const unique = Array.from(new Map(allEvents.map((e) => [e.id, e])).values());
+      const allEvents = results.flatMap((data) =>
+        (data.items || []).map((event) => ({ ...event, _calendarId: data.calendarId }))
+      );
+
+      // Filter out personal/non-work events from primary calendar
+      // Keep everything from Beer Line Cleaning calendar
+      const BEER_LINE_CAL = "f2nn520vkuublps8kegfbg45ts@group.calendar.google.com";
+      const filtered = allEvents.filter(event => {
+        if (event._calendarId === BEER_LINE_CAL) return true;
+        // From primary — only include if it looks like a work event (has a location)
+        return !!event.location;
+      });
+
+      const unique = Array.from(
+        new Map(filtered.map((e) => [e.id, e])).values()
+      );
+
       const sorted = unique.sort((a, b) => {
         const aTime = a.start?.dateTime || a.start?.date || "";
         const bTime = b.start?.dateTime || b.start?.date || "";
         return aTime.localeCompare(bTime);
       });
+
+      console.log("[TechPortal] Total jobs after filter:", sorted.length);
       setJobs(sorted.map(parseEvent));
     } catch (err) {
+      console.error("[TechPortal] Calendar fetch error:", err);
       setError(err.message);
     } finally {
       setLoading(false);
@@ -63,8 +87,16 @@ export function useCalendarJobs(accessToken, selectedDate) {
 function parseEvent(event) {
   const start = event.start?.dateTime || event.start?.date;
   const end = event.end?.dateTime || event.end?.date;
+
+  const attachments = event.attachments || [];
+  const imageAttachment = attachments.find(a => a.mimeType && a.mimeType.startsWith("image/"));
+  const attachmentUrl = imageAttachment
+    ? "https://drive.google.com/uc?export=view&id=" + imageAttachment.fileId
+    : null;
+
   return {
     id: event.id,
+    calendarId: event._calendarId,
     title: event.summary || "Untitled job",
     description: event.description || "",
     location: event.location || "",
@@ -73,6 +105,7 @@ function parseEvent(event) {
     startRaw: start,
     status: deriveStatus(start, end),
     calendarLink: event.htmlLink,
+    attachmentUrl,
   };
 }
 

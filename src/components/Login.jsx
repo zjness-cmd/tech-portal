@@ -1,30 +1,26 @@
 ﻿import React from "react";
-import { useGoogleLogin } from "@react-oauth/google";
 
-export default function Login({ onLoginSuccess }) {
-  const login = useGoogleLogin({
-    scope: "https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive profile email",
-    onSuccess: async (tokenResponse) => {
-      const profileRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-        headers: { Authorization: "Bearer " + tokenResponse.access_token },
-      });
-      const profile = await profileRes.json();
-      onLoginSuccess(profile, tokenResponse.access_token);
-    },
-    onError: () => alert("Google sign-in failed. Please try again."),
-  });
-
+// Login now receives the `onLogin` function from App.jsx
+// (the useGoogleLogin hook lives in App so it can auto-refresh tokens)
+export default function Login({ onLogin, authError }) {
   return (
     React.createElement("div", { style: styles.page },
-      React.createElement("div", { style: styles.card },
-        React.createElement("div", { style: styles.icon }, "\uD83D\uDD27"),
-        React.createElement("h1", { style: styles.title }, "TechPortal"),
-        React.createElement("p", { style: styles.subtitle }, "Sign in to view your jobs and schedule"),
-        React.createElement("button", { style: styles.googleBtn, onClick: () => login() },
+      React.createElement("div", { style: styles.bgOverlay }),
+      React.createElement("div", { style: styles.content },
+        React.createElement("img", {
+          src: "https://tapbeercleaning.com/img/loch_ness2.png",
+          alt: "Ness Draft Beer Service",
+          style: styles.logo
+        }),
+        React.createElement("div", { style: styles.divider }),
+        React.createElement("div", { style: styles.tagline }, "Technician Portal"),
+        React.createElement("button", { style: styles.googleBtn, onClick: () => onLogin() },
           React.createElement(GoogleIcon, null),
           "Sign in with Google"
         ),
-        React.createElement("p", { style: styles.hint }, "Signing in grants access to your Google Calendar and Sheets.")
+        authError
+          ? React.createElement("p", { style: styles.errorHint }, "⛔ " + authError)
+          : React.createElement("p", { style: styles.hint }, "Access your jobs, routes, and invoices")
       )
     )
   );
@@ -40,11 +36,79 @@ function GoogleIcon() {
 }
 
 const styles = {
-  page: { minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#f5f5f3", fontFamily: "system-ui, sans-serif" },
-  card: { background: "#fff", borderRadius: 16, border: "0.5px solid #e0e0e0", padding: "2.5rem 2rem", width: 360, textAlign: "center" },
-  icon: { fontSize: 36, marginBottom: 12 },
-  title: { fontSize: 22, fontWeight: 600, margin: "0 0 6px", color: "#1a1a1a" },
-  subtitle: { fontSize: 14, color: "#666", margin: "0 0 1.75rem" },
-  googleBtn: { display: "flex", alignItems: "center", justifyContent: "center", width: "100%", padding: "11px 16px", fontSize: 15, fontWeight: 500, background: "#fff", color: "#1a1a1a", border: "1px solid #dadce0", borderRadius: 8, cursor: "pointer", marginBottom: "1rem" },
-  hint: { fontSize: 12, color: "#999", lineHeight: 1.6, margin: 0 },
+  page: {
+    minHeight: "100vh",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "linear-gradient(135deg, #0a0f1e 0%, #1a2744 50%, #0d1b2a 100%)",
+    fontFamily: "system-ui, sans-serif",
+    position: "relative",
+    overflow: "hidden",
+  },
+  bgOverlay: {
+    position: "absolute",
+    top: 0, left: 0, right: 0, bottom: 0,
+    background: "radial-gradient(ellipse at 50% 0%, rgba(24, 95, 165, 0.15) 0%, transparent 70%)",
+    pointerEvents: "none",
+  },
+  content: {
+    position: "relative",
+    zIndex: 1,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    padding: "2.5rem 2rem",
+    width: "100%",
+    maxWidth: 380,
+  },
+  logo: {
+    width: 240,
+    maxWidth: "80vw",
+    marginBottom: "1.5rem",
+    filter: "drop-shadow(0 4px 24px rgba(0,0,0,0.5))",
+  },
+  divider: {
+    width: 40,
+    height: 2,
+    background: "linear-gradient(90deg, transparent, #185FA5, transparent)",
+    marginBottom: "1rem",
+  },
+  tagline: {
+    fontSize: 13,
+    color: "rgba(255,255,255,0.5)",
+    letterSpacing: "0.15em",
+    textTransform: "uppercase",
+    marginBottom: "2.5rem",
+  },
+  googleBtn: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: "100%",
+    padding: "13px 20px",
+    fontSize: 15,
+    fontWeight: 500,
+    background: "#fff",
+    color: "#1a1a1a",
+    border: "none",
+    borderRadius: 10,
+    cursor: "pointer",
+    boxShadow: "0 4px 24px rgba(0,0,0,0.3)",
+    marginBottom: "1rem",
+  },
+  hint: {
+    fontSize: 12,
+    color: "rgba(255,255,255,0.3)",
+    margin: 0,
+    textAlign: "center",
+  },
+  errorHint: {
+    fontSize: 13,
+    color: "#ff6b6b",
+    margin: 0,
+    textAlign: "center",
+    lineHeight: 1.5,
+    padding: "0 1rem",
+  },
 };
