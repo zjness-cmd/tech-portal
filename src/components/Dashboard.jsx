@@ -7,6 +7,8 @@ const HOME = { lat: 45.292159, lng: -93.683355 };
 const LOG_SHEET_NAME = "TechPortal Job Log 2026";
 const STATUS_SHEET_NAME = "Job Status";
 const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
+const GEOFENCE_RADIUS_MILES = 0.09; // ~150 meters
+const GEOFENCE_DWELL_MS = 60 * 1000; // 60 seconds dwell before auto check-in
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -57,6 +59,21 @@ async function getDrivingMiles(fromLat, fromLng, toLat, toLng) {
   }
 }
 
+// Geocode an address string to {lat, lng} using Google Geocoding API
+async function geocodeAddress(address) {
+  if (!address || !MAPS_API_KEY) return null;
+  try {
+    const url = "https://maps.googleapis.com/maps/api/geocode/json?" + new URLSearchParams({ address, key: MAPS_API_KEY });
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.status === "OK" && data.results[0]) {
+      const { lat, lng } = data.results[0].geometry.location;
+      return { lat, lng };
+    }
+  } catch {}
+  return null;
+}
+
 function normalizeId(id) {
   if (!id) return id;
   return id.replace(/_\d{8}T\d{6}Z$/, "").replace(/_[a-z0-9]{26}$/, "");
@@ -92,6 +109,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [modalType, setModalType] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [statusLoading, setStatusLoading] = useState(true);
+  const [geofenceStatus, setGeofenceStatus] = useState({}); // jobId -> "nearby" | null
+
   const startPosRef = useRef(null);
   const lastPositionRef = useRef((() => { try { const s = localStorage.getItem("techportal_lastPos"); return s ? JSON.parse(s) : null; } catch { return null; } })());
   const setLastPos = (pos) => { lastPositionRef.current = pos; if (pos) { try { localStorage.setItem("techportal_lastPos", JSON.stringify(pos)); } catch {} } };
@@ -100,8 +119,19 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const pendingStatusRef = useRef({});
   const saveTimerRef = useRef(null);
   const trackIntervalRef = useRef(null);
+  const jobCoordsRef = useRef({}); // cache: jobId -> {lat, lng}
+  const geofenceDwellRef = useRef({}); // jobId -> timestamp when first entered geofence
+  const checkedInRef = useRef(checkedIn);
+  const completedRef = useRef(completed);
+  const jobsRef = useRef([]);
+
   const [gpsTrack, setGpsTrack] = useState(() => { try { const k = "gpsTrack_" + new Date().toDateString(); const s = localStorage.getItem(k); return s ? JSON.parse(s) : []; } catch { return []; } });
   const { jobs, loading, error, refresh } = useCalendarJobs(accessToken, selectedDate);
+
+  // Keep refs in sync with state for use inside intervals
+  useEffect(() => { checkedInRef.current = checkedIn; }, [checkedIn]);
+  useEffect(() => { completedRef.current = completed; }, [completed]);
+  useEffect(() => { jobsRef.current = jobs; }, [jobs]);
 
   useImperativeHandle(ref, () => ({ flushPending: () => flushStatusSaves() }));
 
@@ -132,6 +162,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   useEffect(() => {
     setCheckedIn({}); setCheckedOut({}); setCompleted({}); setNavStart({});
     setDayStarted(false); setDayFinished(false); setDayStatus(""); setPastDayStatus(""); setStatusLoading(true);
+    jobCoordsRef.current = {}; geofenceDwellRef.current = {}; setGeofenceStatus({});
     if (new Date().toDateString() !== selectedDate.toDateString()) { try { localStorage.removeItem("techportal_lastPos"); } catch {} lastPositionRef.current = null; }
     try { const ck = JOB_STATUS_CACHE_KEY + selectedDate.toDateString(); const c = localStorage.getItem(ck); if (c) { const { checkedIn: ci, checkedOut: co, completed: comp, invoiced: inv } = JSON.parse(c); if (ci) setCheckedIn(ci); if (co) setCheckedOut(co); if (comp) setCompleted(comp); if (inv) setInvoicedJobs(inv); } } catch {}
     try { const k = "mileageLog_" + selectedDate.toDateString(); const s = localStorage.getItem(k); setMileageLog(s ? JSON.parse(s) : []); } catch { setMileageLog([]); }
@@ -141,12 +172,25 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   useEffect(() => { if (!accessToken) return; fetchMonthlyCount(accessToken); }, [accessToken, selectedDate]);
   useEffect(() => { if (!accessToken || loading) return; loadJobStatuses(); }, [accessToken, selectedDate, loading]);
 
+  // Geocode job addresses when jobs load and day is started
+  useEffect(() => {
+    if (!jobs.length || !dayStarted || !isToday) return;
+    jobs.forEach(async (job) => {
+      const nid = normalizeId(job.id);
+      if (!job.location || jobCoordsRef.current[nid]) return;
+      const coords = await geocodeAddress(job.location);
+      if (coords) jobCoordsRef.current[nid] = coords;
+    });
+  }, [jobs, dayStarted, isToday]);
+
   useEffect(() => {
     if (trackIntervalRef.current) clearInterval(trackIntervalRef.current);
     if (!dayStarted || dayFinished || !isToday) return;
     trackIntervalRef.current = setInterval(() => {
       const pos = locationRef.current;
       if (!pos || pos.accuracy > 300) return;
+
+      // ── GPS track ──
       setGpsTrack(prev => {
         if (prev.length > 0) { const last = prev[prev.length - 1]; if (calcMiles(last[0], last[1], pos.lat, pos.lng) < 0.01) return prev; }
         const next = [...prev, [parseFloat(pos.lat.toFixed(5)), parseFloat(pos.lng.toFixed(5)), Date.now()]];
@@ -156,6 +200,43 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         saveTimerRef.current = setTimeout(flushStatusSaves, 2000);
         return next;
       });
+
+      // ── Geofence check ──
+      const currentJobs = jobsRef.current;
+      const currentCheckedIn = checkedInRef.current;
+      const currentCompleted = completedRef.current;
+      const now = Date.now();
+
+      currentJobs.forEach(async (job) => {
+        const nid = normalizeId(job.id);
+        // Skip if already checked in or completed
+        if (currentCheckedIn[nid] || currentCompleted[nid]) {
+          if (geofenceDwellRef.current[nid]) { delete geofenceDwellRef.current[nid]; setGeofenceStatus(prev => { const n = {...prev}; delete n[nid]; return n; }); }
+          return;
+        }
+        const coords = jobCoordsRef.current[nid];
+        if (!coords) return;
+        const dist = calcMiles(pos.lat, pos.lng, coords.lat, coords.lng);
+        if (dist <= GEOFENCE_RADIUS_MILES) {
+          // Within geofence
+          if (!geofenceDwellRef.current[nid]) {
+            geofenceDwellRef.current[nid] = now;
+            setGeofenceStatus(prev => ({ ...prev, [nid]: "nearby" }));
+          } else if (now - geofenceDwellRef.current[nid] >= GEOFENCE_DWELL_MS) {
+            // Dwell time met — auto check in
+            delete geofenceDwellRef.current[nid];
+            setGeofenceStatus(prev => { const n = {...prev}; delete n[nid]; return n; });
+            handleCheckIn(nid, job.title, true); // true = auto
+          }
+        } else {
+          // Left geofence — reset dwell
+          if (geofenceDwellRef.current[nid]) {
+            delete geofenceDwellRef.current[nid];
+            setGeofenceStatus(prev => { const n = {...prev}; delete n[nid]; return n; });
+          }
+        }
+      });
+
     }, 30 * 1000);
     return () => clearInterval(trackIntervalRef.current);
   }, [dayStarted, dayFinished, isToday]);
@@ -344,25 +425,17 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       return next;
     });
     const gpsTotal = gpsTrackedMiles !== null ? gpsTrackedMiles : Math.round(totalMiles * 10) / 10;
-
-    // Auto-detect any jobs still Scheduled and add to missed list
     const todayDateStr = selectedDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
     const scheduledJobs = jobs.filter(j => getStatus(j) === "Scheduled");
     if (scheduledJobs.length > 0) {
       const existing = JSON.parse(localStorage.getItem("techportal_missedJobs") || "[]");
       const newMissed = scheduledJobs.map(j => ({
-        jobId: normalizeId(j.id),
-        jobTitle: j.title,
-        jobLocation: j.location,
-        calendarId: j.calendarId,
-        eventId: j.id,
-        date: todayDateStr,
-        missedAt: Date.now(),
+        jobId: normalizeId(j.id), jobTitle: j.title, jobLocation: j.location,
+        calendarId: j.calendarId, eventId: j.id, date: todayDateStr, missedAt: Date.now(),
       }));
       const merged = [...existing.filter(m => !newMissed.find(n => n.jobId === m.jobId)), ...newMissed];
       saveMissedJobs(merged);
     }
-
     setDayFinished(true);
     const status = "Day finished at " + time + " · Total: " + gpsTotal + " mi";
     setDayStatus(status);
@@ -376,7 +449,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const goToToday = () => { setSelectedDate(new Date()); setFilter("All"); };
   const handleNavigate = (jobId) => { if (location) setNavStart((prev) => ({ ...prev, [jobId]: { lat: location.lat, lng: location.lng } })); };
 
-  const handleCheckIn = async (jobId, jobTitle) => {
+  // auto = true when called from geofence (suppress mileage prompt if no lastPos)
+  const handleCheckIn = async (jobId, jobTitle, auto = false) => {
     const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
     setCheckedIn((prev) => ({ ...prev, [jobId]: time }));
@@ -387,16 +461,16 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     if (dayStarted && lastPositionRef.current && accuracyOk) {
       miles = await getDrivingMiles(lastPositionRef.current.lat, lastPositionRef.current.lng, currentPos.lat, currentPos.lng);
       if (miles > 0.05 && miles < 150) saveMileage((prev) => [...prev, { jobId, jobTitle, from: prev.length === 0 ? "Start" : prev[prev.length - 1].jobTitle, miles, time, checkIn: time }]);
-    } else if (navStart[jobId] && livePos && accuracyOk) {
+    } else if (!auto && navStart[jobId] && livePos && accuracyOk) {
       miles = await getDrivingMiles(navStart[jobId].lat, navStart[jobId].lng, livePos.lat, livePos.lng);
       if (miles > 0.05 && miles < 150) saveMileage((prev) => [...prev, { jobId, jobTitle, from: prev.length === 0 ? "Start" : prev[prev.length - 1].jobTitle, miles, time, checkIn: time }]);
     }
     if (livePos) setLastPos({ lat: livePos.lat, lng: livePos.lng });
-    await appendToLog([date, jobTitle, time, miles > 0.05 && miles < 150 ? miles : "", invoicedJobs[jobId] ? "Yes" : "No", ""]);
+    await appendToLog([date, jobTitle + (auto ? " (auto)" : ""), time, miles > 0.05 && miles < 150 ? miles : "", invoicedJobs[jobId] ? "Yes" : "No", auto ? "Auto check-in" : ""]);
     pendingStatusRef.current[jobId + "__ci"] = { status: "checkedIn", extra: time };
     flushStatusSaves();
-    const job = jobs.find(j => normalizeId(j.id) === jobId);
-    updateCalendarEvent(job, { checkIn: time });
+    const job = jobsRef.current.find(j => normalizeId(j.id) === jobId);
+    if (job) updateCalendarEvent(job, { checkIn: time });
   };
 
   const handleCheckOut = async (jobId, jobTitle) => {
@@ -690,10 +764,12 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         !loading && !statusLoading && !error && filtered.length === 0 && React.createElement("div", { style: styles.message }, "No jobs found for this day."),
         !loading && !statusLoading && filtered.map(job => {
           const nid = normalizeId(job.id);
+          const isNearby = geofenceStatus[nid] === "nearby";
           return React.createElement(JobCard, {
             key: job.id, job, location, status: getStatus(job),
             checkedIn: checkedIn[nid], checkedOut: checkedOut[nid], completed: completed[nid],
             invoiceUrl: invoicedJobs[nid],
+            isNearby,
             onCheckIn: () => handleCheckIn(nid, job.title),
             onCheckOut: () => handleCheckOut(nid, job.title),
             onComplete: () => handleComplete(nid),

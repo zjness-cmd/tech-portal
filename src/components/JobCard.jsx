@@ -41,6 +41,7 @@ async function checkStreetViewExists(location) {
 export default function JobCard({
   job, location, status, checkedIn, checkedOut, completed, invoiceUrl,
   onCheckIn, onCheckOut, onComplete, onNavigate, onUndo, onInvoice, onMissed,
+  isNearby,
 }) {
   const [imgFailed, setImgFailed] = useState(false);
   const [imgChecked, setImgChecked] = useState(false);
@@ -118,6 +119,11 @@ export default function JobCard({
         checkedIn  && React.createElement("span", { style: s.timeChip }, "🟢 In: "  + checkedIn),
         checkedOut && React.createElement("span", { style: s.timeChip }, "🔴 Out: " + checkedOut)
       ),
+
+      // ── Nearby banner ───────────────────────────────────────────────────
+      isNearby && !checkedIn && !completed && React.createElement("div", {
+        style: { fontSize: 12, color: "#27500A", background: "#EAF3DE", borderRadius: 6, padding: "5px 10px", marginBottom: 6, fontWeight: 500 }
+      }, "📍 You're nearby — auto check-in in ~1 min"),
 
       // ── Action buttons ──────────────────────────────────────────────────
       React.createElement("div", { style: s.actionRow },
