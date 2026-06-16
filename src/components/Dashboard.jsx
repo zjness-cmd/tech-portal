@@ -535,6 +535,14 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     setCompleted(prev => ({ ...prev, [jobId]: true }));
     pendingStatusRef.current[jobId + "__done"] = { status: "missed", extra: jobTitle };
     flushStatusSaves();
+    // Add ⚠️ to calendar event title so it's visible in Google Calendar
+    if (jobCalendarId && jobEventId) {
+      fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(jobCalendarId) + "/events/" + jobEventId, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
+        body: JSON.stringify({ summary: "⚠️ MISSED - " + jobTitle }),
+      }).catch(() => {});
+    }
   };
 
   const handleReschedule = async (missed, targetDateStr) => {
@@ -550,7 +558,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       const duration = origEnd - origStart;
       const newStart = new Date(targetDate); newStart.setHours(origStart.getHours(), origStart.getMinutes(), 0, 0);
       const newEnd = new Date(newStart.getTime() + duration);
-      await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(missed.calendarId) + "/events/" + missed.eventId, { method: "PATCH", headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken }, body: JSON.stringify({ start: { dateTime: newStart.toISOString() }, end: { dateTime: newEnd.toISOString() } }) });
+      await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(missed.calendarId) + "/events/" + missed.eventId, { method: "PATCH", headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken }, body: JSON.stringify({ start: { dateTime: newStart.toISOString() }, end: { dateTime: newEnd.toISOString() }, summary: missed.jobTitle }) });
       const updated = missedJobs.filter(m => m.jobId !== missed.jobId);
       saveMissedJobs(updated);
       setRescheduleTarget(prev => { const n = {...prev}; delete n[missed.jobId]; return n; });
