@@ -430,6 +430,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     setDayStarted(true);
     setDayStatus("Day started at " + time);
     dbg("🚗 Day started at " + time);
+    // Add "Home" entry to mileage log so start location/time is visible
+    saveMileage([{ jobId: "__home__", jobTitle: "🏠 Home (Start)", from: "", miles: 0, time, checkIn: time }]);
     await appendToLog([date, "🏠 Start Day (Home)", time, "0", "", "Departed home"]);
     pendingStatusRef.current["__DAY_STARTED__"] = { status: "started", extra: time };
     await flushStatusSaves();
@@ -770,8 +772,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
                   duration && React.createElement("span", { style: { fontSize: 11, color: "#888" } }, "⏱ " + (m.checkIn || "") + (m.checkOut ? " – " + m.checkOut : "") + " (" + duration + ")")
                 ),
                 React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
-                  React.createElement("span", { style: styles.mileageVal }, m.miles + " mi"),
-                  React.createElement("button", { onClick: () => saveMileage(prev => prev.filter((_, idx) => idx !== i)), style: { fontSize: 14, color: "#c0392b", background: "none", border: "none", cursor: "pointer", padding: "2px 6px", fontWeight: 700, lineHeight: 1 }, title: "Remove this leg" }, "✕")
+                  React.createElement("span", { style: styles.mileageVal }, m.miles > 0 ? m.miles + " mi" : "—"),
+                  m.jobId !== "__home__" && React.createElement("button", { onClick: () => saveMileage(prev => prev.filter((_, idx) => idx !== i)), style: { fontSize: 14, color: "#c0392b", background: "none", border: "none", cursor: "pointer", padding: "2px 6px", fontWeight: 700, lineHeight: 1 }, title: "Remove this leg" }, "✕")
                 )
               );
             }),
