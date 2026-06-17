@@ -430,9 +430,23 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     setDayStarted(true);
     setDayStatus("Day started at " + time);
     dbg("🚗 Day started at " + time);
-    // Add "Home" entry to mileage log so start location/time is visible
-    saveMileage([{ jobId: "__home__", jobTitle: "🏠 Home (Start)", from: "", miles: 0, time, checkIn: time }]);
-    await appendToLog([date, "🏠 Start Day (Home)", time, "0", "", "Departed home"]);
+    // Reverse geocode start location
+    let startLabel = "📍 Start";
+    if (livePos && MAPS_API_KEY) {
+      try {
+        const geoRes = await fetch("https://maps.googleapis.com/maps/api/geocode/json?" + new URLSearchParams({ latlng: livePos.lat + "," + livePos.lng, key: MAPS_API_KEY, result_type: "street_address|sublocality|locality" }));
+        const geoData = await geoRes.json();
+        if (geoData.status === "OK" && geoData.results[0]) {
+          const parts = geoData.results[0].address_components;
+          const streetNum = parts.find(p => p.types.includes("street_number"))?.short_name || "";
+          const street = parts.find(p => p.types.includes("route"))?.short_name || "";
+          const city = parts.find(p => p.types.includes("locality"))?.short_name || "";
+          startLabel = "📍 " + [streetNum, street, city].filter(Boolean).join(" ");
+        }
+      } catch {}
+    }
+    saveMileage([{ jobId: "__home__", jobTitle: startLabel, from: "", miles: 0, time, checkIn: time }]);
+    await appendToLog([date, "🚗 Start Day (" + startLabel + ")", time, "0", "", "Departed"]);
     pendingStatusRef.current["__DAY_STARTED__"] = { status: "started", extra: time };
     await flushStatusSaves();
   };
