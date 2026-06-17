@@ -10,6 +10,7 @@ const STATUS_SHEET_NAME = "Job Status";
 const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
 const GEOFENCE_RADIUS_MILES = 0.09;
 const GEOFENCE_DWELL_MS = 60 * 1000;
+const APP_VERSION = "1.0.0";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -720,7 +721,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       React.createElement("div", { style: styles.topbar },
         React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
           React.createElement("button", { style: styles.hamburgerBtn, onClick: () => setMenuOpen(true) }, React.createElement("span", { style: styles.hamburgerLine }), React.createElement("span", { style: styles.hamburgerLine }), React.createElement("span", { style: styles.hamburgerLine })),
-          React.createElement("div", null, React.createElement("div", { style: styles.name }, user.name), React.createElement("div", { style: styles.email }, user.email))
+          React.createElement("div", null,
+            React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
+              React.createElement("div", { style: styles.name }, user.name),
+              React.createElement("span", { style: { fontSize: 10, color: "#aaa", background: "#f5f5f3", padding: "2px 6px", borderRadius: 6, fontWeight: 500 } }, "v" + APP_VERSION)
+            ),
+            React.createElement("div", { style: styles.email }, user.email)
+          )
         ),
         React.createElement("div", { style: { display: "flex", gap: 10, alignItems: "center" } },
           React.createElement("button", { style: styles.refreshBtn, onClick: refresh }, "↻"),
