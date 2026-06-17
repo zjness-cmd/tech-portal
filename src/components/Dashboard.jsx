@@ -123,6 +123,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const checkedInRef = useRef(checkedIn);
   const completedRef = useRef(completed);
   const jobsRef = useRef([]);
+  const dayStartedRef = useRef(false);
+  const dayFinishedRef = useRef(false);
   // ── KEY FIX: keep accessToken in a ref so async functions always get the latest value ──
   const accessTokenRef = useRef(accessToken);
 
@@ -138,6 +140,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   useEffect(() => { checkedInRef.current = checkedIn; }, [checkedIn]);
   useEffect(() => { completedRef.current = completed; }, [completed]);
   useEffect(() => { jobsRef.current = jobs; }, [jobs]);
+  useEffect(() => { dayStartedRef.current = dayStarted; }, [dayStarted]);
+  useEffect(() => { dayFinishedRef.current = dayFinished; }, [dayFinished]);
   useEffect(() => {
     accessTokenRef.current = accessToken;
     if (accessToken) dbg("✅ accessToken updated (" + accessToken.slice(0, 10) + "...)");
@@ -163,7 +167,49 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   useEffect(() => {
     if (!navigator.geolocation) { setLocationError("GPS not supported."); return; }
     const watchId = navigator.geolocation.watchPosition(
-      (pos) => { const c = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: Math.round(pos.coords.accuracy) }; locationRef.current = c; setLocation(c); setLocationError(null); },
+      (pos) => {
+        const c = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: Math.round(pos.coords.accuracy) };
+        locationRef.current = c;
+        setLocation(c);
+        setLocationError(null);
+
+        // ── Geofence check on every GPS update ──────────────────────────
+        if (!pos.coords.accuracy || pos.coords.accuracy > 100) return; // skip low accuracy
+        const dayStartedNow = dayStartedRef.current;
+        const dayFinishedNow = dayFinishedRef.current;
+        if (!dayStartedNow || dayFinishedNow) return;
+        const currentJobs = jobsRef.current;
+        const currentCheckedIn = checkedInRef.current;
+        const currentCompleted = completedRef.current;
+        const nowMs = Date.now();
+        currentJobs.forEach(async (job) => {
+          const nid = normalizeId(job.id);
+          if (currentCheckedIn[nid] || currentCompleted[nid]) {
+            if (geofenceDwellRef.current[nid]) { delete geofenceDwellRef.current[nid]; setGeofenceStatus(prev => { const n = {...prev}; delete n[nid]; return n; }); }
+            return;
+          }
+          const coords = jobCoordsRef.current[nid];
+          if (!coords) return;
+          const dist = calcMiles(c.lat, c.lng, coords.lat, coords.lng);
+          if (dist <= GEOFENCE_RADIUS_MILES) {
+            if (!geofenceDwellRef.current[nid]) {
+              geofenceDwellRef.current[nid] = nowMs;
+              setGeofenceStatus(prev => ({ ...prev, [nid]: "nearby" }));
+              dbg("📍 Near " + job.title + " (" + Math.round(dist * 5280) + " ft away)");
+            } else if (nowMs - geofenceDwellRef.current[nid] >= GEOFENCE_DWELL_MS) {
+              delete geofenceDwellRef.current[nid];
+              setGeofenceStatus(prev => { const n = {...prev}; delete n[nid]; return n; });
+              dbg("✅ Auto check-in: " + job.title);
+              handleCheckIn(nid, job.title, true);
+            }
+          } else {
+            if (geofenceDwellRef.current[nid]) {
+              delete geofenceDwellRef.current[nid];
+              setGeofenceStatus(prev => { const n = {...prev}; delete n[nid]; return n; });
+            }
+          }
+        });
+      },
       () => setLocationError("Location access denied."),
       { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
     );
@@ -199,6 +245,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     trackIntervalRef.current = setInterval(() => {
       const pos = locationRef.current;
       if (!pos || pos.accuracy > 300) return;
+      // ── GPS track only ──
       setGpsTrack(prev => {
         if (prev.length > 0) { const last = prev[prev.length - 1]; if (calcMiles(last[0], last[1], pos.lat, pos.lng) < 0.01) return prev; }
         const next = [...prev, [parseFloat(pos.lat.toFixed(5)), parseFloat(pos.lng.toFixed(5)), Date.now()]];
@@ -207,32 +254,6 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
         saveTimerRef.current = setTimeout(flushStatusSaves, 2000);
         return next;
-      });
-      const currentJobs = jobsRef.current;
-      const currentCheckedIn = checkedInRef.current;
-      const currentCompleted = completedRef.current;
-      const nowMs = Date.now();
-      currentJobs.forEach(async (job) => {
-        const nid = normalizeId(job.id);
-        if (currentCheckedIn[nid] || currentCompleted[nid]) {
-          if (geofenceDwellRef.current[nid]) { delete geofenceDwellRef.current[nid]; setGeofenceStatus(prev => { const n = {...prev}; delete n[nid]; return n; }); }
-          return;
-        }
-        const coords = jobCoordsRef.current[nid];
-        if (!coords) return;
-        const dist = calcMiles(pos.lat, pos.lng, coords.lat, coords.lng);
-        if (dist <= GEOFENCE_RADIUS_MILES) {
-          if (!geofenceDwellRef.current[nid]) {
-            geofenceDwellRef.current[nid] = nowMs;
-            setGeofenceStatus(prev => ({ ...prev, [nid]: "nearby" }));
-          } else if (nowMs - geofenceDwellRef.current[nid] >= GEOFENCE_DWELL_MS) {
-            delete geofenceDwellRef.current[nid];
-            setGeofenceStatus(prev => { const n = {...prev}; delete n[nid]; return n; });
-            handleCheckIn(nid, job.title, true);
-          }
-        } else {
-          if (geofenceDwellRef.current[nid]) { delete geofenceDwellRef.current[nid]; setGeofenceStatus(prev => { const n = {...prev}; delete n[nid]; return n; }); }
-        }
       });
     }, 30 * 1000);
     return () => clearInterval(trackIntervalRef.current);
