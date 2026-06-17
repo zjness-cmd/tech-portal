@@ -7,8 +7,8 @@ const HOME = { lat: 45.292159, lng: -93.683355 };
 const LOG_SHEET_NAME = "TechPortal Job Log 2026";
 const STATUS_SHEET_NAME = "Job Status";
 const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
-const GEOFENCE_RADIUS_MILES = 0.09; // ~150 meters
-const GEOFENCE_DWELL_MS = 60 * 1000; // 60 seconds dwell before auto check-in
+const GEOFENCE_RADIUS_MILES = 0.09;
+const GEOFENCE_DWELL_MS = 60 * 1000;
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -49,17 +49,12 @@ async function getDrivingMiles(fromLat, fromLng, toLat, toLng) {
         if (status === "OK" && res.rows[0].elements[0].status === "OK") {
           const meters = res.rows[0].elements[0].distance.value;
           resolve(Math.round((meters / 1609.344) * 10) / 10);
-        } else {
-          resolve(straightLine);
-        }
+        } else { resolve(straightLine); }
       });
     });
-  } catch (e) {
-    return straightLine;
-  }
+  } catch (e) { return straightLine; }
 }
 
-// Geocode an address string to {lat, lng} using Google Geocoding API
 async function geocodeAddress(address) {
   if (!address || !MAPS_API_KEY) return null;
   try {
@@ -109,7 +104,9 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [modalType, setModalType] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [statusLoading, setStatusLoading] = useState(true);
-  const [geofenceStatus, setGeofenceStatus] = useState({}); // jobId -> "nearby" | null
+  const [geofenceStatus, setGeofenceStatus] = useState({});
+  const [debugLog, setDebugLog] = useState([]);
+  const [showDebug, setShowDebug] = useState(false);
 
   const startPosRef = useRef(null);
   const lastPositionRef = useRef((() => { try { const s = localStorage.getItem("techportal_lastPos"); return s ? JSON.parse(s) : null; } catch { return null; } })());
@@ -119,19 +116,31 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const pendingStatusRef = useRef({});
   const saveTimerRef = useRef(null);
   const trackIntervalRef = useRef(null);
-  const jobCoordsRef = useRef({}); // cache: jobId -> {lat, lng}
-  const geofenceDwellRef = useRef({}); // jobId -> timestamp when first entered geofence
+  const jobCoordsRef = useRef({});
+  const geofenceDwellRef = useRef({});
   const checkedInRef = useRef(checkedIn);
   const completedRef = useRef(completed);
   const jobsRef = useRef([]);
+  // ── KEY FIX: keep accessToken in a ref so async functions always get the latest value ──
+  const accessTokenRef = useRef(accessToken);
+
+  const dbg = (msg, type = "info") => {
+    const entry = { time: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }), msg, type };
+    setDebugLog(prev => [entry, ...prev].slice(0, 50));
+    console.log("[TechPortal]", msg);
+  };
 
   const [gpsTrack, setGpsTrack] = useState(() => { try { const k = "gpsTrack_" + new Date().toDateString(); const s = localStorage.getItem(k); return s ? JSON.parse(s) : []; } catch { return []; } });
   const { jobs, loading, error, refresh } = useCalendarJobs(accessToken, selectedDate);
 
-  // Keep refs in sync with state for use inside intervals
   useEffect(() => { checkedInRef.current = checkedIn; }, [checkedIn]);
   useEffect(() => { completedRef.current = completed; }, [completed]);
   useEffect(() => { jobsRef.current = jobs; }, [jobs]);
+  useEffect(() => {
+    accessTokenRef.current = accessToken;
+    if (accessToken) dbg("✅ accessToken updated (" + accessToken.slice(0, 10) + "...)");
+    else dbg("⚠️ accessToken is null/undefined", "warn");
+  }, [accessToken]);
 
   useImperativeHandle(ref, () => ({ flushPending: () => flushStatusSaves() }));
 
@@ -172,7 +181,6 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   useEffect(() => { if (!accessToken) return; fetchMonthlyCount(accessToken); }, [accessToken, selectedDate]);
   useEffect(() => { if (!accessToken || loading) return; loadJobStatuses(); }, [accessToken, selectedDate, loading]);
 
-  // Geocode job addresses when jobs load and day is started
   useEffect(() => {
     if (!jobs.length || !dayStarted || !isToday) return;
     jobs.forEach(async (job) => {
@@ -189,8 +197,6 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     trackIntervalRef.current = setInterval(() => {
       const pos = locationRef.current;
       if (!pos || pos.accuracy > 300) return;
-
-      // ── GPS track ──
       setGpsTrack(prev => {
         if (prev.length > 0) { const last = prev[prev.length - 1]; if (calcMiles(last[0], last[1], pos.lat, pos.lng) < 0.01) return prev; }
         const next = [...prev, [parseFloat(pos.lat.toFixed(5)), parseFloat(pos.lng.toFixed(5)), Date.now()]];
@@ -200,16 +206,12 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         saveTimerRef.current = setTimeout(flushStatusSaves, 2000);
         return next;
       });
-
-      // ── Geofence check ──
       const currentJobs = jobsRef.current;
       const currentCheckedIn = checkedInRef.current;
       const currentCompleted = completedRef.current;
-      const now = Date.now();
-
+      const nowMs = Date.now();
       currentJobs.forEach(async (job) => {
         const nid = normalizeId(job.id);
-        // Skip if already checked in or completed
         if (currentCheckedIn[nid] || currentCompleted[nid]) {
           if (geofenceDwellRef.current[nid]) { delete geofenceDwellRef.current[nid]; setGeofenceStatus(prev => { const n = {...prev}; delete n[nid]; return n; }); }
           return;
@@ -218,25 +220,18 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         if (!coords) return;
         const dist = calcMiles(pos.lat, pos.lng, coords.lat, coords.lng);
         if (dist <= GEOFENCE_RADIUS_MILES) {
-          // Within geofence
           if (!geofenceDwellRef.current[nid]) {
-            geofenceDwellRef.current[nid] = now;
+            geofenceDwellRef.current[nid] = nowMs;
             setGeofenceStatus(prev => ({ ...prev, [nid]: "nearby" }));
-          } else if (now - geofenceDwellRef.current[nid] >= GEOFENCE_DWELL_MS) {
-            // Dwell time met — auto check in
+          } else if (nowMs - geofenceDwellRef.current[nid] >= GEOFENCE_DWELL_MS) {
             delete geofenceDwellRef.current[nid];
             setGeofenceStatus(prev => { const n = {...prev}; delete n[nid]; return n; });
-            handleCheckIn(nid, job.title, true); // true = auto
+            handleCheckIn(nid, job.title, true);
           }
         } else {
-          // Left geofence — reset dwell
-          if (geofenceDwellRef.current[nid]) {
-            delete geofenceDwellRef.current[nid];
-            setGeofenceStatus(prev => { const n = {...prev}; delete n[nid]; return n; });
-          }
+          if (geofenceDwellRef.current[nid]) { delete geofenceDwellRef.current[nid]; setGeofenceStatus(prev => { const n = {...prev}; delete n[nid]; return n; }); }
         }
       });
-
     }, 30 * 1000);
     return () => clearInterval(trackIntervalRef.current);
   }, [dayStarted, dayFinished, isToday]);
@@ -270,42 +265,48 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const setAndCacheLogSheetId = (id) => { if (id) localStorage.setItem("techportal_logSheetId", id); setLogSheetId(id); };
 
   const getOrCreateLogSheet = async () => {
+    const token = accessTokenRef.current;
+    if (!token) { dbg("❌ getOrCreateLogSheet: no token", "error"); return null; }
     if (logSheetId) return logSheetId;
     try {
-      const searchRes = await fetch("https://www.googleapis.com/drive/v3/files?q=name='" + LOG_SHEET_NAME + "'+and+mimeType='application/vnd.google-apps.spreadsheet'&fields=files(id,name)", { headers: { Authorization: "Bearer " + accessToken } });
+      const searchRes = await fetch("https://www.googleapis.com/drive/v3/files?q=name='" + LOG_SHEET_NAME + "'+and+mimeType='application/vnd.google-apps.spreadsheet'&fields=files(id,name)", { headers: { Authorization: "Bearer " + token } });
       const searchData = await searchRes.json();
       if (searchData.files && searchData.files.length > 0) { const id = searchData.files[0].id; setAndCacheLogSheetId(id); return id; }
-      const createRes = await fetch("https://sheets.googleapis.com/v4/spreadsheets", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken }, body: JSON.stringify({ properties: { title: LOG_SHEET_NAME }, sheets: [{ properties: { title: "Job Log" } }] }) });
+      const createRes = await fetch("https://sheets.googleapis.com/v4/spreadsheets", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ properties: { title: LOG_SHEET_NAME }, sheets: [{ properties: { title: "Job Log" } }] }) });
       const createData = await createRes.json();
       const newId = createData.spreadsheetId;
-      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + newId + "/values/A1:F1?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken }, body: JSON.stringify({ values: [["Date", "Job", "Check-in Time", "Distance (mi)", "Invoice Sent", "Notes"]] }) });
+      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + newId + "/values/A1:F1?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [["Date", "Job", "Check-in Time", "Distance (mi)", "Invoice Sent", "Notes"]] }) });
       setAndCacheLogSheetId(newId);
       return newId;
-    } catch (e) { console.error("Log sheet error:", e); return null; }
+    } catch (e) { dbg("❌ Log sheet error: " + e.message, "error"); return null; }
   };
 
   const ensureStatusTab = async (sheetId) => {
-    const infoRes = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "?fields=sheets.properties", { headers: { Authorization: "Bearer " + accessToken } });
+    const token = accessTokenRef.current;
+    const infoRes = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "?fields=sheets.properties", { headers: { Authorization: "Bearer " + token } });
     const info = await infoRes.json();
     const hasTab = (info.sheets || []).find(s => s.properties.title === STATUS_SHEET_NAME);
     if (!hasTab) {
-      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + ":batchUpdate", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken }, body: JSON.stringify({ requests: [{ addSheet: { properties: { title: STATUS_SHEET_NAME } } }] }) });
-      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A1:D1?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken }, body: JSON.stringify({ values: [["Date", "Job ID", "Status", "Extra"]] }) });
+      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + ":batchUpdate", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ requests: [{ addSheet: { properties: { title: STATUS_SHEET_NAME } } }] }) });
+      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A1:D1?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [["Date", "Job ID", "Status", "Extra"]] }) });
     }
   };
 
   const loadJobStatuses = async (isRetry = false) => {
+    const token = accessTokenRef.current;
     setStatusLoading(true);
+    dbg("📥 Loading job statuses...");
     try {
       const sheetId = await getOrCreateLogSheet();
       if (!sheetId) { setStatusLoading(false); return; }
       await ensureStatusTab(sheetId);
       const dateKey = selectedDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-      const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A:D", { headers: { Authorization: "Bearer " + accessToken } });
-      if (!res.ok) { localStorage.removeItem("techportal_logSheetId"); setLogSheetId(null); setStatusLoading(false); return; }
+      const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A:D", { headers: { Authorization: "Bearer " + token } });
+      if (!res.ok) { dbg("❌ Sheets read failed: " + res.status, "error"); localStorage.removeItem("techportal_logSheetId"); setLogSheetId(null); setStatusLoading(false); return; }
       const data = await res.json();
       const rows = data.values || [];
       const todayRows = rows.filter(r => r[0] === dateKey);
+      dbg("📊 Loaded " + todayRows.length + " rows for " + dateKey);
       if (rows.length <= 1 && !isRetry && localStorage.getItem("techportal_logSheetId")) {
         localStorage.removeItem("techportal_logSheetId"); setLogSheetId(null); setStatusLoading(false); loadJobStatuses(true); return;
       }
@@ -333,20 +334,29 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       if (loadedStarted) { setDayStarted(true); if (!lastPositionRef.current && locationRef.current) setLastPos({ lat: locationRef.current.lat, lng: locationRef.current.lng }); try { const sp = localStorage.getItem("techportal_startPos"); if (sp) startPosRef.current = JSON.parse(sp); } catch {} }
       if (loadedFinished) setDayFinished(true);
       if (loadedStatus) setDayStatus(loadedStatus);
-    } catch (e) { console.error("[TechPortal] Could not load job statuses:", e); }
+      dbg("✅ Statuses loaded: " + Object.keys(newCI).length + " CI, " + Object.keys(newCO).length + " CO, " + Object.keys(newComp).length + " done");
+    } catch (e) { dbg("❌ loadJobStatuses error: " + e.message, "error"); }
     setStatusLoading(false);
   };
 
   const flushStatusSaves = async (retryCount = 0) => {
+    const token = accessTokenRef.current;
     const pending = { ...pendingStatusRef.current };
     pendingStatusRef.current = {};
     if (Object.keys(pending).length === 0) return;
+    dbg("💾 Flushing " + Object.keys(pending).length + " pending saves (token: " + (token ? token.slice(0,8) + "..." : "MISSING") + ")");
+    if (!token) { dbg("❌ No token — aborting flush", "error"); Object.assign(pendingStatusRef.current, pending); return; }
     try {
       const sheetId = await getOrCreateLogSheet();
-      if (!sheetId) return;
+      if (!sheetId) { dbg("❌ No sheet ID", "error"); return; }
       const dateKey = selectedDateRef.current.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-      const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A:D", { headers: { Authorization: "Bearer " + accessToken } });
-      if (res.status === 401) { if (retryCount < 3) { Object.assign(pendingStatusRef.current, pending); setTimeout(() => flushStatusSaves(retryCount + 1), (retryCount + 1) * 2000); } else { Object.assign(pendingStatusRef.current, pending); } return; }
+      const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A:D", { headers: { Authorization: "Bearer " + token } });
+      if (res.status === 401) {
+        dbg("⚠️ 401 on flush (retry " + retryCount + ")", "warn");
+        if (retryCount < 3) { Object.assign(pendingStatusRef.current, pending); setTimeout(() => flushStatusSaves(retryCount + 1), (retryCount + 1) * 2000); }
+        else { Object.assign(pendingStatusRef.current, pending); }
+        return;
+      }
       const data = await res.json();
       const rows = data.values || [];
       const existingIndex = {};
@@ -357,21 +367,31 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         if (existingIndex[jobId] !== undefined) updateRequests.push({ range: "'" + STATUS_SHEET_NAME + "'!A" + (existingIndex[jobId] + 1) + ":D" + (existingIndex[jobId] + 1), values: [newRow] });
         else appendRows.push(newRow);
       });
-      if (updateRequests.length > 0) { const r = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values:batchUpdate", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken }, body: JSON.stringify({ valueInputOption: "USER_ENTERED", data: updateRequests }) }); if (!r.ok && retryCount < 3) { Object.assign(pendingStatusRef.current, pending); setTimeout(() => flushStatusSaves(retryCount + 1), (retryCount + 1) * 2000); return; } }
-      if (appendRows.length > 0) { const r = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A:D:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken }, body: JSON.stringify({ values: appendRows }) }); if (!r.ok && retryCount < 3) { Object.assign(pendingStatusRef.current, pending); setTimeout(() => flushStatusSaves(retryCount + 1), (retryCount + 1) * 2000); return; } }
-    } catch (e) { console.error("[TechPortal] flush error:", e); if (retryCount < 3) { Object.assign(pendingStatusRef.current, pending); setTimeout(() => flushStatusSaves(retryCount + 1), (retryCount + 1) * 2000); } }
+      if (updateRequests.length > 0) {
+        const r = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values:batchUpdate", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ valueInputOption: "USER_ENTERED", data: updateRequests }) });
+        if (!r.ok) { dbg("❌ batchUpdate failed: " + r.status, "error"); if (retryCount < 3) { Object.assign(pendingStatusRef.current, pending); setTimeout(() => flushStatusSaves(retryCount + 1), (retryCount + 1) * 2000); return; } }
+        else dbg("✅ Updated " + updateRequests.length + " rows");
+      }
+      if (appendRows.length > 0) {
+        const r = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A:D:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: appendRows }) });
+        if (!r.ok) { dbg("❌ append failed: " + r.status, "error"); if (retryCount < 3) { Object.assign(pendingStatusRef.current, pending); setTimeout(() => flushStatusSaves(retryCount + 1), (retryCount + 1) * 2000); return; } }
+        else dbg("✅ Appended " + appendRows.length + " rows");
+      }
+    } catch (e) { dbg("❌ flush error: " + e.message, "error"); if (retryCount < 3) { Object.assign(pendingStatusRef.current, pending); setTimeout(() => flushStatusSaves(retryCount + 1), (retryCount + 1) * 2000); } }
   };
 
   const appendToLog = async (row) => {
+    const token = accessTokenRef.current;
     const sheetId = await getOrCreateLogSheet();
-    if (!sheetId) return;
-    await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/A:F:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken }, body: JSON.stringify({ values: [row] }) });
+    if (!sheetId || !token) return;
+    await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/A:F:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [row] }) });
   };
 
   const updateCalendarEvent = async (job, fields) => {
-    if (!job?.id || !job?.calendarId) return;
+    const token = accessTokenRef.current;
+    if (!job?.id || !job?.calendarId || !token) return;
     try {
-      const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(job.calendarId) + "/events/" + job.id, { headers: { Authorization: "Bearer " + accessToken } });
+      const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(job.calendarId) + "/events/" + job.id, { headers: { Authorization: "Bearer " + token } });
       if (!res.ok) return;
       const event = await res.json();
       const stripped = (event.description || "").replace(/\n?---TechPortal---[\s\S]*?---End TechPortal---/g, "").trimEnd();
@@ -382,7 +402,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       if (fields.invoiceUrl) lines.push("📄 Invoice: " + fields.invoiceUrl);
       lines.push("---End TechPortal---");
       const newDesc = stripped ? stripped + "\n\n" + lines.join("\n") : lines.join("\n");
-      await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(job.calendarId) + "/events/" + job.id, { method: "PATCH", headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken }, body: JSON.stringify({ description: newDesc }) });
+      await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(job.calendarId) + "/events/" + job.id, { method: "PATCH", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ description: newDesc }) });
     } catch (e) { console.warn("Could not update calendar event:", e); }
   };
 
@@ -407,6 +427,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     }
     setDayStarted(true);
     setDayStatus("Day started at " + time);
+    dbg("🚗 Day started at " + time);
     await appendToLog([date, "🏠 Start Day (Home)", time, "0", "", "Departed home"]);
     pendingStatusRef.current["__DAY_STARTED__"] = { status: "started", extra: time };
     await flushStatusSaves();
@@ -429,16 +450,14 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     const scheduledJobs = jobs.filter(j => getStatus(j) === "Scheduled");
     if (scheduledJobs.length > 0) {
       const existing = JSON.parse(localStorage.getItem("techportal_missedJobs") || "[]");
-      const newMissed = scheduledJobs.map(j => ({
-        jobId: normalizeId(j.id), jobTitle: j.title, jobLocation: j.location,
-        calendarId: j.calendarId, eventId: j.id, date: todayDateStr, missedAt: Date.now(),
-      }));
+      const newMissed = scheduledJobs.map(j => ({ jobId: normalizeId(j.id), jobTitle: j.title, jobLocation: j.location, calendarId: j.calendarId, eventId: j.id, date: todayDateStr, missedAt: Date.now() }));
       const merged = [...existing.filter(m => !newMissed.find(n => n.jobId === m.jobId)), ...newMissed];
       saveMissedJobs(merged);
     }
     setDayFinished(true);
     const status = "Day finished at " + time + " · Total: " + gpsTotal + " mi";
     setDayStatus(status);
+    dbg("🏁 " + status);
     await appendToLog([date, "📍 Finish Day", time, "", "", "Total day: " + gpsTotal + " mi"]);
     pendingStatusRef.current["__DAY_FINISHED__"] = { status: "finished", extra: status };
     await flushStatusSaves();
@@ -449,10 +468,10 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const goToToday = () => { setSelectedDate(new Date()); setFilter("All"); };
   const handleNavigate = (jobId) => { if (location) setNavStart((prev) => ({ ...prev, [jobId]: { lat: location.lat, lng: location.lng } })); };
 
-  // auto = true when called from geofence (suppress mileage prompt if no lastPos)
   const handleCheckIn = async (jobId, jobTitle, auto = false) => {
     const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    dbg("📍 Check-in: " + jobTitle + (auto ? " (auto)" : ""));
     setCheckedIn((prev) => ({ ...prev, [jobId]: time }));
     const livePos = locationRef.current;
     const currentPos = livePos || lastPositionRef.current || startPosRef.current || HOME;
@@ -476,6 +495,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const handleCheckOut = async (jobId, jobTitle) => {
     const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    dbg("🚪 Check-out: " + jobTitle);
     setCheckedOut((prev) => ({ ...prev, [jobId]: time }));
     const livePos = locationRef.current;
     if (livePos) setLastPos({ lat: livePos.lat, lng: livePos.lng });
@@ -488,6 +508,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   };
 
   const handleComplete = (jobId) => {
+    dbg("✅ Complete: " + jobId);
     setCompleted((prev) => ({ ...prev, [jobId]: true }));
     pendingStatusRef.current[jobId + "__done"] = { status: "completed", extra: checkedIn[jobId] || "" };
     flushStatusSaves();
@@ -529,28 +550,29 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const saveMissedJobs = (jobs) => { setMissedJobs(jobs); try { localStorage.setItem("techportal_missedJobs", JSON.stringify(jobs)); } catch {} };
 
   const handleMissed = (jobId, jobTitle, jobLocation, jobCalendarId, jobEventId) => {
+    const token = accessTokenRef.current;
     const missed = { jobId, jobTitle, jobLocation, calendarId: jobCalendarId, eventId: jobEventId, date: selectedDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }), missedAt: Date.now() };
     const existing = JSON.parse(localStorage.getItem("techportal_missedJobs") || "[]");
     saveMissedJobs([...existing.filter(m => m.jobId !== jobId), missed]);
     setCompleted(prev => ({ ...prev, [jobId]: true }));
     pendingStatusRef.current[jobId + "__done"] = { status: "missed", extra: jobTitle };
     flushStatusSaves();
-    // Add ⚠️ to calendar event title so it's visible in Google Calendar
-    if (jobCalendarId && jobEventId) {
+    if (jobCalendarId && jobEventId && token) {
       fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(jobCalendarId) + "/events/" + jobEventId, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
         body: JSON.stringify({ summary: "⚠️ MISSED - " + jobTitle }),
       }).catch(() => {});
     }
   };
 
   const handleReschedule = async (missed, targetDateStr) => {
+    const token = accessTokenRef.current;
     if (!missed.calendarId || !missed.eventId) { alert("Can't reschedule — no calendar event linked."); return; }
     if (!targetDateStr) { alert("Please pick a date first."); return; }
     try {
       const targetDate = new Date(targetDateStr + "T12:00:00");
-      const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(missed.calendarId) + "/events/" + missed.eventId, { headers: { Authorization: "Bearer " + accessToken } });
+      const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(missed.calendarId) + "/events/" + missed.eventId, { headers: { Authorization: "Bearer " + token } });
       if (!res.ok) { alert("Could not find the original calendar event."); return; }
       const event = await res.json();
       const origStart = new Date(event.start?.dateTime || event.start?.date);
@@ -558,7 +580,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       const duration = origEnd - origStart;
       const newStart = new Date(targetDate); newStart.setHours(origStart.getHours(), origStart.getMinutes(), 0, 0);
       const newEnd = new Date(newStart.getTime() + duration);
-      await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(missed.calendarId) + "/events/" + missed.eventId, { method: "PATCH", headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken }, body: JSON.stringify({ start: { dateTime: newStart.toISOString() }, end: { dateTime: newEnd.toISOString() }, summary: missed.jobTitle }) });
+      await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(missed.calendarId) + "/events/" + missed.eventId, { method: "PATCH", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ start: { dateTime: newStart.toISOString() }, end: { dateTime: newEnd.toISOString() }, summary: missed.jobTitle }) });
       const updated = missedJobs.filter(m => m.jobId !== missed.jobId);
       saveMissedJobs(updated);
       setRescheduleTarget(prev => { const n = {...prev}; delete n[missed.jobId]; return n; });
@@ -606,6 +628,21 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   return (
     React.createElement("div", { style: styles.page },
       invoiceJob && React.createElement(InvoiceModal, { job: invoiceJob, accessToken, onClose: handleInvoiceClose, onInvoiceCreated: handleInvoiceCreated }),
+
+      // ── Debug Panel ──────────────────────────────────────────────────────
+      React.createElement("div", { style: { position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 9999 } },
+        React.createElement("button", {
+          onClick: () => setShowDebug(p => !p),
+          style: { width: "100%", padding: "6px", background: "#1a1a2e", color: "#7dd3fc", fontSize: 11, fontFamily: "monospace", border: "none", cursor: "pointer", textAlign: "left" }
+        }, "🔧 Debug (" + debugLog.length + " logs) — tap to " + (showDebug ? "hide" : "show")),
+        showDebug && React.createElement("div", {
+          style: { background: "#0d0d1a", color: "#cdd6f4", fontFamily: "monospace", fontSize: 10, padding: "8px", maxHeight: 200, overflowY: "auto", borderTop: "1px solid #333" }
+        },
+          React.createElement("button", { onClick: () => setDebugLog([]), style: { fontSize: 10, padding: "2px 8px", background: "#333", color: "#fff", border: "none", borderRadius: 4, marginBottom: 4, cursor: "pointer" } }, "Clear"),
+          debugLog.map((e, i) => React.createElement("div", { key: i, style: { color: e.type === "error" ? "#f38ba8" : e.type === "warn" ? "#f9e2af" : "#a6e3a1", marginBottom: 2 } }, e.time + " " + e.msg))
+        )
+      ),
+
       menuOpen && React.createElement("div", { style: styles.menuOverlay, onClick: () => setMenuOpen(false) },
         React.createElement("div", { style: styles.menuDrawer, onClick: e => e.stopPropagation() },
           React.createElement("div", { style: styles.menuHeader }, React.createElement("div", { style: styles.menuTitle }, "Menu"), React.createElement("button", { style: styles.menuClose, onClick: () => setMenuOpen(false) }, "×")),
@@ -735,11 +772,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
                 ),
                 React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
                   React.createElement("span", { style: styles.mileageVal }, m.miles + " mi"),
-                  React.createElement("button", {
-                    onClick: () => saveMileage(prev => prev.filter((_, idx) => idx !== i)),
-                    style: { fontSize: 14, color: "#c0392b", background: "none", border: "none", cursor: "pointer", padding: "2px 6px", fontWeight: 700, lineHeight: 1 },
-                    title: "Remove this leg"
-                  }, "✕")
+                  React.createElement("button", { onClick: () => saveMileage(prev => prev.filter((_, idx) => idx !== i)), style: { fontSize: 14, color: "#c0392b", background: "none", border: "none", cursor: "pointer", padding: "2px 6px", fontWeight: 700, lineHeight: 1 }, title: "Remove this leg" }, "✕")
                 )
               );
             }),
@@ -752,41 +785,42 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         ),
         gpsTrack.length >= 2 && React.createElement("button", { onClick: handleViewRoute, style: { marginTop: 10, width: "100%", padding: "8px", borderRadius: 8, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600 } }, "🗺️ View Route in Maps")
       ),
-      React.createElement("div", { style: styles.statsGrid },
-        [{ label: isToday ? "Today's jobs" : "Day's jobs", val: counts.total }, { label: "Completed", val: counts.done }, { label: "In progress", val: counts.inProgress }, { label: "Scheduled", val: counts.scheduled }]
-          .map(s => React.createElement("div", { key: s.label, style: styles.statCard }, React.createElement("div", { style: styles.statLabel }, s.label), React.createElement("div", { style: styles.statVal }, s.val)))
-      ),
-      React.createElement("div", { style: styles.filterRow },
-        ["All", "Scheduled", "Checked In", "Done"].map(f =>
-          React.createElement("button", { key: f, style: { ...styles.filterBtn, ...(filter === f ? styles.filterActive : {}) }, onClick: () => setFilter(f) }, f)
+      React.createElement("div", { style: { ...styles.page, paddingBottom: "3rem" } },
+        React.createElement("div", { style: styles.statsGrid },
+          [{ label: isToday ? "Today's jobs" : "Day's jobs", val: counts.total }, { label: "Completed", val: counts.done }, { label: "In progress", val: counts.inProgress }, { label: "Scheduled", val: counts.scheduled }]
+            .map(s => React.createElement("div", { key: s.label, style: styles.statCard }, React.createElement("div", { style: styles.statLabel }, s.label), React.createElement("div", { style: styles.statVal }, s.val)))
+        ),
+        React.createElement("div", { style: styles.filterRow },
+          ["All", "Scheduled", "Checked In", "Done"].map(f =>
+            React.createElement("button", { key: f, style: { ...styles.filterBtn, ...(filter === f ? styles.filterActive : {}) }, onClick: () => setFilter(f) }, f)
+          )
+        ),
+        React.createElement("div", { style: styles.dateNav },
+          React.createElement("button", { style: styles.navBtn, onClick: goToPrevDay }, "← Prev"),
+          React.createElement("div", { style: styles.dateCenter }, React.createElement("div", { style: styles.dateLabel }, displayDate), !isToday && React.createElement("button", { style: styles.todayBtn, onClick: goToToday }, "Back to today")),
+          React.createElement("button", { style: styles.navBtn, onClick: goToNextDay }, "Next →")
+        ),
+        React.createElement("div", { style: styles.jobList },
+          (loading || statusLoading) && React.createElement("div", { style: styles.message }, "Loading..."),
+          error && React.createElement("div", { style: { ...styles.message, color: "#c0392b" } }, error),
+          !loading && !statusLoading && !error && filtered.length === 0 && React.createElement("div", { style: styles.message }, "No jobs found for this day."),
+          !loading && !statusLoading && filtered.map(job => {
+            const nid = normalizeId(job.id);
+            const isNearby = geofenceStatus[nid] === "nearby";
+            return React.createElement(JobCard, {
+              key: job.id, job, location, status: getStatus(job),
+              checkedIn: checkedIn[nid], checkedOut: checkedOut[nid], completed: completed[nid],
+              invoiceUrl: invoicedJobs[nid], isNearby,
+              onCheckIn: () => handleCheckIn(nid, job.title),
+              onCheckOut: () => handleCheckOut(nid, job.title),
+              onComplete: () => handleComplete(nid),
+              onNavigate: () => handleNavigate(nid),
+              onUndo: () => handleUndo(nid),
+              onInvoice: () => handleInvoice({ ...job, id: nid }),
+              onMissed: () => handleMissed(nid, job.title, job.location, job.calendarId, job.id),
+            });
+          })
         )
-      ),
-      React.createElement("div", { style: styles.dateNav },
-        React.createElement("button", { style: styles.navBtn, onClick: goToPrevDay }, "← Prev"),
-        React.createElement("div", { style: styles.dateCenter }, React.createElement("div", { style: styles.dateLabel }, displayDate), !isToday && React.createElement("button", { style: styles.todayBtn, onClick: goToToday }, "Back to today")),
-        React.createElement("button", { style: styles.navBtn, onClick: goToNextDay }, "Next →")
-      ),
-      React.createElement("div", { style: styles.jobList },
-        (loading || statusLoading) && React.createElement("div", { style: styles.message }, "Loading..."),
-        error && React.createElement("div", { style: { ...styles.message, color: "#c0392b" } }, error),
-        !loading && !statusLoading && !error && filtered.length === 0 && React.createElement("div", { style: styles.message }, "No jobs found for this day."),
-        !loading && !statusLoading && filtered.map(job => {
-          const nid = normalizeId(job.id);
-          const isNearby = geofenceStatus[nid] === "nearby";
-          return React.createElement(JobCard, {
-            key: job.id, job, location, status: getStatus(job),
-            checkedIn: checkedIn[nid], checkedOut: checkedOut[nid], completed: completed[nid],
-            invoiceUrl: invoicedJobs[nid],
-            isNearby,
-            onCheckIn: () => handleCheckIn(nid, job.title),
-            onCheckOut: () => handleCheckOut(nid, job.title),
-            onComplete: () => handleComplete(nid),
-            onNavigate: () => handleNavigate(nid),
-            onUndo: () => handleUndo(nid),
-            onInvoice: () => handleInvoice({ ...job, id: nid }),
-            onMissed: () => handleMissed(nid, job.title, job.location, job.calendarId, job.id),
-          });
-        })
       )
     )
   );
