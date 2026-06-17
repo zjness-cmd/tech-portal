@@ -17,8 +17,7 @@
     }
   ],
   "rewrites": [
-    { "source": "/sw.js", "destination": "/sw.js" },
-    { "source": "/manifest.json", "destination": "/manifest.json" },
-    { "source": "/(.*)", "destination": "/index.html" }
+    { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/((?!assets|icons|sw.js|manifest.json).*)", "destination": "/index.html" }
   ]
 }
