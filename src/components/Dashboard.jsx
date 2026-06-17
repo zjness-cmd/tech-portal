@@ -2,6 +2,7 @@
 import { useCalendarJobs } from "../hooks/useCalendarJobs";
 import InvoiceModal from "./InvoiceModal";
 import JobCard from "./JobCard";
+import RescheduleModal from "./RescheduleModal";
 
 const HOME = { lat: 45.292159, lng: -93.683355 };
 const LOG_SHEET_NAME = "TechPortal Job Log 2026";
@@ -95,6 +96,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [missedJobs, setMissedJobs] = useState(() => { try { return JSON.parse(localStorage.getItem("techportal_missedJobs") || "[]"); } catch { return []; } });
   const [showMissedModal, setShowMissedModal] = useState(false);
   const [rescheduleTarget, setRescheduleTarget] = useState({});
+  const [rescheduleJob, setRescheduleJob] = useState(null); // the missed job being rescheduled
   const [dayStarted, setDayStarted] = useState(false);
   const [dayFinished, setDayFinished] = useState(false);
   const [confirmFinish, setConfirmFinish] = useState(false);
@@ -566,28 +568,24 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     }
   };
 
-  const handleReschedule = async (missed, targetDateStr) => {
+  const handleReschedule = async (missed, newStart, newEnd) => {
     const token = accessTokenRef.current;
-    if (!missed.calendarId || !missed.eventId) { alert("Can't reschedule — no calendar event linked."); return; }
-    if (!targetDateStr) { alert("Please pick a date first."); return; }
-    try {
-      const targetDate = new Date(targetDateStr + "T12:00:00");
-      const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(missed.calendarId) + "/events/" + missed.eventId, { headers: { Authorization: "Bearer " + token } });
-      if (!res.ok) { alert("Could not find the original calendar event."); return; }
-      const event = await res.json();
-      const origStart = new Date(event.start?.dateTime || event.start?.date);
-      const origEnd = new Date(event.end?.dateTime || event.end?.date);
-      const duration = origEnd - origStart;
-      const newStart = new Date(targetDate); newStart.setHours(origStart.getHours(), origStart.getMinutes(), 0, 0);
-      const newEnd = new Date(newStart.getTime() + duration);
-      await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(missed.calendarId) + "/events/" + missed.eventId, { method: "PATCH", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ start: { dateTime: newStart.toISOString() }, end: { dateTime: newEnd.toISOString() }, summary: missed.jobTitle }) });
-      const updated = missedJobs.filter(m => m.jobId !== missed.jobId);
-      saveMissedJobs(updated);
-      setRescheduleTarget(prev => { const n = {...prev}; delete n[missed.jobId]; return n; });
-      refresh();
-      if (showMissedModal && updated.length === 0) setShowMissedModal(false);
-      alert(missed.jobTitle + " rescheduled to " + newStart.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }));
-    } catch (e) { alert("Reschedule failed: " + e.message); }
+    if (!missed.calendarId || !missed.eventId) throw new Error("No calendar event linked.");
+    await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(missed.calendarId) + "/events/" + missed.eventId, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+      body: JSON.stringify({
+        start: { dateTime: newStart.toISOString(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone },
+        end: { dateTime: newEnd.toISOString(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone },
+        summary: missed.jobTitle,
+      }),
+    });
+    const updated = missedJobs.filter(m => m.jobId !== missed.jobId);
+    saveMissedJobs(updated);
+    setRescheduleJob(null);
+    refresh();
+    if (updated.length === 0) setShowMissedModal(false);
+    alert(missed.jobTitle + " rescheduled to " + newStart.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }) + " at " + newStart.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
   };
 
   const handleViewRoute = () => {
@@ -628,6 +626,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   return (
     React.createElement("div", { style: styles.page },
       invoiceJob && React.createElement(InvoiceModal, { job: invoiceJob, accessToken, onClose: handleInvoiceClose, onInvoiceCreated: handleInvoiceCreated }),
+      rescheduleJob && React.createElement(RescheduleModal, {
+        missed: rescheduleJob,
+        accessToken: accessTokenRef.current,
+        onReschedule: handleReschedule,
+        onDismiss: (m) => { saveMissedJobs(missedJobs.filter(x => x.jobId !== m.jobId)); setRescheduleJob(null); },
+        onClose: () => { setRescheduleJob(null); setShowMissedModal(true); },
+      }),
 
       // ── Debug Panel ──────────────────────────────────────────────────────
       React.createElement("div", { style: { position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 9999 } },
@@ -697,15 +702,9 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               React.createElement("div", { style: styles.modalRowDate }, "Missed on " + m.date),
               React.createElement("div", { style: styles.modalRowTitle }, m.jobTitle),
               m.jobLocation && React.createElement("div", { style: styles.modalRowLoc }, "📍 " + m.jobLocation),
-              React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginTop: 6 } },
-                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
-                  React.createElement("label", { style: { fontSize: 12, color: "#666", whiteSpace: "nowrap" } }, "Pick a date:"),
-                  React.createElement("input", { type: "date", min: new Date().toISOString().split("T")[0], value: rescheduleTarget[m.jobId] || new Date().toISOString().split("T")[0], onChange: e => setRescheduleTarget(prev => ({ ...prev, [m.jobId]: e.target.value })), style: { fontSize: 13, padding: "4px 8px", borderRadius: 6, border: "0.5px solid #ccc", flex: 1 } })
-                ),
-                React.createElement("div", { style: { display: "flex", gap: 8 } },
-                  React.createElement("button", { style: { fontSize: 12, padding: "5px 12px", borderRadius: 8, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontWeight: 500 }, onClick: () => handleReschedule(m, rescheduleTarget[m.jobId] || new Date().toISOString().split("T")[0]) }, "📅 Reschedule"),
-                  React.createElement("button", { style: { fontSize: 12, padding: "5px 12px", borderRadius: 8, background: "#f5f5f3", color: "#888", border: "none", cursor: "pointer" }, onClick: () => saveMissedJobs(missedJobs.filter(x => x.jobId !== m.jobId)) }, "Dismiss")
-                )
+              React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 6 } },
+                React.createElement("button", { style: { fontSize: 12, padding: "5px 12px", borderRadius: 8, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontWeight: 500 }, onClick: () => { setShowMissedModal(false); setRescheduleJob(m); } }, "📅 Reschedule"),
+                React.createElement("button", { style: { fontSize: 12, padding: "5px 12px", borderRadius: 8, background: "#f5f5f3", color: "#888", border: "none", cursor: "pointer" }, onClick: () => saveMissedJobs(missedJobs.filter(x => x.jobId !== m.jobId)) }, "Dismiss")
               )
             ))
           )
