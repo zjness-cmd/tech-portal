@@ -38,15 +38,31 @@ async function checkStreetViewExists(location) {
   } catch { return false; }
 }
 
+// Convert "7:30 AM" style time to "HH:MM" for <input type="time">
+function timeStrToInput(timeStr) {
+  if (!timeStr) return "08:00";
+  try {
+    const [time, ampm] = timeStr.trim().split(" ");
+    let [h, m] = time.split(":").map(Number);
+    if (ampm === "PM" && h !== 12) h += 12;
+    if (ampm === "AM" && h === 12) h = 0;
+    return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
+  } catch { return "08:00"; }
+}
+
 export default function JobCard({
   job, location, status, checkedIn, checkedOut, completed, invoiceUrl,
   onCheckIn, onCheckOut, onComplete, onNavigate, onUndo, onInvoice, onMissed,
-  isNearby,
+  isNearby, accessToken, onTimeUpdated,
 }) {
   const [imgFailed, setImgFailed] = useState(false);
   const [imgChecked, setImgChecked] = useState(false);
   const [imgExists, setImgExists] = useState(false);
   const [showCompleteChoice, setShowCompleteChoice] = useState(false);
+  const [showTimeEdit, setShowTimeEdit] = useState(false);
+  const [newTime, setNewTime] = useState("");
+  const [timeSaving, setTimeSaving] = useState(false);
+  const [timeError, setTimeError] = useState("");
 
   React.useEffect(() => {
     if (!job.location || !MAPS_API_KEY) { setImgChecked(true); return; }
@@ -73,7 +89,6 @@ export default function JobCard({
   const streetViewUrl = getStreetViewUrl(job.location);
   const showImage = streetViewUrl && !imgFailed && imgChecked && imgExists;
 
-  // Determine which button group to show
   const showMissed = !checkedIn && !completed && !!onMissed;
   const showCheckIn = !checkedIn && !completed;
   const showCheckOut = checkedIn && !checkedOut && !completed;
@@ -81,14 +96,91 @@ export default function JobCard({
   const showCompleteChoice_ = checkedOut && !completed && showCompleteChoice;
   const showUndo = (checkedIn || checkedOut) && !completed;
 
+  const handleOpenTimeEdit = () => {
+    setNewTime(timeStrToInput(job.startTime));
+    setTimeError("");
+    setShowTimeEdit(true);
+  };
+
+  const handleSaveTime = async () => {
+    if (!newTime) return;
+    if (!job.calendarEventId && !job.id) { setTimeError("No calendar event linked."); return; }
+    if (!accessToken) { setTimeError("Not authenticated."); return; }
+    setTimeSaving(true);
+    setTimeError("");
+    try {
+      const calendarId = job.calendarId;
+      const eventId = job.id;
+      // Fetch current event to get start/end
+      const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(calendarId) + "/events/" + eventId, {
+        headers: { Authorization: "Bearer " + accessToken },
+      });
+      if (!res.ok) { setTimeError("Could not fetch event."); setTimeSaving(false); return; }
+      const event = await res.json();
+      const origStart = new Date(event.start?.dateTime || event.start?.date);
+      const origEnd = new Date(event.end?.dateTime || event.end?.date);
+      const duration = origEnd - origStart;
+      // Build new start from the date of origStart + new time
+      const [h, m] = newTime.split(":").map(Number);
+      const newStart = new Date(origStart);
+      newStart.setHours(h, m, 0, 0);
+      const newEnd = new Date(newStart.getTime() + duration);
+      const patchRes = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(calendarId) + "/events/" + eventId, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
+        body: JSON.stringify({
+          start: { dateTime: newStart.toISOString(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone },
+          end: { dateTime: newEnd.toISOString(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone },
+        }),
+      });
+      if (!patchRes.ok) { setTimeError("Failed to update. Try again."); setTimeSaving(false); return; }
+      setShowTimeEdit(false);
+      if (onTimeUpdated) onTimeUpdated();
+    } catch (e) {
+      setTimeError("Error: " + e.message);
+    }
+    setTimeSaving(false);
+  };
+
   return (
     React.createElement("div", { style: s.card },
 
+      // ── Time edit modal ─────────────────────────────────────────────────
+      showTimeEdit && React.createElement("div", {
+        style: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 3000, padding: "1rem" },
+        onClick: () => setShowTimeEdit(false),
+      },
+        React.createElement("div", { style: { background: "#fff", borderRadius: 16, padding: "1.5rem", width: "100%", maxWidth: 320 }, onClick: e => e.stopPropagation() },
+          React.createElement("div", { style: { fontSize: 15, fontWeight: 600, color: "#1a1a1a", marginBottom: 4 } }, "Edit Start Time"),
+          React.createElement("div", { style: { fontSize: 12, color: "#888", marginBottom: 16 } }, job.title + " · Duration stays the same"),
+          React.createElement("input", {
+            type: "time",
+            value: newTime,
+            onChange: e => setNewTime(e.target.value),
+            style: { width: "100%", fontSize: 24, padding: "8px 12px", borderRadius: 8, border: "1px solid #ccc", marginBottom: 12, boxSizing: "border-box", textAlign: "center" },
+          }),
+          timeError && React.createElement("div", { style: { fontSize: 12, color: "#c0392b", marginBottom: 8 } }, timeError),
+          React.createElement("div", { style: { display: "flex", gap: 8 } },
+            React.createElement("button", {
+              onClick: handleSaveTime,
+              disabled: timeSaving,
+              style: { flex: 1, padding: "10px", borderRadius: 8, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontSize: 14, opacity: timeSaving ? 0.7 : 1 },
+            }, timeSaving ? "Saving..." : "Save"),
+            React.createElement("button", {
+              onClick: () => setShowTimeEdit(false),
+              style: { flex: 1, padding: "10px", borderRadius: 8, background: "#f5f5f3", color: "#888", border: "none", cursor: "pointer", fontSize: 14 },
+            }, "Cancel")
+          )
+        )
+      ),
+
       // ── Header row ──────────────────────────────────────────────────────
       React.createElement("div", { style: s.cardTop },
-        React.createElement("span", { style: s.time },
-          job.startTime + (job.endTime ? " - " + job.endTime : "")
-        ),
+        React.createElement("span", {
+          style: { ...s.time, cursor: "pointer", textDecoration: "underline dotted", textUnderlineOffset: 3 },
+          onClick: handleOpenTimeEdit,
+          title: "Tap to reschedule",
+        }, job.startTime + (job.endTime ? " - " + job.endTime : "") + " ✎"),
         React.createElement("span", { style: { ...s.badge, background: badge.bg, color: badge.color } }, status)
       ),
 
@@ -102,8 +194,7 @@ export default function JobCard({
         style: { display: "block", marginBottom: 8 },
       },
         React.createElement("img", {
-          src: streetViewUrl,
-          alt: "Street View",
+          src: streetViewUrl, alt: "Street View",
           style: { width: "100%", height: 110, objectFit: "cover", borderRadius: 8, display: "block" },
           onError: () => setImgFailed(true),
         })
@@ -128,33 +219,21 @@ export default function JobCard({
       // ── Action buttons ──────────────────────────────────────────────────
       React.createElement("div", { style: s.actionRow },
 
-        // Navigate
         navigateUrl && !completed &&
-          React.createElement("a", {
-            href: navigateUrl, target: "_blank", rel: "noreferrer",
-            style: s.navButton, onClick: onNavigate,
-          }, "🗺️ Navigate"),
+          React.createElement("a", { href: navigateUrl, target: "_blank", rel: "noreferrer", style: s.navButton, onClick: onNavigate }, "🗺️ Navigate"),
 
-        // ⚠️ Missed — BEFORE Check in so it's not pushed off screen
         showMissed &&
-          React.createElement("button", {
-            style: s.missedBtn,
-            onClick: onMissed,
-          }, "⚠️ Missed"),
+          React.createElement("button", { style: s.missedBtn, onClick: onMissed }, "⚠️ Missed"),
 
-        // Check in
         showCheckIn &&
           React.createElement("button", { style: s.checkInBtn, onClick: onCheckIn }, "📍 Check in"),
 
-        // Check out
         showCheckOut &&
           React.createElement("button", { style: s.checkOutBtn, onClick: onCheckOut }, "🚪 Check out"),
 
-        // Mark complete
         showComplete &&
           React.createElement("button", { style: s.completeBtn, onClick: () => setShowCompleteChoice(true) }, "✅ Mark complete"),
 
-        // Complete choice (Done / Missed)
         showCompleteChoice_ &&
           React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" } },
             React.createElement("span", { style: { fontSize: 12, color: "#444", fontWeight: 500 } }, "How'd it go?"),
@@ -163,20 +242,15 @@ export default function JobCard({
             React.createElement("button", { style: { ...s.undoBtn, fontSize: 11 }, onClick: () => setShowCompleteChoice(false) }, "Cancel")
           ),
 
-        // Undo
         showUndo &&
           React.createElement("button", { style: s.undoBtn, onClick: onUndo }, "↩ Undo"),
 
-        // Completed state
         completed && React.createElement("span", { style: s.checkedInLabel }, "✅ Completed"),
         completed && React.createElement("button", { style: s.undoBtn, onClick: onUndo }, "↩ Undo"),
 
-        // Invoice
         invoiceUrl
           ? React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
-              React.createElement("a", {
-                href: invoiceUrl, target: "_blank", rel: "noreferrer", style: s.viewInvoiceBtn,
-              }, "📄 View Invoice"),
+              React.createElement("a", { href: invoiceUrl, target: "_blank", rel: "noreferrer", style: s.viewInvoiceBtn }, "📄 View Invoice"),
               React.createElement("button", { style: s.reInvoiceBtn, onClick: onInvoice, title: "Re-invoice" }, "✏️")
             )
           : React.createElement("button", { style: s.invoiceBtn, onClick: onInvoice }, "💵 Invoice")
