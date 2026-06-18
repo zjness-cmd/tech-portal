@@ -11,7 +11,7 @@ const STATUS_SHEET_NAME = "Job Status";
 const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
 const GEOFENCE_RADIUS_MILES = 0.12; // ~200 meters
 const GEOFENCE_DWELL_MS = 30 * 1000; // 30 seconds dwell before auto check-in
-const APP_VERSION = "1.1.1";
+const APP_VERSION = "1.2.0";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -123,8 +123,10 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const trackIntervalRef = useRef(null);
   const jobCoordsRef = useRef({});
   const geofenceDwellRef = useRef({});
+  const departureDwellRef = useRef({});
   const checkedInRef = useRef(checkedIn);
   const completedRef = useRef(completed);
+  const checkedOutRef = useRef(checkedOut);
   const jobsRef = useRef([]);
   const dayStartedRef = useRef(false);
   const dayFinishedRef = useRef(false);
@@ -142,6 +144,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
 
   useEffect(() => { checkedInRef.current = checkedIn; }, [checkedIn]);
   useEffect(() => { completedRef.current = completed; }, [completed]);
+  useEffect(() => { checkedOutRef.current = checkedOut; }, [checkedOut]);
   useEffect(() => { jobsRef.current = jobs; }, [jobs]);
   useEffect(() => { dayStartedRef.current = dayStarted; }, [dayStarted]);
   useEffect(() => { dayFinishedRef.current = dayFinished; }, [dayFinished]);
@@ -184,31 +187,56 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         const currentJobs = jobsRef.current;
         const currentCheckedIn = checkedInRef.current;
         const currentCompleted = completedRef.current;
+        const checkedOutRef_current = checkedOutRef.current;
         const nowMs = Date.now();
         currentJobs.forEach(async (job) => {
           const nid = normalizeId(job.id);
-          if (currentCheckedIn[nid] || currentCompleted[nid]) {
-            if (geofenceDwellRef.current[nid]) { delete geofenceDwellRef.current[nid]; setGeofenceStatus(prev => { const n = {...prev}; delete n[nid]; return n; }); }
-            return;
-          }
+          const isCheckedIn = currentCheckedIn[nid];
+          const isCheckedOut = checkedOutRef_current[nid];
+          const isCompleted = currentCompleted[nid];
           const coords = jobCoordsRef.current[nid];
           if (!coords) return;
           const dist = calcMiles(c.lat, c.lng, coords.lat, coords.lng);
-          if (dist <= GEOFENCE_RADIUS_MILES) {
-            if (!geofenceDwellRef.current[nid]) {
-              geofenceDwellRef.current[nid] = nowMs;
-              setGeofenceStatus(prev => ({ ...prev, [nid]: "nearby" }));
-              dbg("📍 Near " + job.title + " (" + Math.round(dist * 5280) + " ft away)");
-            } else if (nowMs - geofenceDwellRef.current[nid] >= GEOFENCE_DWELL_MS) {
-              delete geofenceDwellRef.current[nid];
-              setGeofenceStatus(prev => { const n = {...prev}; delete n[nid]; return n; });
-              dbg("✅ Auto check-in: " + job.title);
-              handleCheckIn(nid, job.title, true);
+          const inZone = dist <= GEOFENCE_RADIUS_MILES;
+
+          // ── Auto check-in ──────────────────────────────────────────────
+          if (!isCheckedIn && !isCompleted) {
+            if (inZone) {
+              if (!geofenceDwellRef.current[nid]) {
+                geofenceDwellRef.current[nid] = nowMs;
+                setGeofenceStatus(prev => ({ ...prev, [nid]: "nearby" }));
+                dbg("📍 Near " + job.title + " (" + Math.round(dist * 5280) + " ft away)");
+              } else if (nowMs - geofenceDwellRef.current[nid] >= GEOFENCE_DWELL_MS) {
+                delete geofenceDwellRef.current[nid];
+                setGeofenceStatus(prev => { const n = {...prev}; delete n[nid]; return n; });
+                dbg("✅ Auto check-in: " + job.title);
+                handleCheckIn(nid, job.title, true);
+              }
+            } else {
+              if (geofenceDwellRef.current[nid]) {
+                delete geofenceDwellRef.current[nid];
+                setGeofenceStatus(prev => { const n = {...prev}; delete n[nid]; return n; });
+              }
             }
-          } else {
-            if (geofenceDwellRef.current[nid]) {
-              delete geofenceDwellRef.current[nid];
-              setGeofenceStatus(prev => { const n = {...prev}; delete n[nid]; return n; });
+          }
+
+          // ── Auto check-out ─────────────────────────────────────────────
+          if (isCheckedIn && !isCheckedOut && !isCompleted) {
+            if (!inZone) {
+              if (!departureDwellRef.current[nid]) {
+                departureDwellRef.current[nid] = nowMs;
+                dbg("🚗 Left " + job.title + " zone — waiting to auto check-out...");
+              } else if (nowMs - departureDwellRef.current[nid] >= 60 * 1000) {
+                delete departureDwellRef.current[nid];
+                dbg("🚪 Auto check-out: " + job.title);
+                handleCheckOut(nid, job.title, true);
+              }
+            } else {
+              // Back in zone — cancel departure timer
+              if (departureDwellRef.current[nid]) {
+                delete departureDwellRef.current[nid];
+                dbg("↩ Back in zone: " + job.title + " — cancelled auto check-out");
+              }
             }
           }
         });
@@ -222,7 +250,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   useEffect(() => {
     setCheckedIn({}); setCheckedOut({}); setCompleted({}); setNavStart({});
     setDayStarted(false); setDayFinished(false); setDayStatus(""); setPastDayStatus(""); setStatusLoading(true);
-    jobCoordsRef.current = {}; geofenceDwellRef.current = {}; setGeofenceStatus({});
+    jobCoordsRef.current = {}; geofenceDwellRef.current = {}; departureDwellRef.current = {}; setGeofenceStatus({});
     if (new Date().toDateString() !== selectedDate.toDateString()) { try { localStorage.removeItem("techportal_lastPos"); } catch {} lastPositionRef.current = null; }
     try { const ck = JOB_STATUS_CACHE_KEY + selectedDate.toDateString(); const c = localStorage.getItem(ck); if (c) { const { checkedIn: ci, checkedOut: co, completed: comp, invoiced: inv } = JSON.parse(c); if (ci) setCheckedIn(ci); if (co) setCheckedOut(co); if (comp) setCompleted(comp); if (inv) setInvoicedJobs(inv); } } catch {}
     try { const k = "mileageLog_" + selectedDate.toDateString(); const s = localStorage.getItem(k); setMileageLog(s ? JSON.parse(s) : []); } catch { setMileageLog([]); }
@@ -534,14 +562,14 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     if (job) updateCalendarEvent(job, { checkIn: time });
   };
 
-  const handleCheckOut = async (jobId, jobTitle) => {
+  const handleCheckOut = async (jobId, jobTitle, auto = false) => {
     const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-    dbg("🚪 Check-out: " + jobTitle);
+    dbg("🚪 Check-out: " + jobTitle + (auto ? " (auto)" : ""));
     setCheckedOut((prev) => ({ ...prev, [jobId]: time }));
     const livePos = locationRef.current;
     if (livePos) setLastPos({ lat: livePos.lat, lng: livePos.lng });
-    await appendToLog([date, jobTitle + " (check-out)", time, "", invoicedJobs[jobId] ? "Yes" : "No", ""]);
+    await appendToLog([date, jobTitle + " (check-out" + (auto ? " auto" : "") + ")", time, "", invoicedJobs[jobId] ? "Yes" : "No", auto ? "Auto check-out" : ""]);
     saveMileage((prev) => prev.map(m => m.jobId === jobId ? { ...m, checkOut: time } : m));
     pendingStatusRef.current[jobId + "__co"] = { status: "checkedOut", extra: time };
     flushStatusSaves();
