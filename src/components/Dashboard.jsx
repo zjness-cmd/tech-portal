@@ -11,7 +11,7 @@ const STATUS_SHEET_NAME = "Job Status";
 const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
 const GEOFENCE_RADIUS_MILES = 0.12; // ~200 meters
 const GEOFENCE_DWELL_MS = 30 * 1000; // 30 seconds dwell before auto check-in
-const APP_VERSION = "1.2.0";
+const APP_VERSION = "1.2.1";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -483,7 +483,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     setDayStatus("Day started at " + time);
     dbg("🚗 Day started at " + time);
     // Reverse geocode start location
-    let startLabel = "📍 Start";
+    let startLabel = "Start";
     if (livePos && MAPS_API_KEY) {
       try {
         const geoRes = await fetch("https://maps.googleapis.com/maps/api/geocode/json?" + new URLSearchParams({ latlng: livePos.lat + "," + livePos.lng, key: MAPS_API_KEY, result_type: "street_address|sublocality|locality" }));
@@ -493,7 +493,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           const streetNum = parts.find(p => p.types.includes("street_number"))?.short_name || "";
           const street = parts.find(p => p.types.includes("route"))?.short_name || "";
           const city = parts.find(p => p.types.includes("locality"))?.short_name || "";
-          startLabel = "📍 " + [streetNum, street, city].filter(Boolean).join(" ");
+          startLabel = [streetNum, street, city].filter(Boolean).join(" ");
         }
       } catch {}
     }
@@ -516,6 +516,30 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       return next;
     });
     const gpsTotal = gpsTrackedMiles !== null ? gpsTrackedMiles : Math.round(totalMiles * 10) / 10;
+
+    // Reverse geocode finish location and add as final mileage leg
+    let finishLabel = "End";
+    if (currentPos && MAPS_API_KEY) {
+      try {
+        const geoRes = await fetch("https://maps.googleapis.com/maps/api/geocode/json?" + new URLSearchParams({ latlng: currentPos.lat + "," + currentPos.lng, key: MAPS_API_KEY, result_type: "street_address|sublocality|locality" }));
+        const geoData = await geoRes.json();
+        if (geoData.status === "OK" && geoData.results[0]) {
+          const parts = geoData.results[0].address_components;
+          const streetNum = parts.find(p => p.types.includes("street_number"))?.short_name || "";
+          const street = parts.find(p => p.types.includes("route"))?.short_name || "";
+          const city = parts.find(p => p.types.includes("locality"))?.short_name || "";
+          finishLabel = [streetNum, street, city].filter(Boolean).join(" ");
+        }
+      } catch {}
+    }
+    // Calculate distance from last position to finish
+    if (lastPositionRef.current) {
+      const finishMiles = await getDrivingMiles(lastPositionRef.current.lat, lastPositionRef.current.lng, currentPos.lat, currentPos.lng);
+      if (finishMiles > 0.05 && finishMiles < 150) {
+        saveMileage(prev => [...prev, { jobId: "__finish__", jobTitle: finishLabel, from: prev.length > 0 ? prev[prev.length - 1].jobTitle : "Last stop", miles: finishMiles, time, checkIn: time }]);
+      }
+    }
+
     const todayDateStr = selectedDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
     const scheduledJobs = jobs.filter(j => getStatus(j) === "Scheduled");
     if (scheduledJobs.length > 0) {
@@ -528,7 +552,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     const status = "Day finished at " + time + " · Total: " + gpsTotal + " mi";
     setDayStatus(status);
     dbg("🏁 " + status);
-    await appendToLog([date, "📍 Finish Day", time, "", "", "Total day: " + gpsTotal + " mi"]);
+    await appendToLog([date, "🏁 Finish Day (" + finishLabel + ")", time, "", "", "Total day: " + gpsTotal + " mi"]);
     pendingStatusRef.current["__DAY_FINISHED__"] = { status: "finished", extra: status };
     await flushStatusSaves();
   };
@@ -859,7 +883,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
                 ),
                 React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
                   React.createElement("span", { style: styles.mileageVal }, m.miles > 0 ? m.miles + " mi" : "—"),
-                  m.jobId !== "__home__" && React.createElement("button", { onClick: () => saveMileage(prev => prev.filter((_, idx) => idx !== i)), style: { fontSize: 14, color: "#c0392b", background: "none", border: "none", cursor: "pointer", padding: "2px 6px", fontWeight: 700, lineHeight: 1 }, title: "Remove this leg" }, "✕")
+                  m.jobId !== "__home__" && m.jobId !== "__finish__" && React.createElement("button", { onClick: () => saveMileage(prev => prev.filter((_, idx) => idx !== i)), style: { fontSize: 14, color: "#c0392b", background: "none", border: "none", cursor: "pointer", padding: "2px 6px", fontWeight: 700, lineHeight: 1 }, title: "Remove this leg" }, "✕")
                 )
               );
             }),
