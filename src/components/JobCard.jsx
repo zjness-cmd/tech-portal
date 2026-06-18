@@ -214,7 +214,7 @@ export default function JobCard({
       // ── Nearby banner ───────────────────────────────────────────────────
       isNearby && !checkedIn && !completed && React.createElement("div", {
         style: { fontSize: 12, color: "#27500A", background: "#EAF3DE", borderRadius: 6, padding: "5px 10px", marginBottom: 6, fontWeight: 500 }
-      }, "📍 You're nearby — auto check-in in ~1 min"),
+      }, "📍 You're nearby — auto check-in in ~30 sec"),
 
       // ── Action buttons ──────────────────────────────────────────────────
       React.createElement("div", { style: s.actionRow },
