@@ -3,14 +3,15 @@ import { useCalendarJobs } from "../hooks/useCalendarJobs";
 import InvoiceModal from "./InvoiceModal";
 import JobCard from "./JobCard";
 import RescheduleModal from "./RescheduleModal";
+import DriveMode from "./DriveMode";
 
 const HOME = { lat: 45.292159, lng: -93.683355 };
 const LOG_SHEET_NAME = "TechPortal Job Log 2026";
 const STATUS_SHEET_NAME = "Job Status";
 const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
-const GEOFENCE_RADIUS_MILES = 0.09;
-const GEOFENCE_DWELL_MS = 60 * 1000;
-const APP_VERSION = "1.0.0";
+const GEOFENCE_RADIUS_MILES = 0.12; // ~200 meters
+const GEOFENCE_DWELL_MS = 30 * 1000; // 30 seconds dwell before auto check-in
+const APP_VERSION = "1.1.1";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -110,6 +111,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [geofenceStatus, setGeofenceStatus] = useState({});
   const [debugLog, setDebugLog] = useState([]);
   const [showDebug, setShowDebug] = useState(false);
+  const [driveMode, setDriveMode] = useState(false);
 
   const startPosRef = useRef(null);
   const lastPositionRef = useRef((() => { try { const s = localStorage.getItem("techportal_lastPos"); return s ? JSON.parse(s) : null; } catch { return null; } })());
@@ -175,7 +177,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         setLocationError(null);
 
         // ── Geofence check on every GPS update ──────────────────────────
-        if (!pos.coords.accuracy || pos.coords.accuracy > 100) return; // skip low accuracy
+        if (!pos.coords.accuracy || pos.coords.accuracy > 150) return; // skip low accuracy
         const dayStartedNow = dayStartedRef.current;
         const dayFinishedNow = dayFinishedRef.current;
         if (!dayStartedNow || dayFinishedNow) return;
@@ -672,6 +674,16 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         onClose: () => { setRescheduleJob(null); setShowMissedModal(true); },
       }),
 
+      // ── Drive Mode ───────────────────────────────────────────────────
+      driveMode && React.createElement(DriveMode, {
+        jobs, checkedIn, checkedOut, completed, location,
+        onCheckIn: (nid, title) => handleCheckIn(nid, title),
+        onCheckOut: (nid, title) => handleCheckOut(nid, title),
+        onComplete: (nid) => handleComplete(nid),
+        dayStarted, displayMiles,
+        onExit: () => setDriveMode(false),
+      }),
+
       // ── Debug Panel ──────────────────────────────────────────────────────
       React.createElement("div", { style: { position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 9999 } },
         React.createElement("button", {
@@ -730,6 +742,10 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           )
         ),
         React.createElement("div", { style: { display: "flex", gap: 10, alignItems: "center" } },
+          isToday && dayStarted && !dayFinished && React.createElement("button", {
+            style: { fontSize: 12, padding: "6px 12px", borderRadius: 8, background: "#1a1a2e", color: "#7dd3fc", border: "1px solid #333", cursor: "pointer", fontWeight: 600 },
+            onClick: () => setDriveMode(true),
+          }, "🚗 Drive"),
           React.createElement("button", { style: styles.refreshBtn, onClick: refresh }, "↻"),
           React.createElement("button", { style: styles.logoutBtn, onClick: onLogout }, "Sign out")
         )
