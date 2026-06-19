@@ -11,7 +11,7 @@ const STATUS_SHEET_NAME = "Job Status";
 const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
 const GEOFENCE_RADIUS_MILES = 0.12; // ~200 meters
 const GEOFENCE_DWELL_MS = 30 * 1000; // 30 seconds dwell before auto check-in
-const APP_VERSION = "1.2.1";
+const APP_VERSION = "1.2.3";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -180,7 +180,10 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         setLocationError(null);
 
         // ── Geofence check on every GPS update ──────────────────────────
-        if (!pos.coords.accuracy || pos.coords.accuracy > 150) return; // skip low accuracy
+        if (!pos.coords.accuracy || pos.coords.accuracy > 150) {
+          if (Math.random() < 0.1) dbg("⚠️ Skipping geofence — accuracy " + Math.round(pos.coords.accuracy || 999) + "m too low", "warn");
+          return;
+        }
         const dayStartedNow = dayStartedRef.current;
         const dayFinishedNow = dayFinishedRef.current;
         if (!dayStartedNow || dayFinishedNow) return;
@@ -195,7 +198,10 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           const isCheckedOut = checkedOutRef_current[nid];
           const isCompleted = currentCompleted[nid];
           const coords = jobCoordsRef.current[nid];
-          if (!coords) return;
+          if (!coords) {
+            if (!isCheckedIn && !isCompleted && Math.random() < 0.05) dbg("⚠️ No coords cached yet for: " + job.title, "warn");
+            return;
+          }
           const dist = calcMiles(c.lat, c.lng, coords.lat, coords.lng);
           const inZone = dist <= GEOFENCE_RADIUS_MILES;
 
@@ -262,11 +268,18 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
 
   useEffect(() => {
     if (!jobs.length || !dayStarted || !isToday) return;
+    dbg("🗺️ Geocoding " + jobs.length + " job addresses...");
     jobs.forEach(async (job) => {
       const nid = normalizeId(job.id);
-      if (!job.location || jobCoordsRef.current[nid]) return;
+      if (!job.location) { dbg("⚠️ No location for: " + job.title, "warn"); return; }
+      if (jobCoordsRef.current[nid]) return;
       const coords = await geocodeAddress(job.location);
-      if (coords) jobCoordsRef.current[nid] = coords;
+      if (coords) {
+        jobCoordsRef.current[nid] = coords;
+        dbg("📌 Geocoded: " + job.title + " → " + coords.lat.toFixed(4) + "," + coords.lng.toFixed(4));
+      } else {
+        dbg("❌ Geocode failed: " + job.title + " (" + job.location + ")", "error");
+      }
     });
   }, [jobs, dayStarted, isToday]);
 
@@ -497,7 +510,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         }
       } catch {}
     }
-    saveMileage([{ jobId: "__home__", jobTitle: startLabel, from: "", miles: 0, time, checkIn: time }]);
+    saveMileage([{ jobId: "__home__", jobTitle: "🚗 " + startLabel, from: "", miles: 0, time, checkIn: time }]);
     await appendToLog([date, "🚗 Start Day (" + startLabel + ")", time, "0", "", "Departed"]);
     pendingStatusRef.current["__DAY_STARTED__"] = { status: "started", extra: time };
     await flushStatusSaves();
@@ -518,7 +531,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     const gpsTotal = gpsTrackedMiles !== null ? gpsTrackedMiles : Math.round(totalMiles * 10) / 10;
 
     // Reverse geocode finish location and add as final mileage leg
-    let finishLabel = "End";
+    let finishLabel = "Finish";
     if (currentPos && MAPS_API_KEY) {
       try {
         const geoRes = await fetch("https://maps.googleapis.com/maps/api/geocode/json?" + new URLSearchParams({ latlng: currentPos.lat + "," + currentPos.lng, key: MAPS_API_KEY, result_type: "street_address|sublocality|locality" }));
@@ -528,17 +541,17 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           const streetNum = parts.find(p => p.types.includes("street_number"))?.short_name || "";
           const street = parts.find(p => p.types.includes("route"))?.short_name || "";
           const city = parts.find(p => p.types.includes("locality"))?.short_name || "";
-          finishLabel = [streetNum, street, city].filter(Boolean).join(" ");
+          finishLabel = [streetNum, street, city].filter(Boolean).join(" ") || "Finish";
         }
       } catch {}
     }
-    // Calculate distance from last position to finish
+    // Calculate distance from last known position to finish — always add the leg, even if 0 mi
+    let finishMiles = 0;
     if (lastPositionRef.current) {
-      const finishMiles = await getDrivingMiles(lastPositionRef.current.lat, lastPositionRef.current.lng, currentPos.lat, currentPos.lng);
-      if (finishMiles > 0.05 && finishMiles < 150) {
-        saveMileage(prev => [...prev, { jobId: "__finish__", jobTitle: finishLabel, from: prev.length > 0 ? prev[prev.length - 1].jobTitle : "Last stop", miles: finishMiles, time, checkIn: time }]);
-      }
+      finishMiles = await getDrivingMiles(lastPositionRef.current.lat, lastPositionRef.current.lng, currentPos.lat, currentPos.lng);
+      if (finishMiles < 0.05 || finishMiles > 150) finishMiles = 0;
     }
+    saveMileage(prev => [...prev, { jobId: "__finish__", jobTitle: "🏁 " + finishLabel, from: prev.length > 0 ? prev[prev.length - 1].jobTitle : "Start", miles: finishMiles, time, checkIn: time }]);
 
     const todayDateStr = selectedDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
     const scheduledJobs = jobs.filter(j => getStatus(j) === "Scheduled");
