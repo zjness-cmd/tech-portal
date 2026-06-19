@@ -11,7 +11,7 @@ const STATUS_SHEET_NAME = "Job Status";
 const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
 const GEOFENCE_RADIUS_MILES = 0.12; // ~200 meters
 const GEOFENCE_DWELL_MS = 30 * 1000; // 30 seconds dwell before auto check-in
-const APP_VERSION = "1.2.3";
+const APP_VERSION = "1.2.4";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -58,8 +58,8 @@ async function getDrivingMiles(fromLat, fromLng, toLat, toLng) {
   } catch (e) { return straightLine; }
 }
 
-async function geocodeAddress(address) {
-  if (!address || !MAPS_API_KEY) return null;
+async function geocodeAddress(address, dbgFn) {
+  if (!address || !MAPS_API_KEY) { if (dbgFn) dbgFn("❌ Geocode skipped — no address or API key", "error"); return null; }
   try {
     const url = "https://maps.googleapis.com/maps/api/geocode/json?" + new URLSearchParams({ address, key: MAPS_API_KEY });
     const res = await fetch(url);
@@ -67,8 +67,12 @@ async function geocodeAddress(address) {
     if (data.status === "OK" && data.results[0]) {
       const { lat, lng } = data.results[0].geometry.location;
       return { lat, lng };
+    } else {
+      if (dbgFn) dbgFn("❌ Geocode API status: " + data.status + (data.error_message ? " — " + data.error_message : ""), "error");
     }
-  } catch {}
+  } catch (e) {
+    if (dbgFn) dbgFn("❌ Geocode fetch exception: " + e.message, "error");
+  }
   return null;
 }
 
@@ -273,7 +277,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       const nid = normalizeId(job.id);
       if (!job.location) { dbg("⚠️ No location for: " + job.title, "warn"); return; }
       if (jobCoordsRef.current[nid]) return;
-      const coords = await geocodeAddress(job.location);
+      const coords = await geocodeAddress(job.location, dbg);
       if (coords) {
         jobCoordsRef.current[nid] = coords;
         dbg("📌 Geocoded: " + job.title + " → " + coords.lat.toFixed(4) + "," + coords.lng.toFixed(4));
