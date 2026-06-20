@@ -11,7 +11,7 @@ const STATUS_SHEET_NAME = "Job Status";
 const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
 const GEOFENCE_RADIUS_MILES = 0.12; // ~200 meters
 const GEOFENCE_DWELL_MS = 30 * 1000; // 30 seconds dwell before auto check-in
-const APP_VERSION = "1.2.4";
+const APP_VERSION = "1.2.5";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -59,9 +59,9 @@ async function getDrivingMiles(fromLat, fromLng, toLat, toLng) {
 }
 
 async function geocodeAddress(address, dbgFn) {
-  if (!address || !MAPS_API_KEY) { if (dbgFn) dbgFn("❌ Geocode skipped — no address or API key", "error"); return null; }
+  if (!address) { if (dbgFn) dbgFn("❌ Geocode skipped — no address", "error"); return null; }
   try {
-    const url = "https://maps.googleapis.com/maps/api/geocode/json?" + new URLSearchParams({ address, key: MAPS_API_KEY });
+    const url = "/api/geocode?" + new URLSearchParams({ address });
     const res = await fetch(url);
     const data = await res.json();
     if (data.status === "OK" && data.results[0]) {
@@ -501,9 +501,9 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     dbg("🚗 Day started at " + time);
     // Reverse geocode start location
     let startLabel = "Start";
-    if (livePos && MAPS_API_KEY) {
+    if (livePos) {
       try {
-        const geoRes = await fetch("https://maps.googleapis.com/maps/api/geocode/json?" + new URLSearchParams({ latlng: livePos.lat + "," + livePos.lng, key: MAPS_API_KEY, result_type: "street_address|sublocality|locality" }));
+        const geoRes = await fetch("/api/geocode?" + new URLSearchParams({ latlng: livePos.lat + "," + livePos.lng, result_type: "street_address|sublocality|locality" }));
         const geoData = await geoRes.json();
         if (geoData.status === "OK" && geoData.results[0]) {
           const parts = geoData.results[0].address_components;
@@ -536,9 +536,9 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
 
     // Reverse geocode finish location and add as final mileage leg
     let finishLabel = "Finish";
-    if (currentPos && MAPS_API_KEY) {
+    if (currentPos) {
       try {
-        const geoRes = await fetch("https://maps.googleapis.com/maps/api/geocode/json?" + new URLSearchParams({ latlng: currentPos.lat + "," + currentPos.lng, key: MAPS_API_KEY, result_type: "street_address|sublocality|locality" }));
+        const geoRes = await fetch("/api/geocode?" + new URLSearchParams({ latlng: currentPos.lat + "," + currentPos.lng, result_type: "street_address|sublocality|locality" }));
         const geoData = await geoRes.json();
         if (geoData.status === "OK" && geoData.results[0]) {
           const parts = geoData.results[0].address_components;
