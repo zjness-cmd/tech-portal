@@ -4,7 +4,7 @@ export default async function handler(req, res) {
   if (!address && !latlng) return res.status(400).json({ error: "Missing address or latlng" });
 
   try {
-    const params = { key: process.env.VITE_MAPS_API_KEY };
+    const params = { key: process.env.GOOGLE_GEOCODE_KEY };
     if (address) params.address = address;
     if (latlng) params.latlng = latlng;
     if (result_type) params.result_type = result_type;
