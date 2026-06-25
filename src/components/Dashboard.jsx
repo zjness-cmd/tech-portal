@@ -680,6 +680,16 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     pendingStatusRef.current[jobId + "__done"] = { status: "completed", extra: checkedIn[jobId] || "" };
     flushStatusSaves();
     const job = jobs.find(j => normalizeId(j.id) === jobId);
+    // Strip ⚠️ MISSED - prefix from calendar title if present
+    const cleanTitle = (job?.title || "").replace(/^(⚠️ MISSED - )+/, "");
+    if (job && job.title !== cleanTitle) {
+      const token = accessTokenRef.current;
+      fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(job.calendarId) + "/events/" + job.id, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({ summary: cleanTitle }),
+      }).catch(() => {});
+    }
     updateCalendarEvent(job, { checkIn: checkedIn[jobId], checkOut: checkedOut[jobId], completed: true, invoiceUrl: invoicedJobs[jobId] });
   };
 
@@ -718,17 +728,19 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
 
   const handleMissed = (jobId, jobTitle, jobLocation, jobCalendarId, jobEventId) => {
     const token = accessTokenRef.current;
-    const missed = { jobId, jobTitle, jobLocation, calendarId: jobCalendarId, eventId: jobEventId, date: selectedDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }), missedAt: Date.now() };
+    // Strip any existing ⚠️ MISSED - prefix to prevent doubling
+    const cleanTitle = jobTitle.replace(/^(⚠️ MISSED - )+/, "");
+    const missed = { jobId, jobTitle: cleanTitle, jobLocation, calendarId: jobCalendarId, eventId: jobEventId, date: selectedDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }), missedAt: Date.now() };
     const existing = JSON.parse(localStorage.getItem("techportal_missedJobs") || "[]");
     saveMissedJobs([...existing.filter(m => m.jobId !== jobId), missed]);
     setCompleted(prev => ({ ...prev, [jobId]: true }));
-    pendingStatusRef.current[jobId + "__done"] = { status: "missed", extra: jobTitle };
+    pendingStatusRef.current[jobId + "__done"] = { status: "missed", extra: cleanTitle };
     flushStatusSaves();
     if (jobCalendarId && jobEventId && token) {
       fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(jobCalendarId) + "/events/" + jobEventId, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-        body: JSON.stringify({ summary: "⚠️ MISSED - " + jobTitle }),
+        body: JSON.stringify({ summary: "⚠️ MISSED - " + cleanTitle }),
       }).catch(() => {});
     }
   };
