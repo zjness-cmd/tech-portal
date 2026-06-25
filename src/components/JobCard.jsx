@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import JobDetailModal from "./JobDetailModal";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -53,7 +54,7 @@ function timeStrToInput(timeStr) {
 export default function JobCard({
   job, location, status, checkedIn, checkedOut, completed, invoiceUrl,
   onCheckIn, onCheckOut, onComplete, onNavigate, onUndo, onInvoice, onMissed,
-  isNearby, accessToken, onTimeUpdated,
+  isNearby, accessToken, onTimeUpdated, onNotesSaved,
 }) {
   const [imgFailed, setImgFailed] = useState(false);
   const [imgChecked, setImgChecked] = useState(false);
@@ -63,6 +64,7 @@ export default function JobCard({
   const [newTime, setNewTime] = useState("");
   const [timeSaving, setTimeSaving] = useState(false);
   const [timeError, setTimeError] = useState("");
+  const [showDetail, setShowDetail] = useState(false);
 
   React.useEffect(() => {
     if (!job.location || !MAPS_API_KEY) { setImgChecked(true); return; }
@@ -145,6 +147,13 @@ export default function JobCard({
   return (
     React.createElement("div", { style: s.card },
 
+      // ── Job Detail Modal ────────────────────────────────────────────────
+      showDetail && React.createElement(JobDetailModal, {
+        job, accessToken, checkedIn, checkedOut, completed,
+        onClose: () => setShowDetail(false),
+        onNotesSaved,
+      }),
+
       // ── Time edit modal ─────────────────────────────────────────────────
       showTimeEdit && React.createElement("div", {
         style: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 3000, padding: "1rem" },
@@ -185,7 +194,14 @@ export default function JobCard({
       ),
 
       // ── Title + location ────────────────────────────────────────────────
-      React.createElement("div", { style: s.cardTitle }, job.title),
+      React.createElement("div", {
+        style: { ...s.cardTitle, cursor: "pointer" },
+        onClick: () => setShowDetail(true),
+      },
+        job.title,
+        job.notes && React.createElement("span", { style: { fontSize: 11, marginLeft: 6, color: "#185FA5" } }, "📝"),
+        job.photos?.length > 0 && React.createElement("span", { style: { fontSize: 11, marginLeft: 4, color: "#185FA5" } }, "📷"),
+      ),
       job.location && React.createElement("div", { style: s.cardMeta }, "📍 " + job.location),
 
       // ── Street View image ────────────────────────────────────────────────

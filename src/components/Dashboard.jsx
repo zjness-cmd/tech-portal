@@ -11,7 +11,7 @@ const STATUS_SHEET_NAME = "Job Status";
 const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
 const GEOFENCE_RADIUS_MILES = 0.12; // ~200 meters
 const GEOFENCE_DWELL_MS = 30 * 1000; // 30 seconds dwell before auto check-in
-const APP_VERSION = "1.3.0";
+const APP_VERSION = "1.3.1";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -745,7 +745,22 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     }
   };
 
-  const handleReschedule = async (missed, newStart, newEnd) => {
+  const handleNotesSaved = async (jobId, notes, photos) => {
+    const token = accessTokenRef.current;
+    const sheetId = await getOrCreateLogSheet();
+    if (!sheetId || !token) return;
+    const dateKey = selectedDateRef.current.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    const job = jobs.find(j => normalizeId(j.id) === jobId);
+    const photoLinks = photos.map(p => p.url).join(", ");
+    await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A:D:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+      body: JSON.stringify({ values: [[dateKey, jobId + "__notes", "notes", notes + (photoLinks ? " | Photos: " + photoLinks : "")]] }),
+    });
+    // Also update job object locally so indicators show
+    if (job) { job.notes = notes; job.photos = photos; }
+    dbg("📝 Notes saved for " + (job?.title || jobId));
+  };
     const token = accessTokenRef.current;
     if (!missed.calendarId || !missed.eventId) throw new Error("No calendar event linked.");
     await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(missed.calendarId) + "/events/" + missed.eventId, {
@@ -1009,6 +1024,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               invoiceUrl: invoicedJobs[nid], isNearby,
               accessToken: accessTokenRef.current,
               onTimeUpdated: refresh,
+              onNotesSaved: handleNotesSaved,
               onCheckIn: () => handleCheckIn(nid, job.title),
               onCheckOut: () => handleCheckOut(nid, job.title),
               onComplete: () => handleComplete(nid),
