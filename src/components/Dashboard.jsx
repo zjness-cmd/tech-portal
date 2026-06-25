@@ -11,7 +11,7 @@ const STATUS_SHEET_NAME = "Job Status";
 const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
 const GEOFENCE_RADIUS_MILES = 0.12; // ~200 meters
 const GEOFENCE_DWELL_MS = 30 * 1000; // 30 seconds dwell before auto check-in
-const APP_VERSION = "1.3.1";
+const APP_VERSION = "1.3.2";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -1025,6 +1025,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               checkedIn: checkedIn[nid], checkedOut: checkedOut[nid], completed: completed[nid],
               invoiceUrl: invoicedJobs[nid], isNearby,
               accessToken: accessTokenRef.current,
+              logSheetId,
               onTimeUpdated: refresh,
               onNotesSaved: handleNotesSaved,
               onCheckIn: () => handleCheckIn(nid, job.title),

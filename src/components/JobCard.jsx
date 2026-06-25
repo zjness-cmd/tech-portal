@@ -54,7 +54,7 @@ function timeStrToInput(timeStr) {
 export default function JobCard({
   job, location, status, checkedIn, checkedOut, completed, invoiceUrl,
   onCheckIn, onCheckOut, onComplete, onNavigate, onUndo, onInvoice, onMissed,
-  isNearby, accessToken, onTimeUpdated, onNotesSaved,
+  isNearby, accessToken, onTimeUpdated, onNotesSaved, logSheetId,
 }) {
   const [imgFailed, setImgFailed] = useState(false);
   const [imgChecked, setImgChecked] = useState(false);
@@ -152,6 +152,7 @@ export default function JobCard({
         job, accessToken, checkedIn, checkedOut, completed,
         onClose: () => setShowDetail(false),
         onNotesSaved,
+        logSheetId,
       }),
 
       // ── Time edit modal ─────────────────────────────────────────────────
