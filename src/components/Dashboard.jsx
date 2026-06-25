@@ -11,7 +11,7 @@ const STATUS_SHEET_NAME = "Job Status";
 const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
 const GEOFENCE_RADIUS_MILES = 0.12; // ~200 meters
 const GEOFENCE_DWELL_MS = 30 * 1000; // 30 seconds dwell before auto check-in
-const APP_VERSION = "1.2.5";
+const APP_VERSION = "1.3.0";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -160,6 +160,61 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
 
   useImperativeHandle(ref, () => ({ flushPending: () => flushStatusSaves() }));
 
+  // ── Sync geofence data to service worker for background operation ──────────
+  const syncGeofenceDataToSW = () => {
+    if (!navigator.serviceWorker?.controller) return;
+    navigator.serviceWorker.controller.postMessage({
+      type: "STORE_GEOFENCE_DATA",
+      payload: {
+        dayStarted, dayFinished,
+        jobs: jobsRef.current.map(j => ({ id: normalizeId(j.id), title: j.title, startTime: j.startTime, location: j.location })),
+        jobCoords: jobCoordsRef.current,
+        checkedIn: checkedInRef.current,
+        completed: completedRef.current,
+        accessToken: accessTokenRef.current,
+      }
+    });
+  };
+
+  // Request notification permission and register periodic sync when day starts
+  useEffect(() => {
+    if (!dayStarted || dayFinished) return;
+    // Request notification permission
+    if (Notification.permission === "default") {
+      Notification.requestPermission().then(p => dbg("🔔 Notification permission: " + p));
+    }
+    // Register periodic background sync (Chrome/Android)
+    if ("serviceWorker" in navigator && "periodicSync" in (navigator.serviceWorker || {})) {
+      navigator.serviceWorker.ready.then(async reg => {
+        try {
+          await reg.periodicSync.register("geofence-check", { minInterval: 2 * 60 * 1000 });
+          dbg("✅ Background periodic sync registered (2 min)");
+        } catch (e) { dbg("⚠️ Periodic sync not supported: " + e.message, "warn"); }
+      });
+    }
+    // Tell SW to start its own interval as fallback
+    if (navigator.serviceWorker?.controller) {
+      navigator.serviceWorker.controller.postMessage({ type: "START_BACKGROUND_GEOFENCE" });
+    }
+    syncGeofenceDataToSW();
+  }, [dayStarted, dayFinished]);
+
+  // Keep SW geofence data fresh whenever key state changes
+  useEffect(() => { if (dayStarted) syncGeofenceDataToSW(); }, [checkedIn, completed, jobCoordsRef.current]);
+
+  // Listen for notification check-in from SW
+  useEffect(() => {
+    if (!navigator.serviceWorker) return;
+    const handler = (event) => {
+      if (event.data?.type === "NOTIFICATION_CHECKIN" && event.data.jobId) {
+        const job = jobsRef.current.find(j => normalizeId(j.id) === event.data.jobId);
+        if (job) handleCheckIn(event.data.jobId, job.title);
+      }
+    };
+    navigator.serviceWorker.addEventListener("message", handler);
+    return () => navigator.serviceWorker.removeEventListener("message", handler);
+  }, []);
+
   const isToday = new Date().toDateString() === selectedDate.toDateString();
   selectedDateRef.current = selectedDate;
   const displayDate = selectedDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
@@ -281,6 +336,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       if (coords) {
         jobCoordsRef.current[nid] = coords;
         dbg("📌 Geocoded: " + job.title + " → " + coords.lat.toFixed(4) + "," + coords.lng.toFixed(4));
+        syncGeofenceDataToSW();
       } else {
         dbg("❌ Geocode failed: " + job.title + " (" + job.location + ")", "error");
       }
