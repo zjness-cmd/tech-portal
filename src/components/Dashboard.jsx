@@ -761,6 +761,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     if (job) { job.notes = notes; job.photos = photos; }
     dbg("📝 Notes saved for " + (job?.title || jobId));
   };
+
+  const handleReschedule = async (missed, newStart, newEnd) => {
     const token = accessTokenRef.current;
     if (!missed.calendarId || !missed.eventId) throw new Error("No calendar event linked.");
     await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(missed.calendarId) + "/events/" + missed.eventId, {
