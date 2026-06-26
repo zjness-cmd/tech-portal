@@ -12,7 +12,7 @@ const STATUS_SHEET_NAME = "Job Status";
 const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
 const GEOFENCE_RADIUS_MILES = 0.12; // ~200 meters
 const GEOFENCE_DWELL_MS = 30 * 1000; // 30 seconds dwell before auto check-in
-const APP_VERSION = "1.3.3";
+const APP_VERSION = "1.3.4";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -114,7 +114,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [menuOpen, setMenuOpen] = useState(false);
   const [statusLoading, setStatusLoading] = useState(true);
   const [geofenceStatus, setGeofenceStatus] = useState({});
-  const [debugLog, setDebugLog] = useState([]);
+  const [debugLog, setDebugLog] = useState(() => {
+    try {
+      const key = "techportal_debugLog_" + new Date().toDateString();
+      const saved = localStorage.getItem(key);
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+  });
   const [showDebug, setShowDebug] = useState(false);
   const [driveMode, setDriveMode] = useState(false);
   const [showEtsy, setShowEtsy] = useState(false);
@@ -141,7 +147,14 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
 
   const dbg = (msg, type = "info") => {
     const entry = { time: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }), msg, type };
-    setDebugLog(prev => [entry, ...prev].slice(0, 50));
+    setDebugLog(prev => {
+      const next = [entry, ...prev].slice(0, 500);
+      try {
+        const key = "techportal_debugLog_" + new Date().toDateString();
+        localStorage.setItem(key, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
     console.log("[TechPortal]", msg);
   };
 
@@ -627,6 +640,10 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     const status = "Day finished at " + time + " · Total: " + gpsTotal + " mi";
     setDayStatus(status);
     dbg("🏁 " + status);
+    // Tell SW to stop background tracking and clear notification
+    if (navigator.serviceWorker?.controller) {
+      navigator.serviceWorker.controller.postMessage({ type: "DAY_FINISHED" });
+    }
     await appendToLog([date, "🏁 Finish Day (" + finishLabel + ")", time, "", "", "Total day: " + gpsTotal + " mi"]);
     pendingStatusRef.current["__DAY_FINISHED__"] = { status: "finished", extra: status };
     await flushStatusSaves();
@@ -850,7 +867,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         showDebug && React.createElement("div", {
           style: { background: "#0d0d1a", color: "#cdd6f4", fontFamily: "monospace", fontSize: 10, padding: "8px", maxHeight: 200, overflowY: "auto", borderTop: "1px solid #333" }
         },
-          React.createElement("button", { onClick: () => setDebugLog([]), style: { fontSize: 10, padding: "2px 8px", background: "#333", color: "#fff", border: "none", borderRadius: 4, marginBottom: 4, cursor: "pointer" } }, "Clear"),
+          React.createElement("button", { onClick: () => { setDebugLog([]); try { localStorage.removeItem("techportal_debugLog_" + new Date().toDateString()); } catch {} }, style: { fontSize: 10, padding: "2px 8px", background: "#333", color: "#fff", border: "none", borderRadius: 4, marginBottom: 4, cursor: "pointer" } }, "Clear"),
           debugLog.map((e, i) => React.createElement("div", { key: i, style: { color: e.type === "error" ? "#f38ba8" : e.type === "warn" ? "#f9e2af" : "#a6e3a1", marginBottom: 2 } }, e.time + " " + e.msg))
         )
       ),
