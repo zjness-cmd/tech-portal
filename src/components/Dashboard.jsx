@@ -12,7 +12,7 @@ const STATUS_SHEET_NAME = "Job Status";
 const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
 const GEOFENCE_RADIUS_MILES = 0.12; // ~200 meters
 const GEOFENCE_DWELL_MS = 30 * 1000; // 30 seconds dwell before auto check-in
-const APP_VERSION = "1.3.4";
+const APP_VERSION = "1.3.5";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -707,7 +707,9 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         method: "PATCH",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
         body: JSON.stringify({ summary: cleanTitle }),
-      }).catch(() => {});
+      }).then(() => refresh()).catch(() => {});
+      // Also remove from missedJobs list
+      saveMissedJobs(missedJobs.filter(m => m.jobId !== jobId));
     }
     updateCalendarEvent(job, { checkIn: checkedIn[jobId], checkOut: checkedOut[jobId], completed: true, invoiceUrl: invoicedJobs[jobId] });
   };
@@ -1002,7 +1004,9 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
                 React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 1, flex: 1 } },
                   React.createElement("span", { style: { fontSize: 11, color: "#aaa" } }, (m.from || "Start") + " →"),
                   React.createElement("span", null, m.jobTitle),
-                  duration && React.createElement("span", { style: { fontSize: 11, color: "#888" } }, "⏱ " + (m.checkIn || "") + (m.checkOut ? " – " + m.checkOut : "") + " (" + duration + ")")
+                  m.checkIn && React.createElement("span", { style: { fontSize: 11, color: "#888" } },
+                    "⏱ " + m.checkIn + (m.checkOut ? " – " + m.checkOut : "") + (duration ? " (" + duration + ")" : "")
+                  )
                 ),
                 React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
                   React.createElement("span", { style: styles.mileageVal }, m.miles > 0 ? m.miles + " mi" : "—"),
