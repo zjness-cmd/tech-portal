@@ -10,7 +10,8 @@ export default async function handler(req, res) {
 
   const { endpoint } = req.query;
   const BASE = "https://openapi.etsy.com/v3/application";
-  const headers = { "x-api-key": ETSY_API_KEY };
+  const ETSY_SHARED_SECRET = process.env.ETSY_SHARED_SECRET;
+const headers = { "x-api-key": ETSY_API_KEY + ":" + ETSY_SHARED_SECRET };
 
   try {
     let url = "";
