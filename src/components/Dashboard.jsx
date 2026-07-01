@@ -12,7 +12,7 @@ const STATUS_SHEET_NAME = "Job Status";
 const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
 const GEOFENCE_RADIUS_MILES = 0.12;
 const GEOFENCE_DWELL_MS = 30 * 1000;
-const APP_VERSION = "1.3.6";
+const APP_VERSION = "1.3.7";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -227,7 +227,12 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const displayDate = selectedDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
   const totalMiles = mileageLog.reduce((sum, m) => sum + m.miles, 0);
   const gpsTrackedMiles = gpsTrack.length >= 2 ? Math.round(gpsTrack.reduce((sum, pt, i) => i === 0 ? 0 : sum + calcMiles(gpsTrack[i-1][0], gpsTrack[i-1][1], pt[0], pt[1]), 0) * 10) / 10 : null;
-  const displayMiles = gpsTrackedMiles !== null ? gpsTrackedMiles : Math.round(totalMiles * 10) / 10;
+  // ── FIX: mileage total now comes from the driving-distance legs (Distance Matrix API),
+  // not raw GPS breadcrumb points. The breadcrumb tracker only samples every 30s and
+  // drops points when the tab/screen is backgrounded, which was silently undercounting
+  // real trip mileage. gpsTrackedMiles is still computed above and shown as a secondary
+  // "GPS tracked" label, but no longer overrides the authoritative leg-based total.
+  const displayMiles = Math.round(totalMiles * 10) / 10;
   const monthName = selectedDate.toLocaleDateString("en-US", { month: "long", year: "numeric" });
   const totalCompleted = Object.keys(completed).length + monthlyCompleted;
   const remaining = monthlyCount !== null ? Math.max(0, monthlyCount - totalCompleted) : null;
@@ -586,7 +591,15 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       pendingStatusRef.current["__GPS_TRACK__"] = { status: "gpsTrack", extra: JSON.stringify(next) };
       return next;
     });
-    const gpsTotal = gpsTrackedMiles !== null ? gpsTrackedMiles : Math.round(totalMiles * 10) / 10;
+    let finishMiles = 0;
+    if (lastPositionRef.current) {
+      finishMiles = await getDrivingMiles(lastPositionRef.current.lat, lastPositionRef.current.lng, currentPos.lat, currentPos.lng);
+      if (finishMiles < 0.05 || finishMiles > 150) finishMiles = 0;
+    }
+    // ── FIX: use the leg-based total (totalMiles + this final leg) for the status
+    // message instead of gpsTrackedMiles, so it matches the mileage log the tech
+    // can see and verify, and isn't silently short from GPS breadcrumb gaps.
+    const gpsTotal = Math.round((totalMiles + finishMiles) * 10) / 10;
     let finishLabel = "Finish";
     if (currentPos) {
       try {
@@ -600,11 +613,6 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           finishLabel = [streetNum, street, city].filter(Boolean).join(" ") || "Finish";
         }
       } catch {}
-    }
-    let finishMiles = 0;
-    if (lastPositionRef.current) {
-      finishMiles = await getDrivingMiles(lastPositionRef.current.lat, lastPositionRef.current.lng, currentPos.lat, currentPos.lng);
-      if (finishMiles < 0.05 || finishMiles > 150) finishMiles = 0;
     }
     saveMileage(prev => [...prev, { jobId: "__finish__", jobTitle: "🏁 " + finishLabel, from: prev.length > 0 ? prev[prev.length - 1].jobTitle : "Start", miles: finishMiles, time, checkIn: time }]);
     const todayDateStr = selectedDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
@@ -987,7 +995,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           React.createElement("span", null, "Total"),
           React.createElement("div", { style: { textAlign: "right" } },
             React.createElement("div", null, displayMiles + " mi"),
-            gpsTrackedMiles !== null && React.createElement("div", { style: { fontSize: 10, color: "#888", marginTop: 1 } }, "GPS tracked")
+            gpsTrackedMiles !== null && React.createElement("div", { style: { fontSize: 10, color: "#888", marginTop: 1 } }, "GPS tracked: " + gpsTrackedMiles + " mi")
           )
         ),
         gpsTrack.length >= 2 && React.createElement("button", { onClick: handleViewRoute, style: { marginTop: 10, width: "100%", padding: "8px", borderRadius: 8, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600 } }, "🗺️ View Route in Maps")
