@@ -10,9 +10,9 @@ const HOME = { lat: 45.292159, lng: -93.683355 };
 const LOG_SHEET_NAME = "TechPortal Job Log 2026";
 const STATUS_SHEET_NAME = "Job Status";
 const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
-const GEOFENCE_RADIUS_MILES = 0.12; // ~200 meters
-const GEOFENCE_DWELL_MS = 30 * 1000; // 30 seconds dwell before auto check-in
-const APP_VERSION = "1.3.5";
+const GEOFENCE_RADIUS_MILES = 0.12;
+const GEOFENCE_DWELL_MS = 30 * 1000;
+const APP_VERSION = "1.3.6";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -103,7 +103,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [missedJobs, setMissedJobs] = useState(() => { try { return JSON.parse(localStorage.getItem("techportal_missedJobs") || "[]"); } catch { return []; } });
   const [showMissedModal, setShowMissedModal] = useState(false);
   const [rescheduleTarget, setRescheduleTarget] = useState({});
-  const [rescheduleJob, setRescheduleJob] = useState(null); // the missed job being rescheduled
+  const [rescheduleJob, setRescheduleJob] = useState(null);
   const [dayStarted, setDayStarted] = useState(false);
   const [dayFinished, setDayFinished] = useState(false);
   const [confirmFinish, setConfirmFinish] = useState(false);
@@ -142,7 +142,6 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const jobsRef = useRef([]);
   const dayStartedRef = useRef(false);
   const dayFinishedRef = useRef(false);
-  // ── KEY FIX: keep accessToken in a ref so async functions always get the latest value ──
   const accessTokenRef = useRef(accessToken);
 
   const dbg = (msg, type = "info") => {
@@ -175,7 +174,6 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
 
   useImperativeHandle(ref, () => ({ flushPending: () => flushStatusSaves() }));
 
-  // ── Sync geofence data to service worker for background operation ──────────
   const syncGeofenceDataToSW = () => {
     if (!navigator.serviceWorker?.controller) return;
     navigator.serviceWorker.controller.postMessage({
@@ -191,14 +189,11 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     });
   };
 
-  // Request notification permission and register periodic sync when day starts
   useEffect(() => {
     if (!dayStarted || dayFinished) return;
-    // Request notification permission
     if (Notification.permission === "default") {
       Notification.requestPermission().then(p => dbg("🔔 Notification permission: " + p));
     }
-    // Register periodic background sync (Chrome/Android)
     if ("serviceWorker" in navigator && "periodicSync" in (navigator.serviceWorker || {})) {
       navigator.serviceWorker.ready.then(async reg => {
         try {
@@ -207,17 +202,14 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         } catch (e) { dbg("⚠️ Periodic sync not supported: " + e.message, "warn"); }
       });
     }
-    // Tell SW to start its own interval as fallback
     if (navigator.serviceWorker?.controller) {
       navigator.serviceWorker.controller.postMessage({ type: "START_BACKGROUND_GEOFENCE" });
     }
     syncGeofenceDataToSW();
   }, [dayStarted, dayFinished]);
 
-  // Keep SW geofence data fresh whenever key state changes
   useEffect(() => { if (dayStarted) syncGeofenceDataToSW(); }, [checkedIn, completed, jobCoordsRef.current]);
 
-  // Listen for notification check-in from SW
   useEffect(() => {
     if (!navigator.serviceWorker) return;
     const handler = (event) => {
@@ -252,8 +244,6 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         locationRef.current = c;
         setLocation(c);
         setLocationError(null);
-
-        // ── Geofence check on every GPS update ──────────────────────────
         if (!pos.coords.accuracy || pos.coords.accuracy > 150) {
           if (Math.random() < 0.1) dbg("⚠️ Skipping geofence — accuracy " + Math.round(pos.coords.accuracy || 999) + "m too low", "warn");
           return;
@@ -278,8 +268,6 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           }
           const dist = calcMiles(c.lat, c.lng, coords.lat, coords.lng);
           const inZone = dist <= GEOFENCE_RADIUS_MILES;
-
-          // ── Auto check-in ──────────────────────────────────────────────
           if (!isCheckedIn && !isCompleted) {
             if (inZone) {
               if (!geofenceDwellRef.current[nid]) {
@@ -299,8 +287,6 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               }
             }
           }
-
-          // ── Auto check-out ─────────────────────────────────────────────
           if (isCheckedIn && !isCheckedOut && !isCompleted) {
             if (!inZone) {
               if (!departureDwellRef.current[nid]) {
@@ -312,7 +298,6 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
                 handleCheckOut(nid, job.title, true);
               }
             } else {
-              // Back in zone — cancel departure timer
               if (departureDwellRef.current[nid]) {
                 delete departureDwellRef.current[nid];
                 dbg("↩ Back in zone: " + job.title + " — cancelled auto check-out");
@@ -364,7 +349,6 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     trackIntervalRef.current = setInterval(() => {
       const pos = locationRef.current;
       if (!pos || pos.accuracy > 300) return;
-      // ── GPS track only ──
       setGpsTrack(prev => {
         if (prev.length > 0) { const last = prev[prev.length - 1]; if (calcMiles(last[0], last[1], pos.lat, pos.lng) < 0.01) return prev; }
         const next = [...prev, [parseFloat(pos.lat.toFixed(5)), parseFloat(pos.lng.toFixed(5)), Date.now()]];
@@ -570,7 +554,6 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     setDayStarted(true);
     setDayStatus("Day started at " + time);
     dbg("🚗 Day started at " + time);
-    // Reverse geocode start location
     let startLabel = "Start";
     if (livePos) {
       try {
@@ -604,8 +587,6 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       return next;
     });
     const gpsTotal = gpsTrackedMiles !== null ? gpsTrackedMiles : Math.round(totalMiles * 10) / 10;
-
-    // Reverse geocode finish location and add as final mileage leg
     let finishLabel = "Finish";
     if (currentPos) {
       try {
@@ -620,14 +601,12 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         }
       } catch {}
     }
-    // Calculate distance from last known position to finish — always add the leg, even if 0 mi
     let finishMiles = 0;
     if (lastPositionRef.current) {
       finishMiles = await getDrivingMiles(lastPositionRef.current.lat, lastPositionRef.current.lng, currentPos.lat, currentPos.lng);
       if (finishMiles < 0.05 || finishMiles > 150) finishMiles = 0;
     }
     saveMileage(prev => [...prev, { jobId: "__finish__", jobTitle: "🏁 " + finishLabel, from: prev.length > 0 ? prev[prev.length - 1].jobTitle : "Start", miles: finishMiles, time, checkIn: time }]);
-
     const todayDateStr = selectedDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
     const scheduledJobs = jobs.filter(j => getStatus(j) === "Scheduled");
     if (scheduledJobs.length > 0) {
@@ -640,7 +619,6 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     const status = "Day finished at " + time + " · Total: " + gpsTotal + " mi";
     setDayStatus(status);
     dbg("🏁 " + status);
-    // Tell SW to stop background tracking and clear notification
     if (navigator.serviceWorker?.controller) {
       navigator.serviceWorker.controller.postMessage({ type: "DAY_FINISHED" });
     }
@@ -663,12 +641,21 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     const currentPos = livePos || lastPositionRef.current || startPosRef.current || HOME;
     const accuracyOk = !livePos || livePos.accuracy <= 1000;
     let miles = 0;
-    if (dayStarted && lastPositionRef.current && accuracyOk) {
-      miles = await getDrivingMiles(lastPositionRef.current.lat, lastPositionRef.current.lng, currentPos.lat, currentPos.lng);
-      if (miles > 0.05 && miles < 150) saveMileage((prev) => [...prev, { jobId, jobTitle, from: prev.length === 0 ? "Start" : prev[prev.length - 1].jobTitle, miles, time, checkIn: time }]);
+    // ── KEY FIX: fall back to startPosRef when lastPos is null ──────────────
+    const fromPos = lastPositionRef.current || startPosRef.current;
+    if (dayStarted && fromPos && accuracyOk) {
+      miles = await getDrivingMiles(fromPos.lat, fromPos.lng, currentPos.lat, currentPos.lng);
+      if (miles > 0.05 && miles < 150) {
+        saveMileage((prev) => [...prev, { jobId, jobTitle, from: prev.length === 0 ? "Start" : prev[prev.length - 1].jobTitle, miles, time, checkIn: time }]);
+        dbg("🛣️ Mileage leg: " + miles + " mi to " + jobTitle);
+      } else {
+        dbg("⚠️ Mileage skipped for " + jobTitle + " — " + miles + " mi (out of range or 0)", "warn");
+      }
     } else if (!auto && navStart[jobId] && livePos && accuracyOk) {
       miles = await getDrivingMiles(navStart[jobId].lat, navStart[jobId].lng, livePos.lat, livePos.lng);
       if (miles > 0.05 && miles < 150) saveMileage((prev) => [...prev, { jobId, jobTitle, from: prev.length === 0 ? "Start" : prev[prev.length - 1].jobTitle, miles, time, checkIn: time }]);
+    } else {
+      dbg("⚠️ No fromPos for mileage — fromPos=" + (fromPos ? "set" : "null") + " dayStarted=" + dayStarted, "warn");
     }
     if (livePos) setLastPos({ lat: livePos.lat, lng: livePos.lng });
     await appendToLog([date, jobTitle + (auto ? " (auto)" : ""), time, miles > 0.05 && miles < 150 ? miles : "", invoicedJobs[jobId] ? "Yes" : "No", auto ? "Auto check-in" : ""]);
@@ -699,7 +686,6 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     pendingStatusRef.current[jobId + "__done"] = { status: "completed", extra: checkedIn[jobId] || "" };
     flushStatusSaves();
     const job = jobs.find(j => normalizeId(j.id) === jobId);
-    // Strip ⚠️ MISSED - prefix from calendar title if present
     const cleanTitle = (job?.title || "").replace(/^(⚠️ MISSED - )+/, "");
     if (job && job.title !== cleanTitle) {
       const token = accessTokenRef.current;
@@ -708,7 +694,6 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
         body: JSON.stringify({ summary: cleanTitle }),
       }).then(() => refresh()).catch(() => {});
-      // Also remove from missedJobs list
       saveMissedJobs(missedJobs.filter(m => m.jobId !== jobId));
     }
     updateCalendarEvent(job, { checkIn: checkedIn[jobId], checkOut: checkedOut[jobId], completed: true, invoiceUrl: invoicedJobs[jobId] });
@@ -749,7 +734,6 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
 
   const handleMissed = (jobId, jobTitle, jobLocation, jobCalendarId, jobEventId) => {
     const token = accessTokenRef.current;
-    // Strip any existing ⚠️ MISSED - prefix to prevent doubling
     const cleanTitle = jobTitle.replace(/^(⚠️ MISSED - )+/, "");
     const missed = { jobId, jobTitle: cleanTitle, jobLocation, calendarId: jobCalendarId, eventId: jobEventId, date: selectedDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }), missedAt: Date.now() };
     const existing = JSON.parse(localStorage.getItem("techportal_missedJobs") || "[]");
@@ -778,7 +762,6 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
       body: JSON.stringify({ values: [[dateKey, jobId + "__notes", "notes", notes + (photoLinks ? " | Photos: " + photoLinks : "")]] }),
     });
-    // Also update job object locally so indicators show
     if (job) { job.notes = notes; job.photos = photos; }
     dbg("📝 Notes saved for " + (job?.title || jobId));
   };
@@ -812,13 +795,14 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   };
 
   const handleAddManualLeg = async () => {
-    if (!lastPositionRef.current) { alert("GPS not ready."); return; }
+    const fromPos = lastPositionRef.current || startPosRef.current;
+    if (!fromPos) { alert("GPS not ready."); return; }
     const livePos = locationRef.current;
     if (!livePos) { alert("GPS not available."); return; }
     const label = prompt("What's this leg for?");
     if (!label) return;
     const from = mileageLog.length > 0 ? mileageLog[mileageLog.length - 1].jobTitle : "Last stop";
-    const miles = await getDrivingMiles(lastPositionRef.current.lat, lastPositionRef.current.lng, livePos.lat, livePos.lng);
+    const miles = await getDrivingMiles(fromPos.lat, fromPos.lng, livePos.lat, livePos.lng);
     const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     if (miles > 0.05 && miles < 150) { saveMileage((prev) => [...prev, { jobId: "manual_" + Date.now(), jobTitle: label, from, miles, time, checkIn: time }]); setLastPos({ lat: livePos.lat, lng: livePos.lng }); }
     else { alert("Miles: " + miles + " — too small or too large."); }
@@ -849,8 +833,6 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         onDismiss: (m) => { saveMissedJobs(missedJobs.filter(x => x.jobId !== m.jobId)); setRescheduleJob(null); },
         onClose: () => { setRescheduleJob(null); setShowMissedModal(true); },
       }),
-
-      // ── Drive Mode ───────────────────────────────────────────────────
       driveMode && React.createElement(DriveMode, {
         jobs, checkedIn, checkedOut, completed, location,
         onCheckIn: (nid, title) => handleCheckIn(nid, title),
@@ -859,21 +841,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         dayStarted, displayMiles,
         onExit: () => setDriveMode(false),
       }),
-
-      // ── Debug Panel ──────────────────────────────────────────────────────
       React.createElement("div", { style: { position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 9999 } },
-        React.createElement("button", {
-          onClick: () => setShowDebug(p => !p),
-          style: { width: "100%", padding: "6px", background: "#1a1a2e", color: "#7dd3fc", fontSize: 11, fontFamily: "monospace", border: "none", cursor: "pointer", textAlign: "left" }
-        }, "🔧 Debug (" + debugLog.length + " logs) — tap to " + (showDebug ? "hide" : "show")),
-        showDebug && React.createElement("div", {
-          style: { background: "#0d0d1a", color: "#cdd6f4", fontFamily: "monospace", fontSize: 10, padding: "8px", maxHeight: 200, overflowY: "auto", borderTop: "1px solid #333" }
-        },
+        React.createElement("button", { onClick: () => setShowDebug(p => !p), style: { width: "100%", padding: "6px", background: "#1a1a2e", color: "#7dd3fc", fontSize: 11, fontFamily: "monospace", border: "none", cursor: "pointer", textAlign: "left" } }, "🔧 Debug (" + debugLog.length + " logs) — tap to " + (showDebug ? "hide" : "show")),
+        showDebug && React.createElement("div", { style: { background: "#0d0d1a", color: "#cdd6f4", fontFamily: "monospace", fontSize: 10, padding: "8px", maxHeight: 200, overflowY: "auto", borderTop: "1px solid #333" } },
           React.createElement("button", { onClick: () => { setDebugLog([]); try { localStorage.removeItem("techportal_debugLog_" + new Date().toDateString()); } catch {} }, style: { fontSize: 10, padding: "2px 8px", background: "#333", color: "#fff", border: "none", borderRadius: 4, marginBottom: 4, cursor: "pointer" } }, "Clear"),
           debugLog.map((e, i) => React.createElement("div", { key: i, style: { color: e.type === "error" ? "#f38ba8" : e.type === "warn" ? "#f9e2af" : "#a6e3a1", marginBottom: 2 } }, e.time + " " + e.msg))
         )
       ),
-
       menuOpen && React.createElement("div", { style: styles.menuOverlay, onClick: () => setMenuOpen(false) },
         React.createElement("div", { style: styles.menuDrawer, onClick: e => e.stopPropagation() },
           React.createElement("div", { style: styles.menuHeader }, React.createElement("div", { style: styles.menuTitle }, "Menu"), React.createElement("button", { style: styles.menuClose, onClick: () => setMenuOpen(false) }, "×")),
@@ -919,10 +893,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           )
         ),
         React.createElement("div", { style: { display: "flex", gap: 10, alignItems: "center" } },
-          isToday && dayStarted && !dayFinished && React.createElement("button", {
-            style: { fontSize: 12, padding: "6px 12px", borderRadius: 8, background: "#1a1a2e", color: "#7dd3fc", border: "1px solid #333", cursor: "pointer", fontWeight: 600 },
-            onClick: () => setDriveMode(true),
-          }, "🚗 Drive"),
+          isToday && dayStarted && !dayFinished && React.createElement("button", { style: { fontSize: 12, padding: "6px 12px", borderRadius: 8, background: "#1a1a2e", color: "#7dd3fc", border: "1px solid #333", cursor: "pointer", fontWeight: 600 }, onClick: () => setDriveMode(true) }, "🚗 Drive"),
           React.createElement("button", { style: styles.refreshBtn, onClick: refresh }, "↻"),
           React.createElement("button", { style: styles.logoutBtn, onClick: onLogout }, "Sign out")
         )
@@ -1004,9 +975,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
                 React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 1, flex: 1 } },
                   React.createElement("span", { style: { fontSize: 11, color: "#aaa" } }, (m.from || "Start") + " →"),
                   React.createElement("span", null, m.jobTitle),
-                  m.checkIn && React.createElement("span", { style: { fontSize: 11, color: "#888" } },
-                    "⏱ " + m.checkIn + (m.checkOut ? " – " + m.checkOut : "") + (duration ? " (" + duration + ")" : "")
-                  )
+                  m.checkIn && React.createElement("span", { style: { fontSize: 11, color: "#888" } }, "⏱ " + m.checkIn + (m.checkOut ? " – " + m.checkOut : "") + (duration ? " (" + duration + ")" : ""))
                 ),
                 React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
                   React.createElement("span", { style: styles.mileageVal }, m.miles > 0 ? m.miles + " mi" : "—"),
