@@ -125,7 +125,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [driveMode, setDriveMode] = useState(false);
   const [showEtsy, setShowEtsy] = useState(false);
 
-  const startPosRef = useRef(null);
+  const startPosRef = useRef((() => { try { const s = localStorage.getItem("techportal_startPos"); return s ? JSON.parse(s) : null; } catch { return null; } })());
   const lastPositionRef = useRef((() => { try { const s = localStorage.getItem("techportal_lastPos"); return s ? JSON.parse(s) : null; } catch { return null; } })());
   const setLastPos = (pos) => { lastPositionRef.current = pos; if (pos) { try { localStorage.setItem("techportal_lastPos", JSON.stringify(pos)); } catch {} } };
   const locationRef = useRef(null);
@@ -227,12 +227,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const displayDate = selectedDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
   const totalMiles = mileageLog.reduce((sum, m) => sum + m.miles, 0);
   const gpsTrackedMiles = gpsTrack.length >= 2 ? Math.round(gpsTrack.reduce((sum, pt, i) => i === 0 ? 0 : sum + calcMiles(gpsTrack[i-1][0], gpsTrack[i-1][1], pt[0], pt[1]), 0) * 10) / 10 : null;
-  // ── FIX: mileage total now comes from the driving-distance legs (Distance Matrix API),
-  // not raw GPS breadcrumb points. The breadcrumb tracker only samples every 30s and
-  // drops points when the tab/screen is backgrounded, which was silently undercounting
-  // real trip mileage. gpsTrackedMiles is still computed above and shown as a secondary
-  // "GPS tracked" label, but no longer overrides the authoritative leg-based total.
-  const displayMiles = Math.round(totalMiles * 10) / 10;
+  const displayMiles = gpsTrackedMiles !== null ? gpsTrackedMiles : Math.round(totalMiles * 10) / 10;
   const monthName = selectedDate.toLocaleDateString("en-US", { month: "long", year: "numeric" });
   const totalCompleted = Object.keys(completed).length + monthlyCompleted;
   const remaining = monthlyCount !== null ? Math.max(0, monthlyCount - totalCompleted) : null;
@@ -591,15 +586,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       pendingStatusRef.current["__GPS_TRACK__"] = { status: "gpsTrack", extra: JSON.stringify(next) };
       return next;
     });
-    let finishMiles = 0;
-    if (lastPositionRef.current) {
-      finishMiles = await getDrivingMiles(lastPositionRef.current.lat, lastPositionRef.current.lng, currentPos.lat, currentPos.lng);
-      if (finishMiles < 0.05 || finishMiles > 150) finishMiles = 0;
-    }
-    // ── FIX: use the leg-based total (totalMiles + this final leg) for the status
-    // message instead of gpsTrackedMiles, so it matches the mileage log the tech
-    // can see and verify, and isn't silently short from GPS breadcrumb gaps.
-    const gpsTotal = Math.round((totalMiles + finishMiles) * 10) / 10;
+    const gpsTotal = gpsTrackedMiles !== null ? gpsTrackedMiles : Math.round(totalMiles * 10) / 10;
     let finishLabel = "Finish";
     if (currentPos) {
       try {
@@ -614,7 +601,15 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         }
       } catch {}
     }
-    saveMileage(prev => [...prev, { jobId: "__finish__", jobTitle: "🏁 " + finishLabel, from: prev.length > 0 ? prev[prev.length - 1].jobTitle : "Start", miles: finishMiles, time, checkIn: time }]);
+    let finishMiles = 0;
+    if (lastPositionRef.current) {
+      finishMiles = await getDrivingMiles(lastPositionRef.current.lat, lastPositionRef.current.lng, currentPos.lat, currentPos.lng);
+      if (finishMiles < 0.05 || finishMiles > 150) finishMiles = 0;
+    }
+    saveMileage(prev => {
+      if (prev.some(m => m.jobId === "__finish__")) return prev; // already has finish leg
+      return [...prev, { jobId: "__finish__", jobTitle: "🏁 " + finishLabel, from: prev.length > 0 ? prev[prev.length - 1].jobTitle : "Start", miles: finishMiles, time, checkIn: time }];
+    });
     const todayDateStr = selectedDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
     const scheduledJobs = jobs.filter(j => getStatus(j) === "Scheduled");
     if (scheduledJobs.length > 0) {
@@ -680,6 +675,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     setCheckedOut((prev) => ({ ...prev, [jobId]: time }));
     const livePos = locationRef.current;
     if (livePos) setLastPos({ lat: livePos.lat, lng: livePos.lng });
+    else {
+      // Fall back to job's geocoded coords so next check-in has a valid from point
+      const job = jobs.find(j => normalizeId(j.id) === jobId);
+      const nid = normalizeId(jobId);
+      const coords = jobCoordsRef.current[nid];
+      if (coords) setLastPos({ lat: coords.lat, lng: coords.lng });
+    }
     await appendToLog([date, jobTitle + " (check-out" + (auto ? " auto" : "") + ")", time, "", invoicedJobs[jobId] ? "Yes" : "No", auto ? "Auto check-out" : ""]);
     saveMileage((prev) => prev.map(m => m.jobId === jobId ? { ...m, checkOut: time } : m));
     pendingStatusRef.current[jobId + "__co"] = { status: "checkedOut", extra: time };
@@ -995,7 +997,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           React.createElement("span", null, "Total"),
           React.createElement("div", { style: { textAlign: "right" } },
             React.createElement("div", null, displayMiles + " mi"),
-            gpsTrackedMiles !== null && React.createElement("div", { style: { fontSize: 10, color: "#888", marginTop: 1 } }, "GPS tracked: " + gpsTrackedMiles + " mi")
+            gpsTrackedMiles !== null && React.createElement("div", { style: { fontSize: 10, color: "#888", marginTop: 1 } }, "GPS tracked")
           )
         ),
         gpsTrack.length >= 2 && React.createElement("button", { onClick: handleViewRoute, style: { marginTop: 10, width: "100%", padding: "8px", borderRadius: 8, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600 } }, "🗺️ View Route in Maps")
