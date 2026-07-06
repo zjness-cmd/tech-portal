@@ -10,9 +10,10 @@ const HOME = { lat: 45.292159, lng: -93.683355 };
 const LOG_SHEET_NAME = "TechPortal Job Log 2026";
 const STATUS_SHEET_NAME = "Job Status";
 const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
+const PENDING_SAVES_KEY = "techportal_pendingSaves";
 const GEOFENCE_RADIUS_MILES = 0.12;
 const GEOFENCE_DWELL_MS = 30 * 1000;
-const APP_VERSION = "1.3.7";
+const APP_VERSION = "1.3.8";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -157,6 +158,24 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     console.log("[TechPortal]", msg);
   };
 
+  // ── Pending-save persistence ────────────────────────────────────────────
+  // pendingStatusRef is the in-memory queue of not-yet-saved status writes.
+  // Anything sitting only in that ref disappears if the tab is killed or
+  // reloaded before a flush succeeds. persistPending() mirrors it into
+  // localStorage so a killed session can be rehydrated and retried later.
+  const persistPending = () => {
+    try {
+      const keys = Object.keys(pendingStatusRef.current);
+      if (keys.length === 0) localStorage.removeItem(PENDING_SAVES_KEY);
+      else localStorage.setItem(PENDING_SAVES_KEY, JSON.stringify(pendingStatusRef.current));
+    } catch {}
+  };
+
+  const setPending = (key, value) => {
+    pendingStatusRef.current[key] = value;
+    persistPending();
+  };
+
   const [gpsTrack, setGpsTrack] = useState(() => { try { const k = "gpsTrack_" + new Date().toDateString(); const s = localStorage.getItem(k); return s ? JSON.parse(s) : []; } catch { return []; } });
   const { jobs, loading, error, refresh } = useCalendarJobs(accessToken, selectedDate);
 
@@ -173,6 +192,28 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   }, [accessToken]);
 
   useImperativeHandle(ref, () => ({ flushPending: () => flushStatusSaves() }));
+
+  // Rehydrate any pending saves left over from a killed/reloaded session.
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(PENDING_SAVES_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && Object.keys(parsed).length > 0) {
+          Object.assign(pendingStatusRef.current, parsed);
+          dbg("♻️ Rehydrated " + Object.keys(parsed).length + " unsaved pending write(s) from last session", "warn");
+        }
+      }
+    } catch {}
+  }, []);
+
+  // As soon as we have a valid token, try to flush anything still pending
+  // (rehydrated saves, or saves that were queued while the token was stale).
+  useEffect(() => {
+    if (accessToken && Object.keys(pendingStatusRef.current).length > 0) {
+      flushStatusSaves();
+    }
+  }, [accessToken]);
 
   const syncGeofenceDataToSW = () => {
     if (!navigator.serviceWorker?.controller) return;
@@ -353,7 +394,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         if (prev.length > 0) { const last = prev[prev.length - 1]; if (calcMiles(last[0], last[1], pos.lat, pos.lng) < 0.01) return prev; }
         const next = [...prev, [parseFloat(pos.lat.toFixed(5)), parseFloat(pos.lng.toFixed(5)), Date.now()]];
         try { localStorage.setItem("gpsTrack_" + new Date().toDateString(), JSON.stringify(next)); } catch {}
-        pendingStatusRef.current["__GPS_TRACK__"] = { status: "gpsTrack", extra: JSON.stringify(next) };
+        setPending("__GPS_TRACK__", { status: "gpsTrack", extra: JSON.stringify(next) });
         if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
         saveTimerRef.current = setTimeout(flushStatusSaves, 2000);
         return next;
@@ -366,7 +407,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     setMileageLog(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
       try { localStorage.setItem("mileageLog_" + new Date().toDateString(), JSON.stringify(next)); } catch {}
-      pendingStatusRef.current["__MILEAGE_LOG__"] = { status: "mileageLog", extra: JSON.stringify(next) };
+      setPending("__MILEAGE_LOG__", { status: "mileageLog", extra: JSON.stringify(next) });
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = setTimeout(() => flushStatusSaves(), 800);
       return next;
@@ -465,22 +506,40 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     setStatusLoading(false);
   };
 
+  // ── flushStatusSaves ─────────────────────────────────────────────────────
+  // Any path that fails now (a) always re-queues the pending saves back into
+  // pendingStatusRef.current (previously two branches — "no sheet ID" and
+  // "catch after 3 retries" — dropped them entirely) and (b) persists them
+  // to localStorage via requeue(), so a killed/reloaded tab can recover them
+  // on next launch instead of losing the write silently.
   const flushStatusSaves = async (retryCount = 0) => {
     const token = accessTokenRef.current;
     const pending = { ...pendingStatusRef.current };
     pendingStatusRef.current = {};
     if (Object.keys(pending).length === 0) return;
     dbg("💾 Flushing " + Object.keys(pending).length + " pending saves (token: " + (token ? token.slice(0,8) + "..." : "MISSING") + ")");
-    if (!token) { dbg("❌ No token — aborting flush", "error"); Object.assign(pendingStatusRef.current, pending); return; }
+    persistPending(); // reflect the optimistic clear in localStorage; requeue() below restores it on failure
+
+    const requeue = (scheduleRetry) => {
+      Object.assign(pendingStatusRef.current, pending);
+      persistPending();
+      if (!scheduleRetry) return;
+      if (retryCount < 3) {
+        setTimeout(() => flushStatusSaves(retryCount + 1), (retryCount + 1) * 2000);
+      } else {
+        dbg("⛔ Giving up after 3 retries — " + Object.keys(pending).length + " save(s) still pending, will retry on next trigger", "error");
+      }
+    };
+
+    if (!token) { dbg("❌ No token — aborting flush", "error"); requeue(true); return; }
     try {
       const sheetId = await getOrCreateLogSheet();
-      if (!sheetId) { dbg("❌ No sheet ID", "error"); return; }
+      if (!sheetId) { dbg("❌ No sheet ID", "error"); requeue(true); return; }
       const dateKey = selectedDateRef.current.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
       const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A:D", { headers: { Authorization: "Bearer " + token } });
       if (res.status === 401) {
         dbg("⚠️ 401 on flush (retry " + retryCount + ")", "warn");
-        if (retryCount < 3) { Object.assign(pendingStatusRef.current, pending); setTimeout(() => flushStatusSaves(retryCount + 1), (retryCount + 1) * 2000); }
-        else { Object.assign(pendingStatusRef.current, pending); }
+        requeue(true);
         return;
       }
       const data = await res.json();
@@ -495,15 +554,20 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       });
       if (updateRequests.length > 0) {
         const r = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values:batchUpdate", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ valueInputOption: "USER_ENTERED", data: updateRequests }) });
-        if (!r.ok) { dbg("❌ batchUpdate failed: " + r.status, "error"); if (retryCount < 3) { Object.assign(pendingStatusRef.current, pending); setTimeout(() => flushStatusSaves(retryCount + 1), (retryCount + 1) * 2000); return; } }
+        if (!r.ok) { dbg("❌ batchUpdate failed: " + r.status, "error"); requeue(true); return; }
         else dbg("✅ Updated " + updateRequests.length + " rows");
       }
       if (appendRows.length > 0) {
         const r = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A:D:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: appendRows }) });
-        if (!r.ok) { dbg("❌ append failed: " + r.status, "error"); if (retryCount < 3) { Object.assign(pendingStatusRef.current, pending); setTimeout(() => flushStatusSaves(retryCount + 1), (retryCount + 1) * 2000); return; } }
+        if (!r.ok) { dbg("❌ append failed: " + r.status, "error"); requeue(true); return; }
         else dbg("✅ Appended " + appendRows.length + " rows");
       }
-    } catch (e) { dbg("❌ flush error: " + e.message, "error"); if (retryCount < 3) { Object.assign(pendingStatusRef.current, pending); setTimeout(() => flushStatusSaves(retryCount + 1), (retryCount + 1) * 2000); } }
+      // Everything for this batch succeeded — nothing left to persist.
+      try { localStorage.removeItem(PENDING_SAVES_KEY); } catch {}
+    } catch (e) {
+      dbg("❌ flush error: " + e.message, "error");
+      requeue(true);
+    }
   };
 
   const appendToLog = async (row) => {
@@ -549,7 +613,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       const startPt = [parseFloat(livePos.lat.toFixed(5)), parseFloat(livePos.lng.toFixed(5)), Date.now()];
       setGpsTrack([startPt]);
       try { localStorage.setItem("gpsTrack_" + new Date().toDateString(), JSON.stringify([startPt])); } catch {}
-      pendingStatusRef.current["__GPS_TRACK__"] = { status: "gpsTrack", extra: JSON.stringify([startPt]) };
+      setPending("__GPS_TRACK__", { status: "gpsTrack", extra: JSON.stringify([startPt]) });
     }
     setDayStarted(true);
     setDayStatus("Day started at " + time);
@@ -570,7 +634,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     }
     saveMileage([{ jobId: "__home__", jobTitle: "🚗 " + startLabel, from: "", miles: 0, time, checkIn: time }]);
     await appendToLog([date, "🚗 Start Day (" + startLabel + ")", time, "0", "", "Departed"]);
-    pendingStatusRef.current["__DAY_STARTED__"] = { status: "started", extra: time };
+    setPending("__DAY_STARTED__", { status: "started", extra: time });
     await flushStatusSaves();
   };
 
@@ -583,7 +647,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     setGpsTrack(prev => {
       const next = [...prev, endPt];
       try { localStorage.setItem("gpsTrack_" + new Date().toDateString(), JSON.stringify(next)); } catch {}
-      pendingStatusRef.current["__GPS_TRACK__"] = { status: "gpsTrack", extra: JSON.stringify(next) };
+      setPending("__GPS_TRACK__", { status: "gpsTrack", extra: JSON.stringify(next) });
       return next;
     });
     const gpsTotal = gpsTrackedMiles !== null ? gpsTrackedMiles : Math.round(totalMiles * 10) / 10;
@@ -626,7 +690,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       navigator.serviceWorker.controller.postMessage({ type: "DAY_FINISHED" });
     }
     await appendToLog([date, "🏁 Finish Day (" + finishLabel + ")", time, "", "", "Total day: " + gpsTotal + " mi"]);
-    pendingStatusRef.current["__DAY_FINISHED__"] = { status: "finished", extra: status };
+    setPending("__DAY_FINISHED__", { status: "finished", extra: status });
     await flushStatusSaves();
   };
 
@@ -662,7 +726,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     }
     if (livePos) setLastPos({ lat: livePos.lat, lng: livePos.lng });
     await appendToLog([date, jobTitle + (auto ? " (auto)" : ""), time, miles > 0.05 && miles < 150 ? miles : "", invoicedJobs[jobId] ? "Yes" : "No", auto ? "Auto check-in" : ""]);
-    pendingStatusRef.current[jobId + "__ci"] = { status: "checkedIn", extra: time };
+    setPending(jobId + "__ci", { status: "checkedIn", extra: time });
     flushStatusSaves();
     const job = jobsRef.current.find(j => normalizeId(j.id) === jobId);
     if (job) updateCalendarEvent(job, { checkIn: time });
@@ -684,7 +748,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     }
     await appendToLog([date, jobTitle + " (check-out" + (auto ? " auto" : "") + ")", time, "", invoicedJobs[jobId] ? "Yes" : "No", auto ? "Auto check-out" : ""]);
     saveMileage((prev) => prev.map(m => m.jobId === jobId ? { ...m, checkOut: time } : m));
-    pendingStatusRef.current[jobId + "__co"] = { status: "checkedOut", extra: time };
+    setPending(jobId + "__co", { status: "checkedOut", extra: time });
     flushStatusSaves();
     const job = jobs.find(j => normalizeId(j.id) === jobId);
     updateCalendarEvent(job, { checkIn: checkedIn[jobId], checkOut: time });
@@ -693,7 +757,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const handleComplete = (jobId) => {
     dbg("✅ Complete: " + jobId);
     setCompleted((prev) => ({ ...prev, [jobId]: true }));
-    pendingStatusRef.current[jobId + "__done"] = { status: "completed", extra: checkedIn[jobId] || "" };
+    setPending(jobId + "__done", { status: "completed", extra: checkedIn[jobId] || "" });
     flushStatusSaves();
     const job = jobs.find(j => normalizeId(j.id) === jobId);
     const cleanTitle = (job?.title || "").replace(/^(⚠️ MISSED - )+/, "");
@@ -714,9 +778,9 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     setCheckedIn((prev) => { const n = { ...prev }; delete n[jobId]; return n; });
     setCheckedOut((prev) => { const n = { ...prev }; delete n[jobId]; return n; });
     saveMileage((prev) => prev.filter((m) => m.jobId !== jobId));
-    pendingStatusRef.current[jobId + "__ci"] = { status: "undone", extra: "" };
-    pendingStatusRef.current[jobId + "__co"] = { status: "undone", extra: "" };
-    pendingStatusRef.current[jobId + "__done"] = { status: "undone", extra: "" };
+    setPending(jobId + "__ci", { status: "undone", extra: "" });
+    setPending(jobId + "__co", { status: "undone", extra: "" });
+    setPending(jobId + "__done", { status: "undone", extra: "" });
     flushStatusSaves();
     const job = jobs.find(j => normalizeId(j.id) === jobId);
     updateCalendarEvent(job, {});
@@ -726,7 +790,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const handleInvoiceClose = () => { setInvoiceJob(null); };
   const handleInvoiceCreated = (jobId, invoiceUrl) => {
     setInvoicedJobs((prev) => ({ ...prev, [jobId]: invoiceUrl }));
-    pendingStatusRef.current[normalizeId(jobId) + "__invoice"] = { status: "invoiced", extra: invoiceUrl };
+    setPending(normalizeId(jobId) + "__invoice", { status: "invoiced", extra: invoiceUrl });
     flushStatusSaves();
     const job = jobs.find(j => normalizeId(j.id) === jobId);
     updateCalendarEvent(job, { checkIn: checkedIn[jobId], checkOut: checkedOut[jobId], completed: !!completed[jobId], invoiceUrl });
@@ -734,8 +798,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
 
   const handleUndoFinishDay = async () => {
     setDayFinished(false); setConfirmFinish(false); setDayStatus("Day started — resumed");
-    pendingStatusRef.current["__DAY_FINISHED__"] = { status: "unfinished", extra: "" };
-    pendingStatusRef.current["__DAY_STARTED__"] = { status: "started", extra: "resumed" };
+    setPending("__DAY_FINISHED__", { status: "unfinished", extra: "" });
+    setPending("__DAY_STARTED__", { status: "started", extra: "resumed" });
     saveMileage(prev => prev.filter(m => m.jobId !== "__home__"));
     await flushStatusSaves();
   };
@@ -749,7 +813,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     const existing = JSON.parse(localStorage.getItem("techportal_missedJobs") || "[]");
     saveMissedJobs([...existing.filter(m => m.jobId !== jobId), missed]);
     setCompleted(prev => ({ ...prev, [jobId]: true }));
-    pendingStatusRef.current[jobId + "__done"] = { status: "missed", extra: cleanTitle };
+    setPending(jobId + "__done", { status: "missed", extra: cleanTitle });
     flushStatusSaves();
     if (jobCalendarId && jobEventId && token) {
       fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(jobCalendarId) + "/events/" + jobEventId, {
