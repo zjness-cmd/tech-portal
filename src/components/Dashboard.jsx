@@ -13,7 +13,7 @@ const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
 const PENDING_SAVES_KEY = "techportal_pendingSaves";
 const GEOFENCE_RADIUS_MILES = 0.12;
 const GEOFENCE_DWELL_MS = 30 * 1000;
-const APP_VERSION = "1.3.8";
+const APP_VERSION = "1.4.0";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -140,6 +140,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const checkedInRef = useRef(checkedIn);
   const completedRef = useRef(completed);
   const checkedOutRef = useRef(checkedOut);
+  const mileageLogRef = useRef([]);
+  const gpsTrackRef = useRef([]);
   const jobsRef = useRef([]);
   const dayStartedRef = useRef(false);
   const dayFinishedRef = useRef(false);
@@ -180,6 +182,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const { jobs, loading, error, refresh } = useCalendarJobs(accessToken, selectedDate);
 
   useEffect(() => { checkedInRef.current = checkedIn; }, [checkedIn]);
+  useEffect(() => { mileageLogRef.current = mileageLog; }, [mileageLog]);
+  useEffect(() => { gpsTrackRef.current = gpsTrack; }, [gpsTrack]);
   useEffect(() => { completedRef.current = completed; }, [completed]);
   useEffect(() => { checkedOutRef.current = checkedOut; }, [checkedOut]);
   useEffect(() => { jobsRef.current = jobs; }, [jobs]);
@@ -481,8 +485,30 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       let loadedStarted = false; let loadedFinished = false; let loadedStatus = "";
       let lastMileageRow = null; let lastGpsRow = null;
       todayRows.forEach(row => { if (row[1] === "__MILEAGE_LOG__") lastMileageRow = row; if (row[1] === "__GPS_TRACK__") lastGpsRow = row; });
-      if (lastMileageRow) { try { const log = JSON.parse(lastMileageRow[3]); if (Array.isArray(log) && log.length > 0) setMileageLog(log); } catch {} }
-      if (lastGpsRow) { try { const track = JSON.parse(lastGpsRow[3]); if (Array.isArray(track) && track.length > 0) setGpsTrack(track); } catch {} }
+      // ── Stale-read guard: mileageLog / gpsTrack ──────────────────────────
+      // A sheet read can race a not-yet-flushed local write (e.g. a token
+      // refresh reload firing right after a mileage leg was added locally
+      // but before it synced). Accepting the fetched array unconditionally
+      // in that case silently reverts local progress. Skip the overwrite
+      // if that key still has a pending save queued, or if the fetched
+      // array is shorter than what's already loaded locally — a real sync
+      // should only ever grow these arrays, never shrink them.
+      const mileagePending = !!pendingStatusRef.current["__MILEAGE_LOG__"];
+      const gpsPending = !!pendingStatusRef.current["__GPS_TRACK__"];
+      if (lastMileageRow && !mileagePending) {
+        try {
+          const log = JSON.parse(lastMileageRow[3]);
+          if (Array.isArray(log) && log.length >= mileageLogRef.current.length) setMileageLog(log);
+          else if (Array.isArray(log) && log.length > 0) dbg("⚠️ Skipped stale mileage-log read (" + log.length + " legs vs " + mileageLogRef.current.length + " local)", "warn");
+        } catch {}
+      }
+      if (lastGpsRow && !gpsPending) {
+        try {
+          const track = JSON.parse(lastGpsRow[3]);
+          if (Array.isArray(track) && track.length >= gpsTrackRef.current.length) setGpsTrack(track);
+          else if (Array.isArray(track) && track.length > 0) dbg("⚠️ Skipped stale GPS-track read (" + track.length + " pts vs " + gpsTrackRef.current.length + " local)", "warn");
+        } catch {}
+      }
       todayRows.forEach(row => {
         const [, jobId, status, extra] = row;
         if (jobId === "__DAY_STARTED__") { loadedStarted = true; loadedStatus = "Day started at " + extra; }
@@ -496,6 +522,20 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           if (status === "undone") { delete newCI[baseId]; delete newCO[baseId]; delete newComp[baseId]; }
         }
       });
+      // ── Stale-read guard: check-in / check-out / completed ───────────────
+      // Anything still sitting in pendingStatusRef hasn't been confirmed
+      // written to the sheet yet, which means it's more recent than
+      // whatever this read just fetched. Re-apply those on top so a
+      // reload can't clobber a check-in/check-out that's simply still
+      // in flight (e.g. mid-retry after a 401).
+      let reconciledCount = 0;
+      Object.entries(pendingStatusRef.current).forEach(([key, entry]) => {
+        if (!entry || key.startsWith("__")) return;
+        if (key.endsWith("__ci")) { const id = normalizeId(key.slice(0, -4)); if (entry.status === "checkedIn") { newCI[id] = entry.extra || "—"; reconciledCount++; } if (entry.status === "undone") delete newCI[id]; }
+        else if (key.endsWith("__co")) { const id = normalizeId(key.slice(0, -4)); if (entry.status === "checkedOut") { newCO[id] = entry.extra || "—"; reconciledCount++; } if (entry.status === "undone") delete newCO[id]; }
+        else if (key.endsWith("__done")) { const id = normalizeId(key.slice(0, -6)); if (entry.status === "completed" || entry.status === "missed") { newComp[id] = true; reconciledCount++; } if (entry.status === "undone") delete newComp[id]; }
+      });
+      if (reconciledCount > 0) dbg("♻️ Reconciled " + reconciledCount + " in-flight pending write(s) over sheet read", "warn");
       setCheckedIn(newCI); setCheckedOut(newCO); setCompleted(newComp); setInvoicedJobs(newInv);
       try { const ck = JOB_STATUS_CACHE_KEY + selectedDate.toDateString(); localStorage.setItem(ck, JSON.stringify({ checkedIn: newCI, checkedOut: newCO, completed: newComp, invoiced: newInv })); } catch {}
       if (loadedStarted) { setDayStarted(true); if (!lastPositionRef.current && locationRef.current) setLastPos({ lat: locationRef.current.lat, lng: locationRef.current.lng }); try { const sp = localStorage.getItem("techportal_startPos"); if (sp) startPosRef.current = JSON.parse(sp); } catch {} }
@@ -892,6 +932,46 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
 
   const counts = { total: jobs.length, done: jobs.filter(j => getStatus(j) === "Done").length, inProgress: jobs.filter(j => getStatus(j) === "Checked In").length, scheduled: jobs.filter(j => getStatus(j) === "Scheduled").length };
   const filtered = filter === "All" ? jobs : jobs.filter(j => { const s = getStatus(j); return s === filter || (filter === "Done" && completed[normalizeId(j.id)]); });
+  const handleExportDebug = () => {
+    const lines = [...debugLog].reverse(); // debugLog is newest-first; report reads oldest-first
+    const header = [
+      "TechPortal Debug Report",
+      "App version: " + APP_VERSION,
+      "Exported: " + new Date().toLocaleString(),
+      "Entries: " + lines.length,
+      "".padEnd(50, "="),
+      "",
+    ].join("\n");
+    const body = lines.map(e => e.time + "  [" + (e.type || "info").toUpperCase() + "]  " + e.msg).join("\n");
+    const text = header + body + "\n";
+    const filename = "techportal-debug-" + new Date().toISOString().slice(0, 10) + "-" + Date.now() + ".txt";
+
+    const download = () => {
+      try {
+        const blob = new Blob([text], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (e) { alert("Export failed: " + e.message); }
+    };
+
+    if (navigator.share && navigator.canShare) {
+      try {
+        const file = new File([text], filename, { type: "text/plain" });
+        if (navigator.canShare({ files: [file] })) {
+          navigator.share({ files: [file], title: "TechPortal Debug Report" }).catch(() => {});
+          return;
+        }
+      } catch {}
+    }
+    download();
+  };
+
   const dotStyle = { width: 8, height: 8, borderRadius: "50%", background: location ? "#27500A" : "#888", display: "inline-block", marginRight: 4 };
   const modalEvents = modalType === "completed" ? completedEvents : remainingEvents;
   const modalTitleText = modalType === "completed" ? "Completed This Month" : "Remaining This Month";
@@ -918,7 +998,10 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       React.createElement("div", { style: { position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 9999 } },
         React.createElement("button", { onClick: () => setShowDebug(p => !p), style: { width: "100%", padding: "6px", background: "#1a1a2e", color: "#7dd3fc", fontSize: 11, fontFamily: "monospace", border: "none", cursor: "pointer", textAlign: "left" } }, "🔧 Debug (" + debugLog.length + " logs) — tap to " + (showDebug ? "hide" : "show")),
         showDebug && React.createElement("div", { style: { background: "#0d0d1a", color: "#cdd6f4", fontFamily: "monospace", fontSize: 10, padding: "8px", maxHeight: 200, overflowY: "auto", borderTop: "1px solid #333" } },
-          React.createElement("button", { onClick: () => { setDebugLog([]); try { localStorage.removeItem("techportal_debugLog_" + new Date().toDateString()); } catch {} }, style: { fontSize: 10, padding: "2px 8px", background: "#333", color: "#fff", border: "none", borderRadius: 4, marginBottom: 4, cursor: "pointer" } }, "Clear"),
+          React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 4 } },
+            React.createElement("button", { onClick: () => { setDebugLog([]); try { localStorage.removeItem("techportal_debugLog_" + new Date().toDateString()); } catch {} }, style: { fontSize: 10, padding: "2px 8px", background: "#333", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer" } }, "Clear"),
+            React.createElement("button", { onClick: handleExportDebug, style: { fontSize: 10, padding: "2px 8px", background: "#185FA5", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer" } }, "⬆ Export")
+          ),
           debugLog.map((e, i) => React.createElement("div", { key: i, style: { color: e.type === "error" ? "#f38ba8" : e.type === "warn" ? "#f9e2af" : "#a6e3a1", marginBottom: 2 } }, e.time + " " + e.msg))
         )
       ),
