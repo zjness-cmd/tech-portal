@@ -13,7 +13,7 @@ const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
 const PENDING_SAVES_KEY = "techportal_pendingSaves";
 const GEOFENCE_RADIUS_MILES = 0.12;
 const GEOFENCE_DWELL_MS = 30 * 1000;
-const APP_VERSION = "1.4.1";
+const APP_VERSION = "1.4.2";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -515,6 +515,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           else if (Array.isArray(track) && track.length > 0) dbg("⚠️ Skipped stale GPS-track read (" + track.length + " pts vs " + gpsTrackRef.current.length + " local)", "warn");
         } catch {}
       }
+      const missedFromSheet = [];
       todayRows.forEach(row => {
         const [, jobId, status, extra] = row;
         if (jobId === "__DAY_STARTED__") { loadedStarted = true; loadedStatus = "Day started at " + extra; }
@@ -524,6 +525,17 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           if (status === "checkedIn") newCI[baseId] = extra || "—";
           if (status === "checkedOut") newCO[baseId] = extra || "—";
           if (status === "completed") { newComp[baseId] = true; newCI[baseId] = newCI[baseId] || "—"; }
+          // "missed" is its own status value (written by handleMissed) distinct
+          // from "completed" — it needs to count as done for job-status
+          // purposes too, or the job silently reverts to "Scheduled" on any
+          // read that didn't originate from the same browser session.
+          if (status === "missed") {
+            newComp[baseId] = true;
+            const matchedJob = jobsRef.current.find(j => normalizeId(j.id) === baseId);
+            if (matchedJob) {
+              missedFromSheet.push({ jobId: baseId, jobTitle: extra || matchedJob.title, jobLocation: matchedJob.location, calendarId: matchedJob.calendarId, eventId: matchedJob.id, date: dateKey, missedAt: Date.now() });
+            }
+          }
           if (status === "invoiced") newInv[baseId] = extra || "";
           if (status === "undone") { delete newCI[baseId]; delete newCO[baseId]; delete newComp[baseId]; }
         }
@@ -542,6 +554,14 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         else if (key.endsWith("__done")) { const id = normalizeId(key.slice(0, -6)); if (entry.status === "completed" || entry.status === "missed") { newComp[id] = true; reconciledCount++; } if (entry.status === "undone") delete newComp[id]; }
       });
       if (reconciledCount > 0) dbg("♻️ Reconciled " + reconciledCount + " in-flight pending write(s) over sheet read", "warn");
+      if (missedFromSheet.length > 0) {
+        try {
+          const existingMissed = JSON.parse(localStorage.getItem("techportal_missedJobs") || "[]");
+          const merged = [...existingMissed.filter(m => !missedFromSheet.find(n => n.jobId === m.jobId)), ...missedFromSheet];
+          saveMissedJobs(merged);
+          dbg("⚠️ Rebuilt " + missedFromSheet.length + " missed-job entry(ies) from sheet data", "warn");
+        } catch {}
+      }
       setCheckedIn(newCI); setCheckedOut(newCO); setCompleted(newComp); setInvoicedJobs(newInv);
       try { const ck = JOB_STATUS_CACHE_KEY + selectedDate.toDateString(); localStorage.setItem(ck, JSON.stringify({ checkedIn: newCI, checkedOut: newCO, completed: newComp, invoiced: newInv })); } catch {}
       if (loadedStarted) { setDayStarted(true); if (!lastPositionRef.current && locationRef.current) setLastPos({ lat: locationRef.current.lat, lng: locationRef.current.lng }); try { const sp = localStorage.getItem("techportal_startPos"); if (sp) startPosRef.current = JSON.parse(sp); } catch {} }
