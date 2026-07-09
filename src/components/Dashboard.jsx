@@ -13,7 +13,7 @@ const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
 const PENDING_SAVES_KEY = "techportal_pendingSaves";
 const GEOFENCE_RADIUS_MILES = 0.12;
 const GEOFENCE_DWELL_MS = 30 * 1000;
-const APP_VERSION = "1.4.0";
+const APP_VERSION = "1.4.1";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -142,6 +142,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const checkedOutRef = useRef(checkedOut);
   const mileageLogRef = useRef([]);
   const gpsTrackRef = useRef([]);
+  const loadingStatusesRef = useRef(false);
   const jobsRef = useRef([]);
   const dayStartedRef = useRef(false);
   const dayFinishedRef = useRef(false);
@@ -464,22 +465,27 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   };
 
   const loadJobStatuses = async (isRetry = false) => {
+    if (loadingStatusesRef.current && !isRetry) {
+      dbg("⏭️ Skipped overlapping loadJobStatuses call (already in progress)", "warn");
+      return;
+    }
+    loadingStatusesRef.current = true;
     const token = accessTokenRef.current;
     setStatusLoading(true);
     dbg("📥 Loading job statuses...");
     try {
       const sheetId = await getOrCreateLogSheet();
-      if (!sheetId) { setStatusLoading(false); return; }
+      if (!sheetId) { setStatusLoading(false); loadingStatusesRef.current = false; return; }
       await ensureStatusTab(sheetId);
       const dateKey = selectedDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
       const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A:D", { headers: { Authorization: "Bearer " + token } });
-      if (!res.ok) { dbg("❌ Sheets read failed: " + res.status, "error"); localStorage.removeItem("techportal_logSheetId"); setLogSheetId(null); setStatusLoading(false); return; }
+      if (!res.ok) { dbg("❌ Sheets read failed: " + res.status, "error"); localStorage.removeItem("techportal_logSheetId"); setLogSheetId(null); setStatusLoading(false); loadingStatusesRef.current = false; return; }
       const data = await res.json();
       const rows = data.values || [];
       const todayRows = rows.filter(r => r[0] === dateKey);
       dbg("📊 Loaded " + todayRows.length + " rows for " + dateKey);
       if (rows.length <= 1 && !isRetry && localStorage.getItem("techportal_logSheetId")) {
-        localStorage.removeItem("techportal_logSheetId"); setLogSheetId(null); setStatusLoading(false); loadJobStatuses(true); return;
+        localStorage.removeItem("techportal_logSheetId"); setLogSheetId(null); setStatusLoading(false); loadingStatusesRef.current = false; loadJobStatuses(true); return;
       }
       const newCI = {}; const newCO = {}; const newComp = {}; const newInv = {};
       let loadedStarted = false; let loadedFinished = false; let loadedStatus = "";
@@ -544,6 +550,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       dbg("✅ Statuses loaded: " + Object.keys(newCI).length + " CI, " + Object.keys(newCO).length + " CO, " + Object.keys(newComp).length + " done");
     } catch (e) { dbg("❌ loadJobStatuses error: " + e.message, "error"); }
     setStatusLoading(false);
+    loadingStatusesRef.current = false;
   };
 
   // ── flushStatusSaves ─────────────────────────────────────────────────────
@@ -554,15 +561,23 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   // on next launch instead of losing the write silently.
   const flushStatusSaves = async (retryCount = 0) => {
     const token = accessTokenRef.current;
-    const pending = { ...pendingStatusRef.current };
-    pendingStatusRef.current = {};
+    const pending = { ...pendingStatusRef.current }; // snapshot only — do NOT clear yet
     if (Object.keys(pending).length === 0) return;
     dbg("💾 Flushing " + Object.keys(pending).length + " pending saves (token: " + (token ? token.slice(0,8) + "..." : "MISSING") + ")");
-    persistPending(); // reflect the optimistic clear in localStorage; requeue() below restores it on failure
 
-    const requeue = (scheduleRetry) => {
-      Object.assign(pendingStatusRef.current, pending);
+    // Anything in `pending` stays in pendingStatusRef.current for the entire
+    // duration of this attempt (not just on failure). That way, if
+    // loadJobStatuses() runs concurrently mid-flush — which the debug log
+    // shows can happen, sometimes multiple times per second — its
+    // reconciliation step still sees these as in-flight and re-applies them
+    // on top of a sheet read that hasn't caught up yet, instead of a stale
+    // read silently reverting a tap (e.g. "missed") that's still in transit.
+    const clearFlushed = () => {
+      Object.keys(pending).forEach((k) => { delete pendingStatusRef.current[k]; });
       persistPending();
+    };
+    const requeue = (scheduleRetry) => {
+      persistPending(); // pending values are already still in the ref; just persist the current state
       if (!scheduleRetry) return;
       if (retryCount < 3) {
         setTimeout(() => flushStatusSaves(retryCount + 1), (retryCount + 1) * 2000);
@@ -602,8 +617,9 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         if (!r.ok) { dbg("❌ append failed: " + r.status, "error"); requeue(true); return; }
         else dbg("✅ Appended " + appendRows.length + " rows");
       }
-      // Everything for this batch succeeded — nothing left to persist.
-      try { localStorage.removeItem(PENDING_SAVES_KEY); } catch {}
+      // Everything for this batch succeeded — clear exactly these keys,
+      // preserving anything newer that may have been queued during the flush.
+      clearFlushed();
     } catch (e) {
       dbg("❌ flush error: " + e.message, "error");
       requeue(true);
@@ -849,6 +865,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const handleMissed = (jobId, jobTitle, jobLocation, jobCalendarId, jobEventId) => {
     const token = accessTokenRef.current;
     const cleanTitle = jobTitle.replace(/^(⚠️ MISSED - )+/, "");
+    dbg("⚠️ Marking missed: " + cleanTitle);
     const missed = { jobId, jobTitle: cleanTitle, jobLocation, calendarId: jobCalendarId, eventId: jobEventId, date: selectedDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }), missedAt: Date.now() };
     const existing = JSON.parse(localStorage.getItem("techportal_missedJobs") || "[]");
     saveMissedJobs([...existing.filter(m => m.jobId !== jobId), missed]);
@@ -860,7 +877,10 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         method: "PATCH",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
         body: JSON.stringify({ summary: "⚠️ MISSED - " + cleanTitle }),
-      }).catch(() => {});
+      }).then(r => { if (!r.ok) dbg("❌ Calendar title update failed for " + cleanTitle + ": " + r.status, "error"); else dbg("✅ Calendar title updated: " + cleanTitle); })
+        .catch(e => dbg("❌ Calendar title update error for " + cleanTitle + ": " + e.message, "error"));
+    } else {
+      dbg("⚠️ Skipped calendar title update for " + cleanTitle + " — missing calendarId/eventId/token", "warn");
     }
   };
 
