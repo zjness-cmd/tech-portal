@@ -1,0 +1,1475 @@
+warning: in the working copy of 'src/components/Dashboard.jsx', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/src/components/Dashboard.jsx b/src/components/Dashboard.jsx[m
+[1mindex 8e40a76..58b996b 100644[m
+[1m--- a/src/components/Dashboard.jsx[m
+[1m+++ b/src/components/Dashboard.jsx[m
+[36m@@ -1,34 +1,16 @@[m
+[31m-﻿import React, { useState, useEffect, useRef, useImperativeHandle, forwardRef } from "react";[m
+[32m+[m[32mimport React, { useState, useEffect, useRef } from "react";[m
+ import { useCalendarJobs } from "../hooks/useCalendarJobs";[m
+ import InvoiceModal from "./InvoiceModal";[m
+[31m-import JobCard from "./JobCard";[m
+[31m-import RescheduleModal from "./RescheduleModal";[m
+[31m-import DriveMode from "./DriveMode";[m
+[31m-import EtsyStats from "./EtsyStats";[m
+ [m
+ const HOME = { lat: 45.292159, lng: -93.683355 };[m
+ const LOG_SHEET_NAME = "TechPortal Job Log 2026";[m
+[31m-const STATUS_SHEET_NAME = "Job Status";[m
+[31m-const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";[m
+[31m-const PENDING_SAVES_KEY = "techportal_pendingSaves";[m
+[31m-const GEOFENCE_RADIUS_MILES = 0.12;[m
+[31m-const GEOFENCE_DWELL_MS = 30 * 1000;[m
+[31m-const APP_VERSION = "1.4.2";[m
+ [m
+[31m-const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;[m
+[31m-[m
+[31m-let mapsApiLoaded = false;[m
+[31m-function loadMapsApi() {[m
+[31m-  if (mapsApiLoaded || window.google?.maps) { mapsApiLoaded = true; return Promise.resolve(); }[m
+[31m-  return new Promise((resolve, reject) => {[m
+[31m-    const script = document.createElement("script");[m
+[31m-    script.src = "https://maps.googleapis.com/maps/api/js?key=" + MAPS_API_KEY + "&libraries=geometry";[m
+[31m-    script.async = true;[m
+[31m-    script.onload = () => { mapsApiLoaded = true; resolve(); };[m
+[31m-    script.onerror = reject;[m
+[31m-    document.head.appendChild(script);[m
+[31m-  });[m
+[31m-}[m
+[32m+[m[32mconst STATUS_STYLES = {[m
+[32m+[m[32m  Scheduled: { bg: "#E6F1FB", color: "#0C447C" },[m
+[32m+[m[32m  "In Progress": { bg: "#FAEEDA", color: "#633806" },[m
+[32m+[m[32m  Done: { bg: "#EAF3DE", color: "#27500A" },[m
+[32m+[m[32m  "Checked In": { bg: "#EAF3DE", color: "#27500A" },[m
+[32m+[m[32m};[m
+ [m
+ function calcMiles(lat1, lng1, lat2, lng2) {[m
+   const R = 3958.8;[m
+[36m@@ -38,386 +20,51 @@[m [mfunction calcMiles(lat1, lng1, lat2, lng2) {[m
+   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));[m
+ }[m
+ [m
+[31m-async function getDrivingMiles(fromLat, fromLng, toLat, toLng) {[m
+[31m-  const straightLine = Math.round(calcMiles(fromLat, fromLng, toLat, toLng) * 10) / 10;[m
+[31m-  try {[m
+[31m-    await loadMapsApi();[m
+[31m-    if (!window.google?.maps?.DistanceMatrixService) return straightLine;[m
+[31m-    return await new Promise((resolve) => {[m
+[31m-      const service = new window.google.maps.DistanceMatrixService();[m
+[31m-      service.getDistanceMatrix({[m
+[31m-        origins: [new window.google.maps.LatLng(fromLat, fromLng)],[m
+[31m-        destinations: [new window.google.maps.LatLng(toLat, toLng)],[m
+[31m-        travelMode: window.google.maps.TravelMode.DRIVING,[m
+[31m-        unitSystem: window.google.maps.UnitSystem.IMPERIAL,[m
+[31m-      }, (res, status) => {[m
+[31m-        if (status === "OK" && res.rows[0].elements[0].status === "OK") {[m
+[31m-          const meters = res.rows[0].elements[0].distance.value;[m
+[31m-          resolve(Math.round((meters / 1609.344) * 10) / 10);[m
+[31m-        } else { resolve(straightLine); }[m
+[31m-      });[m
+[31m-    });[m
+[31m-  } catch (e) { return straightLine; }[m
+[31m-}[m
+[31m-[m
+[31m-async function geocodeAddress(address, dbgFn) {[m
+[31m-  if (!address) { if (dbgFn) dbgFn("❌ Geocode skipped — no address", "error"); return null; }[m
+[31m-  try {[m
+[31m-    const url = "/api/geocode?" + new URLSearchParams({ address });[m
+[31m-    const res = await fetch(url);[m
+[31m-    const data = await res.json();[m
+[31m-    if (data.status === "OK" && data.results[0]) {[m
+[31m-      const { lat, lng } = data.results[0].geometry.location;[m
+[31m-      return { lat, lng };[m
+[31m-    } else {[m
+[31m-      if (dbgFn) dbgFn("❌ Geocode API status: " + data.status + (data.error_message ? " — " + data.error_message : ""), "error");[m
+[31m-    }[m
+[31m-  } catch (e) {[m
+[31m-    if (dbgFn) dbgFn("❌ Geocode fetch exception: " + e.message, "error");[m
+[31m-  }[m
+[31m-  return null;[m
+[31m-}[m
+[31m-[m
+[31m-function normalizeId(id) {[m
+[31m-  if (!id) return id;[m
+[31m-  return id.replace(/_\d{8}T\d{6}Z$/, "").replace(/_[a-z0-9]{26}$/, "");[m
+[31m-}[m
+[31m-[m
+[31m-const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout }, ref) {[m
+[32m+[m[32mexport default function Dashboard({ user, accessToken, onLogout }) {[m
+   const [selectedDate, setSelectedDate] = useState(new Date());[m
+   const [filter, setFilter] = useState("All");[m
+   const [location, setLocation] = useState(null);[m
+   const [locationError, setLocationError] = useState(null);[m
+   const [checkedIn, setCheckedIn] = useState({});[m
+[31m-  const [checkedOut, setCheckedOut] = useState({});[m
+   const [completed, setCompleted] = useState({});[m
+[31m-  const [mileageLog, setMileageLog] = useState(() => {[m
+[31m-    try { const k = "mileageLog_" + new Date().toDateString(); const s = localStorage.getItem(k); return s ? JSON.parse(s) : []; } catch { return []; }[m
+[31m-  });[m
+[31m-  const [pastDayStatus, setPastDayStatus] = useState("");[m
+[32m+[m[32m  const [cashPaid, setCashPaid] = useState({});[m
+[32m+[m[32m  const [mileageLog, setMileageLog] = useState([]);[m
+   const [navStart, setNavStart] = useState({});[m
+   const [monthlyCount, setMonthlyCount] = useState(null);[m
+   const [monthlyCompleted, setMonthlyCompleted] = useState(0);[m
+   const [monthlyEvents, setMonthlyEvents] = useState([]);[m
+   const [invoiceJob, setInvoiceJob] = useState(null);[m
+   const [invoicedJobs, setInvoicedJobs] = useState({});[m
+[31m-  const [missedJobs, setMissedJobs] = useState(() => { try { return JSON.parse(localStorage.getItem("techportal_missedJobs") || "[]"); } catch { return []; } });[m
+[31m-  const [showMissedModal, setShowMissedModal] = useState(false);[m
+[31m-  const [rescheduleTarget, setRescheduleTarget] = useState({});[m
+[31m-  const [rescheduleJob, setRescheduleJob] = useState(null);[m
+   const [dayStarted, setDayStarted] = useState(false);[m
+   const [dayFinished, setDayFinished] = useState(false);[m
+[31m-  const [confirmFinish, setConfirmFinish] = useState(false);[m
+[31m-  const [gpsWaiting, setGpsWaiting] = useState(false);[m
+[31m-  const [logSheetId, setLogSheetId] = useState(() => localStorage.getItem("techportal_logSheetId") || null);[m
+[32m+[m[32m  const [logSheetId, setLogSheetId] = useState(null);[m
+   const [dayStatus, setDayStatus] = useState("");[m
+   const [modalType, setModalType] = useState(null);[m
+[31m-  const [menuOpen, setMenuOpen] = useState(false);[m
+[31m-  const [statusLoading, setStatusLoading] = useState(true);[m
+[31m-  const [geofenceStatus, setGeofenceStatus] = useState({});[m
+[31m-  const [debugLog, setDebugLog] = useState(() => {[m
+[31m-    try {[m
+[31m-      const key = "techportal_debugLog_" + new Date().toDateString();[m
+[31m-      const saved = localStorage.getItem(key);[m
+[31m-      return saved ? JSON.parse(saved) : [];[m
+[31m-    } catch { return []; }[m
+[31m-  });[m
+[31m-  const [showDebug, setShowDebug] = useState(false);[m
+[31m-  const [driveMode, setDriveMode] = useState(false);[m
+[31m-  const [showEtsy, setShowEtsy] = useState(false);[m
+[31m-[m
+[31m-  const startPosRef = useRef((() => { try { const s = localStorage.getItem("techportal_startPos"); return s ? JSON.parse(s) : null; } catch { return null; } })());[m
+[31m-  const lastPositionRef = useRef((() => { try { const s = localStorage.getItem("techportal_lastPos"); return s ? JSON.parse(s) : null; } catch { return null; } })());[m
+[31m-  const setLastPos = (pos) => { lastPositionRef.current = pos; if (pos) { try { localStorage.setItem("techportal_lastPos", JSON.stringify(pos)); } catch {} } };[m
+[31m-  const locationRef = useRef(null);[m
+[31m-  const selectedDateRef = useRef(selectedDate);[m
+[31m-  const pendingStatusRef = useRef({});[m
+[31m-  const saveTimerRef = useRef(null);[m
+[31m-  const trackIntervalRef = useRef(null);[m
+[31m-  const jobCoordsRef = useRef({});[m
+[31m-  const geofenceDwellRef = useRef({});[m
+[31m-  const departureDwellRef = useRef({});[m
+[31m-  const checkedInRef = useRef(checkedIn);[m
+[31m-  const completedRef = useRef(completed);[m
+[31m-  const checkedOutRef = useRef(checkedOut);[m
+[31m-  const mileageLogRef = useRef([]);[m
+[31m-  const gpsTrackRef = useRef([]);[m
+[31m-  const loadingStatusesRef = useRef(false);[m
+[31m-  const jobsRef = useRef([]);[m
+[31m-  const dayStartedRef = useRef(false);[m
+[31m-  const dayFinishedRef = useRef(false);[m
+[31m-  const accessTokenRef = useRef(accessToken);[m
+[31m-[m
+[31m-  const dbg = (msg, type = "info") => {[m
+[31m-    const entry = { time: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }), msg, type };[m
+[31m-    setDebugLog(prev => {[m
+[31m-      const next = [entry, ...prev].slice(0, 500);[m
+[31m-      try {[m
+[31m-        const key = "techportal_debugLog_" + new Date().toDateString();[m
+[31m-        localStorage.setItem(key, JSON.stringify(next));[m
+[31m-      } catch {}[m
+[31m-      return next;[m
+[31m-    });[m
+[31m-    console.log("[TechPortal]", msg);[m
+[31m-  };[m
+[31m-[m
+[31m-  // ── Pending-save persistence ────────────────────────────────────────────[m
+[31m-  // pendingStatusRef is the in-memory queue of not-yet-saved status writes.[m
+[31m-  // Anything sitting only in that ref disappears if the tab is killed or[m
+[31m-  // reloaded before a flush succeeds. persistPending() mirrors it into[m
+[31m-  // localStorage so a killed session can be rehydrated and retried later.[m
+[31m-  const persistPending = () => {[m
+[31m-    try {[m
+[31m-      const keys = Object.keys(pendingStatusRef.current);[m
+[31m-      if (keys.length === 0) localStorage.removeItem(PENDING_SAVES_KEY);[m
+[31m-      else localStorage.setItem(PENDING_SAVES_KEY, JSON.stringify(pendingStatusRef.current));[m
+[31m-    } catch {}[m
+[31m-  };[m
+[31m-[m
+[31m-  const setPending = (key, value) => {[m
+[31m-    pendingStatusRef.current[key] = value;[m
+[31m-    persistPending();[m
+[31m-  };[m
+[31m-[m
+[31m-  const [gpsTrack, setGpsTrack] = useState(() => { try { const k = "gpsTrack_" + new Date().toDateString(); const s = localStorage.getItem(k); return s ? JSON.parse(s) : []; } catch { return []; } });[m
+[32m+[m[32m  const lastPositionRef = useRef(HOME);[m
+   const { jobs, loading, error, refresh } = useCalendarJobs(accessToken, selectedDate);[m
+ [m
+[31m-  useEffect(() => { checkedInRef.current = checkedIn; }, [checkedIn]);[m
+[31m-  useEffect(() => { mileageLogRef.current = mileageLog; }, [mileageLog]);[m
+[31m-  useEffect(() => { gpsTrackRef.current = gpsTrack; }, [gpsTrack]);[m
+[31m-  useEffect(() => { completedRef.current = completed; }, [completed]);[m
+[31m-  useEffect(() => { checkedOutRef.current = checkedOut; }, [checkedOut]);[m
+[31m-  useEffect(() => { jobsRef.current = jobs; }, [jobs]);[m
+[31m-  useEffect(() => { dayStartedRef.current = dayStarted; }, [dayStarted]);[m
+[31m-  useEffect(() => { dayFinishedRef.current = dayFinished; }, [dayFinished]);[m
+[31m-  useEffect(() => {[m
+[31m-    accessTokenRef.current = accessToken;[m
+[31m-    if (accessToken) dbg("✅ accessToken updated (" + accessToken.slice(0, 10) + "...)");[m
+[31m-    else dbg("⚠️ accessToken is null/undefined", "warn");[m
+[31m-  }, [accessToken]);[m
+[31m-[m
+[31m-  useImperativeHandle(ref, () => ({ flushPending: () => flushStatusSaves() }));[m
+[31m-[m
+[31m-  // Rehydrate any pending saves left over from a killed/reloaded session.[m
+[31m-  useEffect(() => {[m
+[31m-    try {[m
+[31m-      const saved = localStorage.getItem(PENDING_SAVES_KEY);[m
+[31m-      if (saved) {[m
+[31m-        const parsed = JSON.parse(saved);[m
+[31m-        if (parsed && Object.keys(parsed).length > 0) {[m
+[31m-          Object.assign(pendingStatusRef.current, parsed);[m
+[31m-          dbg("♻️ Rehydrated " + Object.keys(parsed).length + " unsaved pending write(s) from last session", "warn");[m
+[31m-        }[m
+[31m-      }[m
+[31m-    } catch {}[m
+[31m-  }, []);[m
+[31m-[m
+[31m-  // As soon as we have a valid token, try to flush anything still pending[m
+[31m-  // (rehydrated saves, or saves that were queued while the token was stale).[m
+[31m-  useEffect(() => {[m
+[31m-    if (accessToken && Object.keys(pendingStatusRef.current).length > 0) {[m
+[31m-      flushStatusSaves();[m
+[31m-    }[m
+[31m-  }, [accessToken]);[m
+[31m-[m
+[31m-  const syncGeofenceDataToSW = () => {[m
+[31m-    if (!navigator.serviceWorker?.controller) return;[m
+[31m-    navigator.serviceWorker.controller.postMessage({[m
+[31m-      type: "STORE_GEOFENCE_DATA",[m
+[31m-      payload: {[m
+[31m-        dayStarted, dayFinished,[m
+[31m-        jobs: jobsRef.current.map(j => ({ id: normalizeId(j.id), title: j.title, startTime: j.startTime, location: j.location })),[m
+[31m-        jobCoords: jobCoordsRef.current,[m
+[31m-        checkedIn: checkedInRef.current,[m
+[31m-        completed: completedRef.current,[m
+[31m-        accessToken: accessTokenRef.current,[m
+[31m-      }[m
+[31m-    });[m
+[31m-  };[m
+[31m-[m
+[31m-  useEffect(() => {[m
+[31m-    if (!dayStarted || dayFinished) return;[m
+[31m-    if (Notification.permission === "default") {[m
+[31m-      Notification.requestPermission().then(p => dbg("🔔 Notification permission: " + p));[m
+[31m-    }[m
+[31m-    if ("serviceWorker" in navigator && "periodicSync" in (navigator.serviceWorker || {})) {[m
+[31m-      navigator.serviceWorker.ready.then(async reg => {[m
+[31m-        try {[m
+[31m-          await reg.periodicSync.register("geofence-check", { minInterval: 2 * 60 * 1000 });[m
+[31m-          dbg("✅ Background periodic sync registered (2 min)");[m
+[31m-        } catch (e) { dbg("⚠️ Periodic sync not supported: " + e.message, "warn"); }[m
+[31m-      });[m
+[31m-    }[m
+[31m-    if (navigator.serviceWorker?.controller) {[m
+[31m-      navigator.serviceWorker.controller.postMessage({ type: "START_BACKGROUND_GEOFENCE" });[m
+[31m-    }[m
+[31m-    syncGeofenceDataToSW();[m
+[31m-  }, [dayStarted, dayFinished]);[m
+[31m-[m
+[31m-  useEffect(() => { if (dayStarted) syncGeofenceDataToSW(); }, [checkedIn, completed, jobCoordsRef.current]);[m
+[31m-[m
+[31m-  useEffect(() => {[m
+[31m-    if (!navigator.serviceWorker) return;[m
+[31m-    const handler = (event) => {[m
+[31m-      if (event.data?.type === "NOTIFICATION_CHECKIN" && event.data.jobId) {[m
+[31m-        const job = jobsRef.current.find(j => normalizeId(j.id) === event.data.jobId);[m
+[31m-        if (job) handleCheckIn(event.data.jobId, job.title);[m
+[31m-      }[m
+[31m-    };[m
+[31m-    navigator.serviceWorker.addEventListener("message", handler);[m
+[31m-    return () => navigator.serviceWorker.removeEventListener("message", handler);[m
+[31m-  }, []);[m
+[31m-[m
+   const isToday = new Date().toDateString() === selectedDate.toDateString();[m
+[31m-  selectedDateRef.current = selectedDate;[m
+   const displayDate = selectedDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });[m
+   const totalMiles = mileageLog.reduce((sum, m) => sum + m.miles, 0);[m
+[31m-  const gpsTrackedMiles = gpsTrack.length >= 2 ? Math.round(gpsTrack.reduce((sum, pt, i) => i === 0 ? 0 : sum + calcMiles(gpsTrack[i-1][0], gpsTrack[i-1][1], pt[0], pt[1]), 0) * 10) / 10 : null;[m
+[31m-  const displayMiles = gpsTrackedMiles !== null ? gpsTrackedMiles : Math.round(totalMiles * 10) / 10;[m
+   const monthName = selectedDate.toLocaleDateString("en-US", { month: "long", year: "numeric" });[m
+   const totalCompleted = Object.keys(completed).length + monthlyCompleted;[m
+   const remaining = monthlyCount !== null ? Math.max(0, monthlyCount - totalCompleted) : null;[m
+[32m+[m
+   const now = new Date();[m
+[31m-  const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);[m
+[31m-  const completedEvents = monthlyEvents.filter((e) => { const end = new Date(e.end?.dateTime || e.end?.date); return end < startOfToday; });[m
+[32m+[m[32m  const completedEvents = monthlyEvents.filter((e) => { const end = new Date(e.end?.dateTime || e.end?.date); return end < now; });[m
+   const remainingEvents = monthlyEvents.filter((e) => { const end = new Date(e.end?.dateTime || e.end?.date); return end >= now; });[m
+ [m
+   useEffect(() => {[m
+     if (!navigator.geolocation) { setLocationError("GPS not supported."); return; }[m
+     const watchId = navigator.geolocation.watchPosition([m
+[31m-      (pos) => {[m
+[31m-        const c = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: Math.round(pos.coords.accuracy) };[m
+[31m-        locationRef.current = c;[m
+[31m-        setLocation(c);[m
+[31m-        setLocationError(null);[m
+[31m-        if (!pos.coords.accuracy || pos.coords.accuracy > 150) {[m
+[31m-          if (Math.random() < 0.1) dbg("⚠️ Skipping geofence — accuracy " + Math.round(pos.coords.accuracy || 999) + "m too low", "warn");[m
+[31m-          return;[m
+[31m-        }[m
+[31m-        const dayStartedNow = dayStartedRef.current;[m
+[31m-        const dayFinishedNow = dayFinishedRef.current;[m
+[31m-        if (!dayStartedNow || dayFinishedNow) return;[m
+[31m-        const currentJobs = jobsRef.current;[m
+[31m-        const currentCheckedIn = checkedInRef.current;[m
+[31m-        const currentCompleted = completedRef.current;[m
+[31m-        const checkedOutRef_current = checkedOutRef.current;[m
+[31m-        const nowMs = Date.now();[m
+[31m-        currentJobs.forEach(async (job) => {[m
+[31m-          const nid = normalizeId(job.id);[m
+[31m-          const isCheckedIn = currentCheckedIn[nid];[m
+[31m-          const isCheckedOut = checkedOutRef_current[nid];[m
+[31m-          const isCompleted = currentCompleted[nid];[m
+[31m-          const coords = jobCoordsRef.current[nid];[m
+[31m-          if (!coords) {[m
+[31m-            if (!isCheckedIn && !isCompleted && Math.random() < 0.05) dbg("⚠️ No coords cached yet for: " + job.title, "warn");[m
+[31m-            return;[m
+[31m-          }[m
+[31m-          const dist = calcMiles(c.lat, c.lng, coords.lat, coords.lng);[m
+[31m-          const inZone = dist <= GEOFENCE_RADIUS_MILES;[m
+[31m-          if (!isCheckedIn && !isCompleted) {[m
+[31m-            if (inZone) {[m
+[31m-              if (!geofenceDwellRef.current[nid]) {[m
+[31m-                geofenceDwellRef.current[nid] = nowMs;[m
+[31m-                setGeofenceStatus(prev => ({ ...prev, [nid]: "nearby" }));[m
+[31m-                dbg("📍 Near " + job.title + " (" + Math.round(dist * 5280) + " ft away)");[m
+[31m-              } else if (nowMs - geofenceDwellRef.current[nid] >= GEOFENCE_DWELL_MS) {[m
+[31m-                delete geofenceDwellRef.current[nid];[m
+[31m-                setGeofenceStatus(prev => { const n = {...prev}; delete n[nid]; return n; });[m
+[31m-                dbg("✅ Auto check-in: " + job.title);[m
+[31m-                handleCheckIn(nid, job.title, true);[m
+[31m-              }[m
+[31m-            } else {[m
+[31m-              if (geofenceDwellRef.current[nid]) {[m
+[31m-                delete geofenceDwellRef.current[nid];[m
+[31m-                setGeofenceStatus(prev => { const n = {...prev}; delete n[nid]; return n; });[m
+[31m-              }[m
+[31m-            }[m
+[31m-          }[m
+[31m-          if (isCheckedIn && !isCheckedOut && !isCompleted) {[m
+[31m-            if (!inZone) {[m
+[31m-              if (!departureDwellRef.current[nid]) {[m
+[31m-                departureDwellRef.current[nid] = nowMs;[m
+[31m-                dbg("🚗 Left " + job.title + " zone — waiting to auto check-out...");[m
+[31m-              } else if (nowMs - departureDwellRef.current[nid] >= 60 * 1000) {[m
+[31m-                delete departureDwellRef.current[nid];[m
+[31m-                dbg("🚪 Auto check-out: " + job.title);[m
+[31m-                handleCheckOut(nid, job.title, true);[m
+[31m-              }[m
+[31m-            } else {[m
+[31m-              if (departureDwellRef.current[nid]) {[m
+[31m-                delete departureDwellRef.current[nid];[m
+[31m-                dbg("↩ Back in zone: " + job.title + " — cancelled auto check-out");[m
+[31m-              }[m
+[31m-            }[m
+[31m-          }[m
+[31m-        });[m
+[31m-      },[m
+[32m+[m[32m      (pos) => { setLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: Math.round(pos.coords.accuracy) }); setLocationError(null); },[m
+       () => setLocationError("Location access denied."),[m
+[31m-      { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }[m
+[32m+[m[32m      { enableHighAccuracy: true, maximumAge: 30000 }[m
+     );[m
+     return () => navigator.geolocation.clearWatch(watchId);[m
+   }, []);[m
+ [m
+[31m-  useEffect(() => {[m
+[31m-    setCheckedIn({}); setCheckedOut({}); setCompleted({}); setNavStart({});[m
+[31m-    setDayStarted(false); setDayFinished(false); setDayStatus(""); setPastDayStatus(""); setStatusLoading(true);[m
+[31m-    jobCoordsRef.current = {}; geofenceDwellRef.current = {}; departureDwellRef.current = {}; setGeofenceStatus({});[m
+[31m-    if (new Date().toDateString() !== selectedDate.toDateString()) { try { localStorage.removeItem("techportal_lastPos"); } catch {} lastPositionRef.current = null; }[m
+[31m-    try { const ck = JOB_STATUS_CACHE_KEY + selectedDate.toDateString(); const c = localStorage.getItem(ck); if (c) { const { checkedIn: ci, checkedOut: co, completed: comp, invoiced: inv } = JSON.parse(c); if (ci) setCheckedIn(ci); if (co) setCheckedOut(co); if (comp) setCompleted(comp); if (inv) setInvoicedJobs(inv); } } catch {}[m
+[31m-    try { const k = "mileageLog_" + selectedDate.toDateString(); const s = localStorage.getItem(k); setMileageLog(s ? JSON.parse(s) : []); } catch { setMileageLog([]); }[m
+[31m-    try { const k = "gpsTrack_" + selectedDate.toDateString(); const s = localStorage.getItem(k); setGpsTrack(s ? JSON.parse(s) : []); } catch { setGpsTrack([]); }[m
+[31m-  }, [selectedDate]);[m
+[31m-[m
+   useEffect(() => { if (!accessToken) return; fetchMonthlyCount(accessToken); }, [accessToken, selectedDate]);[m
+[31m-  useEffect(() => { if (!accessToken || loading) return; loadJobStatuses(); }, [accessToken, selectedDate, loading]);[m
+[31m-[m
+[31m-  useEffect(() => {[m
+[31m-    if (!jobs.length || !dayStarted || !isToday) return;[m
+[31m-    dbg("🗺️ Geocoding " + jobs.length + " job addresses...");[m
+[31m-    jobs.forEach(async (job) => {[m
+[31m-      const nid = normalizeId(job.id);[m
+[31m-      if (!job.location) { dbg("⚠️ No location for: " + job.title, "warn"); return; }[m
+[31m-      if (jobCoordsRef.current[nid]) return;[m
+[31m-      const coords = await geocodeAddress(job.location, dbg);[m
+[31m-      if (coords) {[m
+[31m-        jobCoordsRef.current[nid] = coords;[m
+[31m-        dbg("📌 Geocoded: " + job.title + " → " + coords.lat.toFixed(4) + "," + coords.lng.toFixed(4));[m
+[31m-        syncGeofenceDataToSW();[m
+[31m-      } else {[m
+[31m-        dbg("❌ Geocode failed: " + job.title + " (" + job.location + ")", "error");[m
+[31m-      }[m
+[31m-    });[m
+[31m-  }, [jobs, dayStarted, isToday]);[m
+[31m-[m
+[31m-  useEffect(() => {[m
+[31m-    if (trackIntervalRef.current) clearInterval(trackIntervalRef.current);[m
+[31m-    if (!dayStarted || dayFinished || !isToday) return;[m
+[31m-    trackIntervalRef.current = setInterval(() => {[m
+[31m-      const pos = locationRef.current;[m
+[31m-      if (!pos || pos.accuracy > 300) return;[m
+[31m-      setGpsTrack(prev => {[m
+[31m-        if (prev.length > 0) { const last = prev[prev.length - 1]; if (calcMiles(last[0], last[1], pos.lat, pos.lng) < 0.01) return prev; }[m
+[31m-        const next = [...prev, [parseFloat(pos.lat.toFixed(5)), parseFloat(pos.lng.toFixed(5)), Date.now()]];[m
+[31m-        try { localStorage.setItem("gpsTrack_" + new Date().toDateString(), JSON.stringify(next)); } catch {}[m
+[31m-        setPending("__GPS_TRACK__", { status: "gpsTrack", extra: JSON.stringify(next) });[m
+[31m-        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);[m
+[31m-        saveTimerRef.current = setTimeout(flushStatusSaves, 2000);[m
+[31m-        return next;[m
+[31m-      });[m
+[31m-    }, 30 * 1000);[m
+[31m-    return () => clearInterval(trackIntervalRef.current);[m
+[31m-  }, [dayStarted, dayFinished, isToday]);[m
+[31m-[m
+[31m-  const saveMileage = (updater) => {[m
+[31m-    setMileageLog(prev => {[m
+[31m-      const next = typeof updater === "function" ? updater(prev) : updater;[m
+[31m-      try { localStorage.setItem("mileageLog_" + new Date().toDateString(), JSON.stringify(next)); } catch {}[m
+[31m-      setPending("__MILEAGE_LOG__", { status: "mileageLog", extra: JSON.stringify(next) });[m
+[31m-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);[m
+[31m-      saveTimerRef.current = setTimeout(() => flushStatusSaves(), 800);[m
+[31m-      return next;[m
+[31m-    });[m
+[31m-  };[m
+ [m
+   const fetchMonthlyCount = async (token) => {[m
+     try {[m
+[36m@@ -428,346 +75,71 @@[m [mconst Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },[m
+       const results = await Promise.all(calendarIds.map((id) => fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(id) + "/events?" + params, { headers: { Authorization: "Bearer " + token } }).then((r) => r.ok ? r.json() : { items: [] })));[m
+       const allEvents = results.flatMap((d) => d.items || []);[m
+       const unique = Array.from(new Map(allEvents.map((e) => [e.id, e])).values());[m
+[31m-      const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);[m
+[31m-      const pastEvents = unique.filter((e) => { const end = new Date(e.end?.dateTime || e.end?.date); return end < startOfToday; });[m
+[31m-      setMonthlyEvents(unique); setMonthlyCount(unique.length); setMonthlyCompleted(pastEvents.length);[m
+[32m+[m[32m      const now = new Date();[m
+[32m+[m[32m      const pastEvents = unique.filter((e) => { const end = new Date(e.end?.dateTime || e.end?.date); return end < now; });[m
+[32m+[m[32m      setMonthlyEvents(unique);[m
+[32m+[m[32m      setMonthlyCount(unique.length);[m
+[32m+[m[32m      setMonthlyCompleted(pastEvents.length);[m
+     } catch (e) { setMonthlyCount(null); }[m
+   };[m
+ [m
+[31m-  const setAndCacheLogSheetId = (id) => { if (id) localStorage.setItem("techportal_logSheetId", id); setLogSheetId(id); };[m
+[31m-[m
+   const getOrCreateLogSheet = async () => {[m
+[31m-    const token = accessTokenRef.current;[m
+[31m-    if (!token) { dbg("❌ getOrCreateLogSheet: no token", "error"); return null; }[m
+     if (logSheetId) return logSheetId;[m
+     try {[m
+[31m-      const searchRes = await fetch("https://www.googleapis.com/drive/v3/files?q=name='" + LOG_SHEET_NAME + "'+and+mimeType='application/vnd.google-apps.spreadsheet'&fields=files(id,name)", { headers: { Authorization: "Bearer " + token } });[m
+[32m+[m[32m      const searchRes = await fetch("https://www.googleapis.com/drive/v3/files?q=name='" + LOG_SHEET_NAME + "'+and+mimeType='application/vnd.google-apps.spreadsheet'&fields=files(id,name)", {[m
+[32m+[m[32m        headers: { Authorization: "Bearer " + accessToken }[m
+[32m+[m[32m      });[m
+       const searchData = await searchRes.json();[m
+[31m-      if (searchData.files && searchData.files.length > 0) { const id = searchData.files[0].id; setAndCacheLogSheetId(id); return id; }[m
+[31m-      const createRes = await fetch("https://sheets.googleapis.com/v4/spreadsheets", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ properties: { title: LOG_SHEET_NAME }, sheets: [{ properties: { title: "Job Log" } }] }) });[m
+[31m-      const createData = await createRes.json();[m
+[31m-      const newId = createData.spreadsheetId;[m
+[31m-      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + newId + "/values/A1:F1?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [["Date", "Job", "Check-in Time", "Distance (mi)", "Invoice Sent", "Notes"]] }) });[m
+[31m-      setAndCacheLogSheetId(newId);[m
+[31m-      return newId;[m
+[31m-    } catch (e) { dbg("❌ Log sheet error: " + e.message, "error"); return null; }[m
+[31m-  };[m
+[31m-[m
+[31m-  const ensureStatusTab = async (sheetId) => {[m
+[31m-    const token = accessTokenRef.current;[m
+[31m-    const infoRes = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "?fields=sheets.properties", { headers: { Authorization: "Bearer " + token } });[m
+[31m-    const info = await infoRes.json();[m
+[31m-    const hasTab = (info.sheets || []).find(s => s.properties.title === STATUS_SHEET_NAME);[m
+[31m-    if (!hasTab) {[m
+[31m-      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + ":batchUpdate", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ requests: [{ addSheet: { properties: { title: STATUS_SHEET_NAME } } }] }) });[m
+[31m-      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A1:D1?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [["Date", "Job ID", "Status", "Extra"]] }) });[m
+[31m-    }[m
+[31m-  };[m
+[31m-[m
+[31m-  const loadJobStatuses = async (isRetry = false) => {[m
+[31m-    if (loadingStatusesRef.current && !isRetry) {[m
+[31m-      dbg("⏭️ Skipped overlapping loadJobStatuses call (already in progress)", "warn");[m
+[31m-      return;[m
+[31m-    }[m
+[31m-    loadingStatusesRef.current = true;[m
+[31m-    const token = accessTokenRef.current;[m
+[31m-    setStatusLoading(true);[m
+[31m-    dbg("📥 Loading job statuses...");[m
+[31m-    try {[m
+[31m-      const sheetId = await getOrCreateLogSheet();[m
+[31m-      if (!sheetId) { setStatusLoading(false); loadingStatusesRef.current = false; return; }[m
+[31m-      await ensureStatusTab(sheetId);[m
+[31m-      const dateKey = selectedDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });[m
+[31m-      const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A:D", { headers: { Authorization: "Bearer " + token } });[m
+[31m-      if (!res.ok) { dbg("❌ Sheets read failed: " + res.status, "error"); localStorage.removeItem("techportal_logSheetId"); setLogSheetId(null); setStatusLoading(false); loadingStatusesRef.current = false; return; }[m
+[31m-      const data = await res.json();[m
+[31m-      const rows = data.values || [];[m
+[31m-      const todayRows = rows.filter(r => r[0] === dateKey);[m
+[31m-      dbg("📊 Loaded " + todayRows.length + " rows for " + dateKey);[m
+[31m-      if (rows.length <= 1 && !isRetry && localStorage.getItem("techportal_logSheetId")) {[m
+[31m-        localStorage.removeItem("techportal_logSheetId"); setLogSheetId(null); setStatusLoading(false); loadingStatusesRef.current = false; loadJobStatuses(true); return;[m
+[31m-      }[m
+[31m-      const newCI = {}; const newCO = {}; const newComp = {}; const newInv = {};[m
+[31m-      let loadedStarted = false; let loadedFinished = false; let loadedStatus = "";[m
+[31m-      let lastMileageRow = null; let lastGpsRow = null;[m
+[31m-      todayRows.forEach(row => { if (row[1] === "__MILEAGE_LOG__") lastMileageRow = row; if (row[1] === "__GPS_TRACK__") lastGpsRow = row; });[m
+[31m-      // ── Stale-read guard: mileageLog / gpsTrack ──────────────────────────[m
+[31m-      // A sheet read can race a not-yet-flushed local write (e.g. a token[m
+[31m-      // refresh reload firing right after a mileage leg was added locally[m
+[31m-      // but before it synced). Accepting the fetched array unconditionally[m
+[31m-      // in that case silently reverts local progress. Skip the overwrite[m
+[31m-      // if that key still has a pending save queued, or if the fetched[m
+[31m-      // array is shorter than what's already loaded locally — a real sync[m
+[31m-      // should only ever grow these arrays, never shrink them.[m
+[31m-      const mileagePending = !!pendingStatusRef.current["__MILEAGE_LOG__"];[m
+[31m-      const gpsPending = !!pendingStatusRef.current["__GPS_TRACK__"];[m
+[31m-      if (lastMileageRow && !mileagePending) {[m
+[31m-        try {[m
+[31m-          const log = JSON.parse(lastMileageRow[3]);[m
+[31m-          if (Array.isArray(log) && log.length >= mileageLogRef.current.length) setMileageLog(log);[m
+[31m-          else if (Array.isArray(log) && log.length > 0) dbg("⚠️ Skipped stale mileage-log read (" + log.length + " legs vs " + mileageLogRef.current.length + " local)", "warn");[m
+[31m-        } catch {}[m
+[31m-      }[m
+[31m-      if (lastGpsRow && !gpsPending) {[m
+[31m-        try {[m
+[31m-          const track = JSON.parse(lastGpsRow[3]);[m
+[31m-          if (Array.isArray(track) && track.length >= gpsTrackRef.current.length) setGpsTrack(track);[m
+[31m-          else if (Array.isArray(track) && track.length > 0) dbg("⚠️ Skipped stale GPS-track read (" + track.length + " pts vs " + gpsTrackRef.current.length + " local)", "warn");[m
+[31m-        } catch {}[m
+[32m+[m[32m      if (searchData.files && searchData.files.length > 0) {[m
+[32m+[m[32m        const id = searchData.files[0].id;[m
+[32m+[m[32m        setLogSheetId(id);[m
+[32m+[m[32m        return id;[m
+       }[m
+[31m-      const missedFromSheet = [];[m
+[31m-      todayRows.forEach(row => {[m
+[31m-        const [, jobId, status, extra] = row;[m
+[31m-        if (jobId === "__DAY_STARTED__") { loadedStarted = true; loadedStatus = "Day started at " + extra; }[m
+[31m-        if (jobId === "__DAY_FINISHED__") { if (status !== "unfinished") { loadedStarted = true; loadedFinished = true; loadedStatus = extra; } }[m
+[31m-        if (jobId && !jobId.startsWith("__")) {[m
+[31m-          const baseId = normalizeId(jobId.replace(/__ci$/, "").replace(/__co$/, "").replace(/__done$/, "").replace(/__invoice$/, ""));[m
+[31m-          if (status === "checkedIn") newCI[baseId] = extra || "—";[m
+[31m-          if (status === "checkedOut") newCO[baseId] = extra || "—";[m
+[31m-          if (status === "completed") { newComp[baseId] = true; newCI[baseId] = newCI[baseId] || "—"; }[m
+[31m-          // "missed" is its own status value (written by handleMissed) distinct[m
+[31m-          // from "completed" — it needs to count as done for job-status[m
+[31m-          // purposes too, or the job silently reverts to "Scheduled" on any[m
+[31m-          // read that didn't originate from the same browser session.[m
+[31m-          if (status === "missed") {[m
+[31m-            newComp[baseId] = true;[m
+[31m-            const matchedJob = jobsRef.current.find(j => normalizeId(j.id) === baseId);[m
+[31m-            if (matchedJob) {[m
+[31m-              missedFromSheet.push({ jobId: baseId, jobTitle: extra || matchedJob.title, jobLocation: matchedJob.location, calendarId: matchedJob.calendarId, eventId: matchedJob.id, date: dateKey, missedAt: Date.now() });[m
+[31m-            }[m
+[31m-          }[m
+[31m-          if (status === "invoiced") newInv[baseId] = extra || "";[m
+[31m-          if (status === "undone") { delete newCI[baseId]; delete newCO[baseId]; delete newComp[baseId]; }[m
+[31m-        }[m
+[32m+[m[32m      const createRes = await fetch("https://sheets.googleapis.com/v4/spreadsheets", {[m
+[32m+[m[32m        method: "POST",[m
+[32m+[m[32m        headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },[m
+[32m+[m[32m        body: JSON.stringify({ properties: { title: LOG_SHEET_NAME }, sheets: [{ properties: { title: "Job Log" } }] })[m
+       });[m
+[31m-      // ── Stale-read guard: check-in / check-out / completed ───────────────[m
+[31m-      // Anything still sitting in pendingStatusRef hasn't been confirmed[m
+[31m-      // written to the sheet yet, which means it's more recent than[m
+[31m-      // whatever this read just fetched. Re-apply those on top so a[m
+[31m-      // reload can't clobber a check-in/check-out that's simply still[m
+[31m-      // in flight (e.g. mid-retry after a 401).[m
+[31m-      let reconciledCount = 0;[m
+[31m-      Object.entries(pendingStatusRef.current).forEach(([key, entry]) => {[m
+[31m-        if (!entry || key.startsWith("__")) return;[m
+[31m-        if (key.endsWith("__ci")) { const id = normalizeId(key.slice(0, -4)); if (entry.status === "checkedIn") { newCI[id] = entry.extra || "—"; reconciledCount++; } if (entry.status === "undone") delete newCI[id]; }[m
+[31m-        else if (key.endsWith("__co")) { const id = normalizeId(key.slice(0, -4)); if (entry.status === "checkedOut") { newCO[id] = entry.extra || "—"; reconciledCount++; } if (entry.status === "undone") delete newCO[id]; }[m
+[31m-        else if (key.endsWith("__done")) { const id = normalizeId(key.slice(0, -6)); if (entry.status === "completed" || entry.status === "missed") { newComp[id] = true; reconciledCount++; } if (entry.status === "undone") delete newComp[id]; }[m
+[31m-      });[m
+[31m-      if (reconciledCount > 0) dbg("♻️ Reconciled " + reconciledCount + " in-flight pending write(s) over sheet read", "warn");[m
+[31m-      if (missedFromSheet.length > 0) {[m
+[31m-        try {[m
+[31m-          const existingMissed = JSON.parse(localStorage.getItem("techportal_missedJobs") || "[]");[m
+[31m-          const merged = [...existingMissed.filter(m => !missedFromSheet.find(n => n.jobId === m.jobId)), ...missedFromSheet];[m
+[31m-          saveMissedJobs(merged);[m
+[31m-          dbg("⚠️ Rebuilt " + missedFromSheet.length + " missed-job entry(ies) from sheet data", "warn");[m
+[31m-        } catch {}[m
+[31m-      }[m
+[31m-      setCheckedIn(newCI); setCheckedOut(newCO); setCompleted(newComp); setInvoicedJobs(newInv);[m
+[31m-      try { const ck = JOB_STATUS_CACHE_KEY + selectedDate.toDateString(); localStorage.setItem(ck, JSON.stringify({ checkedIn: newCI, checkedOut: newCO, completed: newComp, invoiced: newInv })); } catch {}[m
+[31m-      if (loadedStarted) { setDayStarted(true); if (!lastPositionRef.current && locationRef.current) setLastPos({ lat: locationRef.current.lat, lng: locationRef.current.lng }); try { const sp = localStorage.getItem("techportal_startPos"); if (sp) startPosRef.current = JSON.parse(sp); } catch {} }[m
+[31m-      if (loadedFinished) setDayFinished(true);[m
+[31m-      if (loadedStatus) setDayStatus(loadedStatus);[m
+[31m-      dbg("✅ Statuses loaded: " + Object.keys(newCI).length + " CI, " + Object.keys(newCO).length + " CO, " + Object.keys(newComp).length + " done");[m
+[31m-    } catch (e) { dbg("❌ loadJobStatuses error: " + e.message, "error"); }[m
+[31m-    setStatusLoading(false);[m
+[31m-    loadingStatusesRef.current = false;[m
+[31m-  };[m
+[31m-[m
+[31m-  // ── flushStatusSaves ─────────────────────────────────────────────────────[m
+[31m-  // Any path that fails now (a) always re-queues the pending saves back into[m
+[31m-  // pendingStatusRef.current (previously two branches — "no sheet ID" and[m
+[31m-  // "catch after 3 retries" — dropped them entirely) and (b) persists them[m
+[31m-  // to localStorage via requeue(), so a killed/reloaded tab can recover them[m
+[31m-  // on next launch instead of losing the write silently.[m
+[31m-  const flushStatusSaves = async (retryCount = 0) => {[m
+[31m-    const token = accessTokenRef.current;[m
+[31m-    const pending = { ...pendingStatusRef.current }; // snapshot only — do NOT clear yet[m
+[31m-    if (Object.keys(pending).length === 0) return;[m
+[31m-    dbg("💾 Flushing " + Object.keys(pending).length + " pending saves (token: " + (token ? token.slice(0,8) + "..." : "MISSING") + ")");[m
+[31m-[m
+[31m-    // Anything in `pending` stays in pendingStatusRef.current for the entire[m
+[31m-    // duration of this attempt (not just on failure). That way, if[m
+[31m-    // loadJobStatuses() runs concurrently mid-flush — which the debug log[m
+[31m-    // shows can happen, sometimes multiple times per second — its[m
+[31m-    // reconciliation step still sees these as in-flight and re-applies them[m
+[31m-    // on top of a sheet read that hasn't caught up yet, instead of a stale[m
+[31m-    // read silently reverting a tap (e.g. "missed") that's still in transit.[m
+[31m-    const clearFlushed = () => {[m
+[31m-      Object.keys(pending).forEach((k) => { delete pendingStatusRef.current[k]; });[m
+[31m-      persistPending();[m
+[31m-    };[m
+[31m-    const requeue = (scheduleRetry) => {[m
+[31m-      persistPending(); // pending values are already still in the ref; just persist the current state[m
+[31m-      if (!scheduleRetry) return;[m
+[31m-      if (retryCount < 3) {[m
+[31m-        setTimeout(() => flushStatusSaves(retryCount + 1), (retryCount + 1) * 2000);[m
+[31m-      } else {[m
+[31m-        dbg("⛔ Giving up after 3 retries — " + Object.keys(pending).length + " save(s) still pending, will retry on next trigger", "error");[m
+[31m-      }[m
+[31m-    };[m
+[31m-[m
+[31m-    if (!token) { dbg("❌ No token — aborting flush", "error"); requeue(true); return; }[m
+[31m-    try {[m
+[31m-      const sheetId = await getOrCreateLogSheet();[m
+[31m-      if (!sheetId) { dbg("❌ No sheet ID", "error"); requeue(true); return; }[m
+[31m-      const dateKey = selectedDateRef.current.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });[m
+[31m-      const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A:D", { headers: { Authorization: "Bearer " + token } });[m
+[31m-      if (res.status === 401) {[m
+[31m-        dbg("⚠️ 401 on flush (retry " + retryCount + ")", "warn");[m
+[31m-        requeue(true);[m
+[31m-        return;[m
+[31m-      }[m
+[31m-      const data = await res.json();[m
+[31m-      const rows = data.values || [];[m
+[31m-      const existingIndex = {};[m
+[31m-      rows.forEach((row, i) => { if (row[0] === dateKey && row[1]) existingIndex[row[1]] = i; });[m
+[31m-      const updateRequests = []; const appendRows = [];[m
+[31m-      Object.entries(pending).forEach(([jobId, { status, extra }]) => {[m
+[31m-        const newRow = [dateKey, jobId, status, extra];[m
+[31m-        if (existingIndex[jobId] !== undefined) updateRequests.push({ range: "'" + STATUS_SHEET_NAME + "'!A" + (existingIndex[jobId] + 1) + ":D" + (existingIndex[jobId] + 1), values: [newRow] });[m
+[31m-        else appendRows.push(newRow);[m
+[32m+[m[32m      const createData = await createRes.json();[m
+[32m+[m[32m      const newId = createData.spreadsheetId;[m
+[32m+[m[32m      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + newId + "/values/A1:F1?valueInputOption=USER_ENTERED", {[m
+[32m+[m[32m        method: "PUT",[m
+[32m+[m[32m        headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },[m
+[32m+[m[32m        body: JSON.stringify({ values: [["Date", "Job", "Check-in Time", "Distance (mi)", "Invoice Sent", "Notes"]] })[m
+       });[m
+[31m-      if (updateRequests.length > 0) {[m
+[31m-        const r = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values:batchUpdate", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ valueInputOption: "USER_ENTERED", data: updateRequests }) });[m
+[31m-        if (!r.ok) { dbg("❌ batchUpdate failed: " + r.status, "error"); requeue(true); return; }[m
+[31m-        else dbg("✅ Updated " + updateRequests.length + " rows");[m
+[31m-      }[m
+[31m-      if (appendRows.length > 0) {[m
+[31m-        const r = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A:D:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: appendRows }) });[m
+[31m-        if (!r.ok) { dbg("❌ append failed: " + r.status, "error"); requeue(true); return; }[m
+[31m-        else dbg("✅ Appended " + appendRows.length + " rows");[m
+[31m-      }[m
+[31m-      // Everything for this batch succeeded — clear exactly these keys,[m
+[31m-      // preserving anything newer that may have been queued during the flush.[m
+[31m-      clearFlushed();[m
+[31m-    } catch (e) {[m
+[31m-      dbg("❌ flush error: " + e.message, "error");[m
+[31m-      requeue(true);[m
+[31m-    }[m
+[32m+[m[32m      setLogSheetId(newId);[m
+[32m+[m[32m      return newId;[m
+[32m+[m[32m    } catch (e) { console.error("Log sheet error:", e); return null; }[m
+   };[m
+ [m
+   const appendToLog = async (row) => {[m
+[31m-    const token = accessTokenRef.current;[m
+     const sheetId = await getOrCreateLogSheet();[m
+[31m-    if (!sheetId || !token) return;[m
+[31m-    await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/A:F:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [row] }) });[m
+[31m-  };[m
+[31m-[m
+[31m-  const updateCalendarEvent = async (job, fields) => {[m
+[31m-    const token = accessTokenRef.current;[m
+[31m-    if (!job?.id || !job?.calendarId || !token) return;[m
+[31m-    try {[m
+[31m-      const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(job.calendarId) + "/events/" + job.id, { headers: { Authorization: "Bearer " + token } });[m
+[31m-      if (!res.ok) return;[m
+[31m-      const event = await res.json();[m
+[31m-      const stripped = (event.description || "").replace(/\n?---TechPortal---[\s\S]*?---End TechPortal---/g, "").trimEnd();[m
+[31m-      const lines = ["---TechPortal---"];[m
+[31m-      if (fields.checkIn) lines.push("🟢 Check-in: " + fields.checkIn);[m
+[31m-      if (fields.checkOut) lines.push("🔴 Check-out: " + fields.checkOut);[m
+[31m-      if (fields.completed) lines.push("✅ Completed");[m
+[31m-      if (fields.invoiceUrl) lines.push("📄 Invoice: " + fields.invoiceUrl);[m
+[31m-      lines.push("---End TechPortal---");[m
+[31m-      const newDesc = stripped ? stripped + "\n\n" + lines.join("\n") : lines.join("\n");[m
+[31m-      await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(job.calendarId) + "/events/" + job.id, { method: "PATCH", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ description: newDesc }) });[m
+[31m-    } catch (e) { console.warn("Could not update calendar event:", e); }[m
+[32m+[m[32m    if (!sheetId) return;[m
+[32m+[m[32m    await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/A:F:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", {[m
+[32m+[m[32m      method: "POST",[m
+[32m+[m[32m      headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },[m
+[32m+[m[32m      body: JSON.stringify({ values: [row] })[m
+[32m+[m[32m    });[m
+   };[m
+ [m
+   const handleStartDay = async () => {[m
+     const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });[m
+     const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });[m
+[31m-    setGpsWaiting(true);[m
+[31m-    let livePos = locationRef.current;[m
+[31m-    if (!livePos || livePos.accuracy > 50) {[m
+[31m-      await new Promise(resolve => { const timeout = setTimeout(resolve, 15000); const check = setInterval(() => { const pos = locationRef.current; if (pos && pos.accuracy <= 50) { clearTimeout(timeout); clearInterval(check); resolve(); } }, 500); });[m
+[31m-      livePos = locationRef.current;[m
+[31m-    }[m
+[31m-    setGpsWaiting(false);[m
+[31m-    if (livePos) {[m
+[31m-      setLastPos({ lat: livePos.lat, lng: livePos.lng });[m
+[31m-      startPosRef.current = { lat: livePos.lat, lng: livePos.lng };[m
+[31m-      try { localStorage.setItem("techportal_startPos", JSON.stringify(startPosRef.current)); } catch {}[m
+[31m-      const startPt = [parseFloat(livePos.lat.toFixed(5)), parseFloat(livePos.lng.toFixed(5)), Date.now()];[m
+[31m-      setGpsTrack([startPt]);[m
+[31m-      try { localStorage.setItem("gpsTrack_" + new Date().toDateString(), JSON.stringify([startPt])); } catch {}[m
+[31m-      setPending("__GPS_TRACK__", { status: "gpsTrack", extra: JSON.stringify([startPt]) });[m
+[31m-    }[m
+[32m+[m[32m    lastPositionRef.current = location || HOME;[m
+     setDayStarted(true);[m
+     setDayStatus("Day started at " + time);[m
+[31m-    dbg("🚗 Day started at " + time);[m
+[31m-    let startLabel = "Start";[m
+[31m-    if (livePos) {[m
+[31m-      try {[m
+[31m-        const geoRes = await fetch("/api/geocode?" + new URLSearchParams({ latlng: livePos.lat + "," + livePos.lng, result_type: "street_address|sublocality|locality" }));[m
+[31m-        const geoData = await geoRes.json();[m
+[31m-        if (geoData.status === "OK" && geoData.results[0]) {[m
+[31m-          const parts = geoData.results[0].address_components;[m
+[31m-          const streetNum = parts.find(p => p.types.includes("street_number"))?.short_name || "";[m
+[31m-          const street = parts.find(p => p.types.includes("route"))?.short_name || "";[m
+[31m-          const city = parts.find(p => p.types.includes("locality"))?.short_name || "";[m
+[31m-          startLabel = [streetNum, street, city].filter(Boolean).join(" ");[m
+[31m-        }[m
+[31m-      } catch {}[m
+[31m-    }[m
+[31m-    saveMileage([{ jobId: "__home__", jobTitle: "🚗 " + startLabel, from: "", miles: 0, time, checkIn: time }]);[m
+[31m-    await appendToLog([date, "🚗 Start Day (" + startLabel + ")", time, "0", "", "Departed"]);[m
+[31m-    setPending("__DAY_STARTED__", { status: "started", extra: time });[m
+[31m-    await flushStatusSaves();[m
+[32m+[m[32m    await appendToLog([date, "🏠 Start Day (Home)", time, "0", "", "Departed home"]);[m
+   };[m
+ [m
+   const handleFinishDay = async () => {[m
+     const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });[m
+     const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });[m
+[31m-    const livePos = locationRef.current;[m
+[31m-    const currentPos = livePos || lastPositionRef.current || HOME;[m
+[31m-    const endPt = [parseFloat(currentPos.lat.toFixed(5)), parseFloat(currentPos.lng.toFixed(5)), Date.now()];[m
+[31m-    setGpsTrack(prev => {[m
+[31m-      const next = [...prev, endPt];[m
+[31m-      try { localStorage.setItem("gpsTrack_" + new Date().toDateString(), JSON.stringify(next)); } catch {}[m
+[31m-      setPending("__GPS_TRACK__", { status: "gpsTrack", extra: JSON.stringify(next) });[m
+[31m-      return next;[m
+[31m-    });[m
+[31m-    const gpsTotal = gpsTrackedMiles !== null ? gpsTrackedMiles : Math.round(totalMiles * 10) / 10;[m
+[31m-    let finishLabel = "Finish";[m
+[31m-    if (currentPos) {[m
+[31m-      try {[m
+[31m-        const geoRes = await fetch("/api/geocode?" + new URLSearchParams({ latlng: currentPos.lat + "," + currentPos.lng, result_type: "street_address|sublocality|locality" }));[m
+[31m-        const geoData = await geoRes.json();[m
+[31m-        if (geoData.status === "OK" && geoData.results[0]) {[m
+[31m-          const parts = geoData.results[0].address_components;[m
+[31m-          const streetNum = parts.find(p => p.types.includes("street_number"))?.short_name || "";[m
+[31m-          const street = parts.find(p => p.types.includes("route"))?.short_name || "";[m
+[31m-          const city = parts.find(p => p.types.includes("locality"))?.short_name || "";[m
+[31m-          finishLabel = [streetNum, street, city].filter(Boolean).join(" ") || "Finish";[m
+[31m-        }[m
+[31m-      } catch {}[m
+[31m-    }[m
+[31m-    let finishMiles = 0;[m
+[31m-    if (lastPositionRef.current) {[m
+[31m-      finishMiles = await getDrivingMiles(lastPositionRef.current.lat, lastPositionRef.current.lng, currentPos.lat, currentPos.lng);[m
+[31m-      if (finishMiles < 0.05 || finishMiles > 150) finishMiles = 0;[m
+[31m-    }[m
+[31m-    saveMileage(prev => {[m
+[31m-      if (prev.some(m => m.jobId === "__finish__")) return prev; // already has finish leg[m
+[31m-      return [...prev, { jobId: "__finish__", jobTitle: "🏁 " + finishLabel, from: prev.length > 0 ? prev[prev.length - 1].jobTitle : "Start", miles: finishMiles, time, checkIn: time }];[m
+[31m-    });[m
+[31m-    const todayDateStr = selectedDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });[m
+[31m-    const scheduledJobs = jobs.filter(j => getStatus(j) === "Scheduled");[m
+[31m-    if (scheduledJobs.length > 0) {[m
+[31m-      const existing = JSON.parse(localStorage.getItem("techportal_missedJobs") || "[]");[m
+[31m-      const newMissed = scheduledJobs.map(j => ({ jobId: normalizeId(j.id), jobTitle: j.title, jobLocation: j.location, calendarId: j.calendarId, eventId: j.id, date: todayDateStr, missedAt: Date.now() }));[m
+[31m-      const merged = [...existing.filter(m => !newMissed.find(n => n.jobId === m.jobId)), ...newMissed];[m
+[31m-      saveMissedJobs(merged);[m
+[31m-    }[m
+[32m+[m[32m    const currentPos = location || lastPositionRef.current;[m
+[32m+[m[32m    const milesHome = Math.round(calcMiles(currentPos.lat, currentPos.lng, HOME.lat, HOME.lng) * 10) / 10;[m
+[32m+[m[32m    const total = Math.round((totalMiles + milesHome) * 10) / 10;[m
+     setDayFinished(true);[m
+[31m-    const status = "Day finished at " + time + " · Total: " + gpsTotal + " mi";[m
+[31m-    setDayStatus(status);[m
+[31m-    dbg("🏁 " + status);[m
+[31m-    if (navigator.serviceWorker?.controller) {[m
+[31m-      navigator.serviceWorker.controller.postMessage({ type: "DAY_FINISHED" });[m
+[31m-    }[m
+[31m-    await appendToLog([date, "🏁 Finish Day (" + finishLabel + ")", time, "", "", "Total day: " + gpsTotal + " mi"]);[m
+[31m-    setPending("__DAY_FINISHED__", { status: "finished", extra: status });[m
+[31m-    await flushStatusSaves();[m
+[32m+[m[32m    setDayStatus("Day finished at " + time + " · Total: " + total + " mi");[m
+[32m+[m[32m    await appendToLog([date, "🏠 Finish Day (Home)", time, milesHome, "", "Total day: " + total + " mi"]);[m
+   };[m
+ [m
+   const goToPrevDay = () => { const d = new Date(selectedDate); d.setDate(d.getDate() - 1); setSelectedDate(d); setFilter("All"); };[m
+[36m@@ -775,483 +147,211 @@[m [mconst Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },[m
+   const goToToday = () => { setSelectedDate(new Date()); setFilter("All"); };[m
+   const handleNavigate = (jobId) => { if (location) setNavStart((prev) => ({ ...prev, [jobId]: { lat: location.lat, lng: location.lng } })); };[m
+ [m
+[31m-  const handleCheckIn = async (jobId, jobTitle, auto = false) => {[m
+[32m+[m[32m  const handleCheckIn = async (jobId, jobTitle) => {[m
+     const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });[m
+     const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });[m
+[31m-    dbg("📍 Check-in: " + jobTitle + (auto ? " (auto)" : ""));[m
+     setCheckedIn((prev) => ({ ...prev, [jobId]: time }));[m
+[31m-    const livePos = locationRef.current;[m
+[31m-    const currentPos = livePos || lastPositionRef.current || startPosRef.current || HOME;[m
+[31m-    const accuracyOk = !livePos || livePos.accuracy <= 1000;[m
+[32m+[m[32m    const currentPos = location || lastPositionRef.current;[m
+     let miles = 0;[m
+[31m-    // ── KEY FIX: fall back to startPosRef when lastPos is null ──────────────[m
+[31m-    const fromPos = lastPositionRef.current || startPosRef.current;[m
+[31m-    if (dayStarted && fromPos && accuracyOk) {[m
+[31m-      miles = await getDrivingMiles(fromPos.lat, fromPos.lng, currentPos.lat, currentPos.lng);[m
+[31m-      if (miles > 0.05 && miles < 150) {[m
+[31m-        saveMileage((prev) => [...prev, { jobId, jobTitle, from: prev.length === 0 ? "Start" : prev[prev.length - 1].jobTitle, miles, time, checkIn: time }]);[m
+[31m-        dbg("🛣️ Mileage leg: " + miles + " mi to " + jobTitle);[m
+[31m-      } else {[m
+[31m-        dbg("⚠️ Mileage skipped for " + jobTitle + " — " + miles + " mi (out of range or 0)", "warn");[m
+[31m-      }[m
+[31m-    } else if (!auto && navStart[jobId] && livePos && accuracyOk) {[m
+[31m-      miles = await getDrivingMiles(navStart[jobId].lat, navStart[jobId].lng, livePos.lat, livePos.lng);[m
+[31m-      if (miles > 0.05 && miles < 150) saveMileage((prev) => [...prev, { jobId, jobTitle, from: prev.length === 0 ? "Start" : prev[prev.length - 1].jobTitle, miles, time, checkIn: time }]);[m
+[31m-    } else {[m
+[31m-      dbg("⚠️ No fromPos for mileage — fromPos=" + (fromPos ? "set" : "null") + " dayStarted=" + dayStarted, "warn");[m
+[32m+[m[32m    if (dayStarted) {[m
+[32m+[m[32m      miles = Math.round(calcMiles(lastPositionRef.current.lat, lastPositionRef.current.lng, currentPos.lat, currentPos.lng) * 10) / 10;[m
+[32m+[m[32m      if (miles > 0.05) setMileageLog((prev) => [...prev, { jobId, jobTitle, miles, time }]);[m
+[32m+[m[32m      lastPositionRef.current = currentPos;[m
+[32m+[m[32m    } else if (navStart[jobId] && location) {[m
+[32m+[m[32m      miles = Math.round(calcMiles(navStart[jobId].lat, navStart[jobId].lng, location.lat, location.lng) * 10) / 10;[m
+[32m+[m[32m      if (miles > 0.05) setMileageLog((prev) => [...prev, { jobId, jobTitle, miles, time }]);[m
+     }[m
+[31m-    if (livePos) setLastPos({ lat: livePos.lat, lng: livePos.lng });[m
+[31m-    await appendToLog([date, jobTitle + (auto ? " (auto)" : ""), time, miles > 0.05 && miles < 150 ? miles : "", invoicedJobs[jobId] ? "Yes" : "No", auto ? "Auto check-in" : ""]);[m
+[31m-    setPending(jobId + "__ci", { status: "checkedIn", extra: time });[m
+[31m-    flushStatusSaves();[m
+[31m-    const job = jobsRef.current.find(j => normalizeId(j.id) === jobId);[m
+[31m-    if (job) updateCalendarEvent(job, { checkIn: time });[m
+[31m-  };[m
+[31m-[m
+[31m-  const handleCheckOut = async (jobId, jobTitle, auto = false) => {[m
+[31m-    const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });[m
+[31m-    const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });[m
+[31m-    dbg("🚪 Check-out: " + jobTitle + (auto ? " (auto)" : ""));[m
+[31m-    setCheckedOut((prev) => ({ ...prev, [jobId]: time }));[m
+[31m-    const livePos = locationRef.current;[m
+[31m-    if (livePos) setLastPos({ lat: livePos.lat, lng: livePos.lng });[m
+[31m-    else {[m
+[31m-      // Fall back to job's geocoded coords so next check-in has a valid from point[m
+[31m-      const job = jobs.find(j => normalizeId(j.id) === jobId);[m
+[31m-      const nid = normalizeId(jobId);[m
+[31m-      const coords = jobCoordsRef.current[nid];[m
+[31m-      if (coords) setLastPos({ lat: coords.lat, lng: coords.lng });[m
+[31m-    }[m
+[31m-    await appendToLog([date, jobTitle + " (check-out" + (auto ? " auto" : "") + ")", time, "", invoicedJobs[jobId] ? "Yes" : "No", auto ? "Auto check-out" : ""]);[m
+[31m-    saveMileage((prev) => prev.map(m => m.jobId === jobId ? { ...m, checkOut: time } : m));[m
+[31m-    setPending(jobId + "__co", { status: "checkedOut", extra: time });[m
+[31m-    flushStatusSaves();[m
+[31m-    const job = jobs.find(j => normalizeId(j.id) === jobId);[m
+[31m-    updateCalendarEvent(job, { checkIn: checkedIn[jobId], checkOut: time });[m
+[31m-  };[m
+[31m-[m
+[31m-  const handleComplete = (jobId) => {[m
+[31m-    dbg("✅ Complete: " + jobId);[m
+[31m-    setCompleted((prev) => ({ ...prev, [jobId]: true }));[m
+[31m-    setPending(jobId + "__done", { status: "completed", extra: checkedIn[jobId] || "" });[m
+[31m-    flushStatusSaves();[m
+[31m-    const job = jobs.find(j => normalizeId(j.id) === jobId);[m
+[31m-    const cleanTitle = (job?.title || "").replace(/^(⚠️ MISSED - )+/, "");[m
+[31m-    if (job && job.title !== cleanTitle) {[m
+[31m-      const token = accessTokenRef.current;[m
+[31m-      fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(job.calendarId) + "/events/" + job.id, {[m
+[31m-        method: "PATCH",[m
+[31m-        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },[m
+[31m-        body: JSON.stringify({ summary: cleanTitle }),[m
+[31m-      }).then(() => refresh()).catch(() => {});[m
+[31m-      saveMissedJobs(missedJobs.filter(m => m.jobId !== jobId));[m
+[31m-    }[m
+[31m-    updateCalendarEvent(job, { checkIn: checkedIn[jobId], checkOut: checkedOut[jobId], completed: true, invoiceUrl: invoicedJobs[jobId] });[m
+[32m+[m[32m    await appendToLog([date, jobTitle, time, miles > 0.05 ? miles : "", invoicedJobs[jobId] ? "Yes" : "No", ""]);[m
+   };[m
+ [m
+[32m+[m[32m  const handleComplete = (jobId) => { setCompleted((prev) => ({ ...prev, [jobId]: true })); };[m
+   const handleUndo = (jobId) => {[m
+     setCompleted((prev) => { const n = { ...prev }; delete n[jobId]; return n; });[m
+     setCheckedIn((prev) => { const n = { ...prev }; delete n[jobId]; return n; });[m
+[31m-    setCheckedOut((prev) => { const n = { ...prev }; delete n[jobId]; return n; });[m
+[31m-    saveMileage((prev) => prev.filter((m) => m.jobId !== jobId));[m
+[31m-    setPending(jobId + "__ci", { status: "undone", extra: "" });[m
+[31m-    setPending(jobId + "__co", { status: "undone", extra: "" });[m
+[31m-    setPending(jobId + "__done", { status: "undone", extra: "" });[m
+[31m-    flushStatusSaves();[m
+[31m-    const job = jobs.find(j => normalizeId(j.id) === jobId);[m
+[31m-    updateCalendarEvent(job, {});[m
+[32m+[m[32m    setMileageLog((prev) => prev.filter((m) => m.jobId !== jobId));[m
+   };[m
+ [m
+[31m-  const handleInvoice = (job) => { setInvoiceJob({ ...job, checkInTime: checkedIn[job.id] || null, checkOutTime: checkedOut[job.id] || null }); };[m
+[32m+[m[32m  const handleInvoice = (job) => { setInvoiceJob(job); };[m
+   const handleInvoiceClose = () => { setInvoiceJob(null); };[m
+[31m-  const handleInvoiceCreated = (jobId, invoiceUrl) => {[m
+[31m-    setInvoicedJobs((prev) => ({ ...prev, [jobId]: invoiceUrl }));[m
+[31m-    setPending(normalizeId(jobId) + "__invoice", { status: "invoiced", extra: invoiceUrl });[m
+[31m-    flushStatusSaves();[m
+[31m-    const job = jobs.find(j => normalizeId(j.id) === jobId);[m
+[31m-    updateCalendarEvent(job, { checkIn: checkedIn[jobId], checkOut: checkedOut[jobId], completed: !!completed[jobId], invoiceUrl });[m
+[31m-  };[m
+ [m
+[31m-  const handleUndoFinishDay = async () => {[m
+[31m-    setDayFinished(false); setConfirmFinish(false); setDayStatus("Day started — resumed");[m
+[31m-    setPending("__DAY_FINISHED__", { status: "unfinished", extra: "" });[m
+[31m-    setPending("__DAY_STARTED__", { status: "started", extra: "resumed" });[m
+[31m-    saveMileage(prev => prev.filter(m => m.jobId !== "__home__"));[m
+[31m-    await flushStatusSaves();[m
+[31m-  };[m
+[31m-[m
+[31m-  const saveMissedJobs = (jobs) => { setMissedJobs(jobs); try { localStorage.setItem("techportal_missedJobs", JSON.stringify(jobs)); } catch {} };[m
+[31m-[m
+[31m-  const handleMissed = (jobId, jobTitle, jobLocation, jobCalendarId, jobEventId) => {[m
+[31m-    const token = accessTokenRef.current;[m
+[31m-    const cleanTitle = jobTitle.replace(/^(⚠️ MISSED - )+/, "");[m
+[31m-    dbg("⚠️ Marking missed: " + cleanTitle);[m
+[31m-    const missed = { jobId, jobTitle: cleanTitle, jobLocation, calendarId: jobCalendarId, eventId: jobEventId, date: selectedDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }), missedAt: Date.now() };[m
+[31m-    const existing = JSON.parse(localStorage.getItem("techportal_missedJobs") || "[]");[m
+[31m-    saveMissedJobs([...existing.filter(m => m.jobId !== jobId), missed]);[m
+[31m-    setCompleted(prev => ({ ...prev, [jobId]: true }));[m
+[31m-    setPending(jobId + "__done", { status: "missed", extra: cleanTitle });[m
+[31m-    flushStatusSaves();[m
+[31m-    if (jobCalendarId && jobEventId && token) {[m
+[31m-      fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(jobCalendarId) + "/events/" + jobEventId, {[m
+[31m-        method: "PATCH",[m
+[31m-        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },[m
+[31m-        body: JSON.stringify({ summary: "⚠️ MISSED - " + cleanTitle }),[m
+[31m-      }).then(r => { if (!r.ok) dbg("❌ Calendar title update failed for " + cleanTitle + ": " + r.status, "error"); else dbg("✅ Calendar title updated: " + cleanTitle); })[m
+[31m-        .catch(e => dbg("❌ Calendar title update error for " + cleanTitle + ": " + e.message, "error"));[m
+[31m-    } else {[m
+[31m-      dbg("⚠️ Skipped calendar title update for " + cleanTitle + " — missing calendarId/eventId/token", "warn");[m
+[31m-    }[m
+[31m-  };[m
+[31m-[m
+[31m-  const handleNotesSaved = async (jobId, notes, photos) => {[m
+[31m-    const token = accessTokenRef.current;[m
+[31m-    const sheetId = await getOrCreateLogSheet();[m
+[31m-    if (!sheetId || !token) return;[m
+[31m-    const dateKey = selectedDateRef.current.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });[m
+[31m-    const job = jobs.find(j => normalizeId(j.id) === jobId);[m
+[31m-    const photoLinks = photos.map(p => p.url).join(", ");[m
+[31m-    await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A:D:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", {[m
+[31m-      method: "POST",[m
+[31m-      headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },[m
+[31m-      body: JSON.stringify({ values: [[dateKey, jobId + "__notes", "notes", notes + (photoLinks ? " | Photos: " + photoLinks : "")]] }),[m
+[31m-    });[m
+[31m-    if (job) { job.notes = notes; job.photos = photos; }[m
+[31m-    dbg("📝 Notes saved for " + (job?.title || jobId));[m
+[31m-  };[m
+[31m-[m
+[31m-  const handleReschedule = async (missed, newStart, newEnd) => {[m
+[31m-    const token = accessTokenRef.current;[m
+[31m-    if (!missed.calendarId || !missed.eventId) throw new Error("No calendar event linked.");[m
+[31m-    await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(missed.calendarId) + "/events/" + missed.eventId, {[m
+[31m-      method: "PATCH",[m
+[31m-      headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },[m
+[31m-      body: JSON.stringify({[m
+[31m-        start: { dateTime: newStart.toISOString(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone },[m
+[31m-        end: { dateTime: newEnd.toISOString(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone },[m
+[31m-        summary: missed.jobTitle,[m
+[31m-      }),[m
+[31m-    });[m
+[31m-    const updated = missedJobs.filter(m => m.jobId !== missed.jobId);[m
+[31m-    saveMissedJobs(updated);[m
+[31m-    setRescheduleJob(null);[m
+[31m-    refresh();[m
+[31m-    if (updated.length === 0) setShowMissedModal(false);[m
+[31m-    alert(missed.jobTitle + " rescheduled to " + newStart.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }) + " at " + newStart.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));[m
+[31m-  };[m
+[31m-[m
+[31m-  const handleViewRoute = () => {[m
+[31m-    if (gpsTrack.length < 2) { alert("Not enough GPS data yet."); return; }[m
+[31m-    const max = 23; const step = Math.max(1, Math.floor(gpsTrack.length / max));[m
+[31m-    const pts = []; for (let i = 0; i < gpsTrack.length; i += step) pts.push(gpsTrack[i]);[m
+[31m-    const last = gpsTrack[gpsTrack.length - 1]; if (pts[pts.length - 1] !== last) pts.push(last);[m
+[31m-    window.open("https://www.google.com/maps/dir/" + pts.map(p => p[0] + "," + p[1]).join("/"), "_blank");[m
+[31m-  };[m
+[31m-[m
+[31m-  const handleAddManualLeg = async () => {[m
+[31m-    const fromPos = lastPositionRef.current || startPosRef.current;[m
+[31m-    if (!fromPos) { alert("GPS not ready."); return; }[m
+[31m-    const livePos = locationRef.current;[m
+[31m-    if (!livePos) { alert("GPS not available."); return; }[m
+[31m-    const label = prompt("What's this leg for?");[m
+[31m-    if (!label) return;[m
+[31m-    const from = mileageLog.length > 0 ? mileageLog[mileageLog.length - 1].jobTitle : "Last stop";[m
+[31m-    const miles = await getDrivingMiles(fromPos.lat, fromPos.lng, livePos.lat, livePos.lng);[m
+[32m+[m[32m  const handleCashPaid = async (jobId, jobTitle) => {[m
+[32m+[m[32m    setCashPaid((prev) => ({ ...prev, [jobId]: true }));[m
+[32m+[m[32m    const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });[m
+     const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });[m
+[31m-    if (miles > 0.05 && miles < 150) { saveMileage((prev) => [...prev, { jobId: "manual_" + Date.now(), jobTitle: label, from, miles, time, checkIn: time }]); setLastPos({ lat: livePos.lat, lng: livePos.lng }); }[m
+[31m-    else { alert("Miles: " + miles + " — too small or too large."); }[m
+[32m+[m[32m    await appendToLog([date, jobTitle, checkedIn[jobId] || time, "", "Yes", "💵 Paid Cash/Check"]);[m
+   };[m
+ [m
+   const getStatus = (job) => {[m
+[31m-    const id = normalizeId(job.id);[m
+[31m-    if (completed[id]) return "Done";[m
+[31m-    if (checkedOut[id]) return "Checked Out";[m
+[31m-    if (checkedIn[id]) return "Checked In";[m
+[32m+[m[32m    if (completed[job.id]) return "Done";[m
+[32m+[m[32m    if (checkedIn[job.id]) return "Checked In";[m
+     return "Scheduled";[m
+   };[m
+ [m
+[31m-  const counts = { total: jobs.length, done: jobs.filter(j => getStatus(j) === "Done").length, inProgress: jobs.filter(j => getStatus(j) === "Checked In").length, scheduled: jobs.filter(j => getStatus(j) === "Scheduled").length };[m
+[31m-  const filtered = filter === "All" ? jobs : jobs.filter(j => { const s = getStatus(j); return s === filter || (filter === "Done" && completed[normalizeId(j.id)]); });[m
+[31m-  const handleExportDebug = () => {[m
+[31m-    const lines = [...debugLog].reverse(); // debugLog is newest-first; report reads oldest-first[m
+[31m-    const header = [[m
+[31m-      "TechPortal Debug Report",[m
+[31m-      "App version: " + APP_VERSION,[m
+[31m-      "Exported: " + new Date().toLocaleString(),[m
+[31m-      "Entries: " + lines.length,[m
+[31m-      "".padEnd(50, "="),[m
+[31m-      "",[m
+[31m-    ].join("\n");[m
+[31m-    const body = lines.map(e => e.time + "  [" + (e.type || "info").toUpperCase() + "]  " + e.msg).join("\n");[m
+[31m-    const text = header + body + "\n";[m
+[31m-    const filename = "techportal-debug-" + new Date().toISOString().slice(0, 10) + "-" + Date.now() + ".txt";[m
+[31m-[m
+[31m-    const download = () => {[m
+[31m-      try {[m
+[31m-        const blob = new Blob([text], { type: "text/plain" });[m
+[31m-        const url = URL.createObjectURL(blob);[m
+[31m-        const a = document.createElement("a");[m
+[31m-        a.href = url;[m
+[31m-        a.download = filename;[m
+[31m-        document.body.appendChild(a);[m
+[31m-        a.click();[m
+[31m-        document.body.removeChild(a);[m
+[31m-        setTimeout(() => URL.revokeObjectURL(url), 1000);[m
+[31m-      } catch (e) { alert("Export failed: " + e.message); }[m
+[31m-    };[m
+[31m-[m
+[31m-    if (navigator.share && navigator.canShare) {[m
+[31m-      try {[m
+[31m-        const file = new File([text], filename, { type: "text/plain" });[m
+[31m-        if (navigator.canShare({ files: [file] })) {[m
+[31m-          navigator.share({ files: [file], title: "TechPortal Debug Report" }).catch(() => {});[m
+[31m-          return;[m
+[31m-        }[m
+[31m-      } catch {}[m
+[31m-    }[m
+[31m-    download();[m
+[32m+[m[32m  const counts = {[m
+[32m+[m[32m    total: jobs.length,[m
+[32m+[m[32m    done: jobs.filter((j) => completed[j.id]).length,[m
+[32m+[m[32m    inProgress: jobs.filter((j) => checkedIn[j.id] && !completed[j.id]).length,[m
+[32m+[m[32m    scheduled: jobs.filter((j) => !checkedIn[j.id] && !completed[j.id]).length,[m
+   };[m
+ [m
+[32m+[m[32m  const filtered = filter === "All" ? jobs : jobs.filter((j) => { const s = getStatus(j); return s === filter || (filter === "Done" && completed[j.id]); });[m
+   const dotStyle = { width: 8, height: 8, borderRadius: "50%", background: location ? "#27500A" : "#888", display: "inline-block", marginRight: 4 };[m
+[32m+[m
+   const modalEvents = modalType === "completed" ? completedEvents : remainingEvents;[m
+[31m-  const modalTitleText = modalType === "completed" ? "Completed This Month" : "Remaining This Month";[m
+[32m+[m[32m  const modalTitle = modalType === "completed" ? "Completed This Month" : "Remaining This Month";[m
+ [m
+   return ([m
+     React.createElement("div", { style: styles.page },[m
+[31m-      invoiceJob && React.createElement(InvoiceModal, { job: invoiceJob, accessToken, onClose: handleInvoiceClose, onInvoiceCreated: handleInvoiceCreated }),[m
+[31m-      showEtsy && React.createElement(EtsyStats, { onClose: () => setShowEtsy(false) }),[m
+[31m-      rescheduleJob && React.createElement(RescheduleModal, {[m
+[31m-        missed: rescheduleJob,[m
+[31m-        accessToken: accessTokenRef.current,[m
+[31m-        onReschedule: handleReschedule,[m
+[31m-        onDismiss: (m) => { saveMissedJobs(missedJobs.filter(x => x.jobId !== m.jobId)); setRescheduleJob(null); },[m
+[31m-        onClose: () => { setRescheduleJob(null); setShowMissedModal(true); },[m
+[31m-      }),[m
+[31m-      driveMode && React.createElement(DriveMode, {[m
+[31m-        jobs, checkedIn, checkedOut, completed, location,[m
+[31m-        onCheckIn: (nid, title) => handleCheckIn(nid, title),[m
+[31m-        onCheckOut: (nid, title) => handleCheckOut(nid, title),[m
+[31m-        onComplete: (nid) => handleComplete(nid),[m
+[31m-        dayStarted, displayMiles,[m
+[31m-        onExit: () => setDriveMode(false),[m
+[31m-      }),[m
+[31m-      React.createElement("div", { style: { position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 9999 } },[m
+[31m-        React.createElement("button", { onClick: () => setShowDebug(p => !p), style: { width: "100%", padding: "6px", background: "#1a1a2e", color: "#7dd3fc", fontSize: 11, fontFamily: "monospace", border: "none", cursor: "pointer", textAlign: "left" } }, "🔧 Debug (" + debugLog.length + " logs) — tap to " + (showDebug ? "hide" : "show")),[m
+[31m-        showDebug && React.createElement("div", { style: { background: "#0d0d1a", color: "#cdd6f4", fontFamily: "monospace", fontSize: 10, padding: "8px", maxHeight: 200, overflowY: "auto", borderTop: "1px solid #333" } },[m
+[31m-          React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 4 } },[m
+[31m-            React.createElement("button", { onClick: () => { setDebugLog([]); try { localStorage.removeItem("techportal_debugLog_" + new Date().toDateString()); } catch {} }, style: { fontSize: 10, padding: "2px 8px", background: "#333", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer" } }, "Clear"),[m
+[31m-            React.createElement("button", { onClick: handleExportDebug, style: { fontSize: 10, padding: "2px 8px", background: "#185FA5", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer" } }, "⬆ Export")[m
+[31m-          ),[m
+[31m-          debugLog.map((e, i) => React.createElement("div", { key: i, style: { color: e.type === "error" ? "#f38ba8" : e.type === "warn" ? "#f9e2af" : "#a6e3a1", marginBottom: 2 } }, e.time + " " + e.msg))[m
+[31m-        )[m
+[31m-      ),[m
+[31m-      menuOpen && React.createElement("div", { style: styles.menuOverlay, onClick: () => setMenuOpen(false) },[m
+[31m-        React.createElement("div", { style: styles.menuDrawer, onClick: e => e.stopPropagation() },[m
+[31m-          React.createElement("div", { style: styles.menuHeader }, React.createElement("div", { style: styles.menuTitle }, "Menu"), React.createElement("button", { style: styles.menuClose, onClick: () => setMenuOpen(false) }, "×")),[m
+[31m-          React.createElement("div", { style: styles.menuSection },[m
+[31m-            React.createElement("div", { style: styles.menuSectionLabel }, "📊 Logs & Reports"),[m
+[31m-            React.createElement("a", { href: "#", style: styles.menuItem, onClick: async e => { e.preventDefault(); const id = logSheetId || await getOrCreateLogSheet(); if (id) window.open("https://docs.google.com/spreadsheets/d/" + id + "/edit#gid=0", "_blank"); setMenuOpen(false); } }, "📋 Job Log"),[m
+[31m-            React.createElement("a", { href: "#", style: styles.menuItem, onClick: async e => { e.preventDefault(); const id = logSheetId || await getOrCreateLogSheet(); if (id) window.open("https://docs.google.com/spreadsheets/d/" + id + "/edit#gid=0", "_blank"); setMenuOpen(false); } }, "💰 Accounts Receivable")[m
+[31m-          ),[m
+[31m-          React.createElement("div", { style: styles.menuSection }, React.createElement("div", { style: styles.menuSectionLabel }, "⛳ Golf"), React.createElement("a", { href: "/golf", style: styles.menuItem, onClick: () => setMenuOpen(false) }, "⛳ Golf Scorecard")),[m
+[31m-          React.createElement("div", { style: styles.menuSection }, React.createElement("div", { style: styles.menuSectionLabel }, "🛍️ Etsy"), React.createElement("button", { style: { ...styles.menuItem, background: "none", border: "none", width: "100%", textAlign: "left", cursor: "pointer", fontFamily: "system-ui, sans-serif" }, onClick: () => { setMenuOpen(false); setShowEtsy(true); } }, "🛍️ Etsy Shop Stats")),[m
+[31m-          React.createElement("div", { style: styles.menuSection }, React.createElement("div", { style: styles.menuSectionLabel }, "📅 Calendar"), React.createElement("a", { href: "https://calendar.google.com/calendar/r", target: "_blank", rel: "noreferrer", style: styles.menuItem, onClick: () => setMenuOpen(false) }, "📆 Google Calendar")),[m
+[31m-          React.createElement("div", { style: styles.menuSection }, React.createElement("div", { style: styles.menuSectionLabel }, "⚙️ Account"), React.createElement("button", { style: { ...styles.menuItem, background: "none", border: "none", width: "100%", textAlign: "left", cursor: "pointer", fontFamily: "system-ui, sans-serif" }, onClick: () => { setMenuOpen(false); onLogout(); } }, "🚪 Sign Out"))[m
+[31m-        )[m
+[31m-      ),[m
+[32m+[m[32m      invoiceJob && React.createElement(InvoiceModal, { job: invoiceJob, accessToken: accessToken, onClose: handleInvoiceClose }),[m
+[32m+[m
+       modalType && React.createElement("div", { style: styles.overlay, onClick: () => setModalType(null) },[m
+[31m-        React.createElement("div", { style: styles.modalBox, onClick: e => e.stopPropagation() },[m
+[31m-          React.createElement("div", { style: styles.modalHeader }, React.createElement("div", { style: styles.modalTitle }, modalTitleText + " (" + modalEvents.length + ")"), React.createElement("button", { style: styles.modalClose, onClick: () => setModalType(null) }, "×")),[m
+[32m+[m[32m        React.createElement("div", { style: styles.modalBox, onClick: (e) => e.stopPropagation() },[m
+[32m+[m[32m          React.createElement("div", { style: styles.modalHeader },[m
+[32m+[m[32m            React.createElement("div", { style: styles.modalTitle }, modalTitle + " (" + modalEvents.length + ")"),[m
+[32m+[m[32m            React.createElement("button", { style: styles.modalClose, onClick: () => setModalType(null) }, "×")[m
+[32m+[m[32m          ),[m
+           React.createElement("div", { style: styles.modalList },[m
+[31m-            modalEvents.length === 0 ? React.createElement("div", { style: styles.modalEmpty }, "No jobs found.")[m
+[31m-              : modalEvents.sort((a, b) => new Date(a.start?.dateTime || a.start?.date) - new Date(b.start?.dateTime || b.start?.date)).map(e => {[m
+[32m+[m[32m            modalEvents.length === 0[m
+[32m+[m[32m              ? React.createElement("div", { style: styles.modalEmpty }, "No jobs found.")[m
+[32m+[m[32m              : modalEvents.sort((a, b) => new Date(a.start?.dateTime || a.start?.date) - new Date(b.start?.dateTime || b.start?.date)).map((e) => {[m
+                   const start = new Date(e.start?.dateTime || e.start?.date);[m
+                   const dateStr = start.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });[m
+                   const timeStr = e.start?.dateTime ? start.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";[m
+[32m+[m[32m                  const editUrl = e.htmlLink || "https://calendar.google.com/calendar/r";[m
+                   return React.createElement("div", { key: e.id, style: styles.modalRow },[m
+                     React.createElement("div", { style: styles.modalRowDate }, dateStr + (timeStr ? " · " + timeStr : "")),[m
+                     React.createElement("div", { style: styles.modalRowTitle }, e.summary || "Untitled"),[m
+                     e.location && React.createElement("div", { style: styles.modalRowLoc }, "📍 " + e.location),[m
+[31m-                    React.createElement("a", { href: e.htmlLink || "https://calendar.google.com/calendar/r", target: "_blank", rel: "noreferrer", style: styles.editBtn }, "✏️ Edit in Calendar")[m
+[32m+[m[32m                    React.createElement("a", { href: editUrl, target: "_blank", rel: "noreferrer", style: styles.editBtn }, "✏️ Edit in Calendar")[m
+                   );[m
+                 })[m
+           )[m
+         )[m
+       ),[m
+[32m+[m
+       React.createElement("div", { style: styles.topbar },[m
+[31m-        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } },[m
+[31m-          React.createElement("button", { style: styles.hamburgerBtn, onClick: () => setMenuOpen(true) }, React.createElement("span", { style: styles.hamburgerLine }), React.createElement("span", { style: styles.hamburgerLine }), React.createElement("span", { style: styles.hamburgerLine })),[m
+[31m-          React.createElement("div", null,[m
+[31m-            React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },[m
+[31m-              React.createElement("div", { style: styles.name }, user.name),[m
+[31m-              React.createElement("span", { style: { fontSize: 10, color: "#aaa", background: "#f5f5f3", padding: "2px 6px", borderRadius: 6, fontWeight: 500 } }, "v" + APP_VERSION)[m
+[31m-            ),[m
+[31m-            React.createElement("div", { style: styles.email }, user.email)[m
+[31m-          )[m
+[31m-        ),[m
+[32m+[m[32m        React.createElement("div", null, React.createElement("div", { style: styles.name }, user.name), React.createElement("div", { style: styles.email }, user.email)),[m
+         React.createElement("div", { style: { display: "flex", gap: 10, alignItems: "center" } },[m
+[31m-          isToday && dayStarted && !dayFinished && React.createElement("button", { style: { fontSize: 12, padding: "6px 12px", borderRadius: 8, background: "#1a1a2e", color: "#7dd3fc", border: "1px solid #333", cursor: "pointer", fontWeight: 600 }, onClick: () => setDriveMode(true) }, "🚗 Drive"),[m
+[31m-          React.createElement("button", { style: styles.refreshBtn, onClick: refresh }, "↻"),[m
+[32m+[m[32m          React.createElement("button", { style: styles.refreshBtn, onClick: refresh }, "\u21BB"),[m
+           React.createElement("button", { style: styles.logoutBtn, onClick: onLogout }, "Sign out")[m
+         )[m
+       ),[m
+[31m-      missedJobs.length > 0 && React.createElement("div", { style: { background: "#FEF3CD", borderBottom: "0.5px solid #f0c040", padding: "10px 1.5rem", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }, onClick: () => setShowMissedModal(true) },[m
+[31m-        React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: "#856404" } }, "⚠️ " + missedJobs.length + " unfinished job" + (missedJobs.length > 1 ? "s" : "") + " — tap to review"),[m
+[31m-        React.createElement("span", { style: { fontSize: 12, color: "#856404" } }, "›")[m
+[31m-      ),[m
+[31m-      showMissedModal && React.createElement("div", { style: styles.overlay, onClick: () => setShowMissedModal(false) },[m
+[31m-        React.createElement("div", { style: styles.modalBox, onClick: e => e.stopPropagation() },[m
+[31m-          React.createElement("div", { style: styles.modalHeader }, React.createElement("div", { style: styles.modalTitle }, "⚠️ Unfinished Jobs (" + missedJobs.length + ")"), React.createElement("button", { style: styles.modalClose, onClick: () => setShowMissedModal(false) }, "×")),[m
+[31m-          React.createElement("div", { style: styles.modalList },[m
+[31m-            missedJobs.map(m => React.createElement("div", { key: m.jobId, style: { ...styles.modalRow, display: "flex", flexDirection: "column", gap: 6 } },[m
+[31m-              React.createElement("div", { style: styles.modalRowDate }, "Missed on " + m.date),[m
+[31m-              React.createElement("div", { style: styles.modalRowTitle }, m.jobTitle),[m
+[31m-              m.jobLocation && React.createElement("div", { style: styles.modalRowLoc }, "📍 " + m.jobLocation),[m
+[31m-              React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 6 } },[m
+[31m-                React.createElement("button", { style: { fontSize: 12, padding: "5px 12px", borderRadius: 8, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontWeight: 500 }, onClick: () => { setShowMissedModal(false); setRescheduleJob(m); } }, "📅 Reschedule"),[m
+[31m-                React.createElement("button", { style: { fontSize: 12, padding: "5px 12px", borderRadius: 8, background: "#f5f5f3", color: "#888", border: "none", cursor: "pointer" }, onClick: () => saveMissedJobs(missedJobs.filter(x => x.jobId !== m.jobId)) }, "Dismiss")[m
+[31m-              )[m
+[31m-            ))[m
+[31m-          )[m
+[31m-        )[m
+[31m-      ),[m
+       React.createElement("div", { style: styles.locationBar },[m
+         React.createElement("span", { style: dotStyle }),[m
+[31m-        location ? React.createElement("span", { style: styles.locationText },[m
+[31m-          "GPS active · ±" + location.accuracy + "m",[m
+[31m-          location.accuracy > 500 && React.createElement("span", { style: { color: "#c0392b", marginLeft: 6 } }, "⚠️ Poor accuracy"),[m
+[31m-          "  ",[m
+[31m-          React.createElement("a", { href: "https://www.google.com/maps?q=" + location.lat + "," + location.lng, target: "_blank", rel: "noreferrer", style: styles.locationLink }, "View my location")[m
+[31m-        ) : React.createElement("span", { style: { ...styles.locationText, display: "flex", alignItems: "center", gap: 8 } },[m
+[31m-          locationError || "Getting your location...",[m
+[31m-          locationError && React.createElement("button", { onClick: () => { navigator.geolocation.getCurrentPosition(() => window.location.reload(), () => alert("Tap the 🔒 lock icon → Site settings → Location → Allow, then refresh."), { enableHighAccuracy: true }); }, style: { fontSize: 11, padding: "2px 8px", borderRadius: 6, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer" } }, "Fix →")[m
+[31m-        )[m
+[32m+[m[32m        location[m
+[32m+[m[32m          ? React.createElement("span", { style: styles.locationText }, "GPS active \u00B7 \u00B1" + location.accuracy + "m  ", React.createElement("a", { href: "https://www.google.com/maps?q=" + location.lat + "," + location.lng, target: "_blank", rel: "noreferrer", style: styles.locationLink }, "View my location"))[m
+[32m+[m[32m          : React.createElement("span", { style: styles.locationText }, locationError || "Getting your location...")[m
+       ),[m
+       React.createElement("div", { style: styles.monthBar },[m
+         React.createElement("div", null, React.createElement("div", { style: styles.monthText }, monthName), React.createElement("div", { style: styles.monthSub }, monthlyCount !== null ? monthlyCount + " total jobs" : "Loading...")),[m
+         React.createElement("div", { style: styles.monthRight },[m
+[31m-          React.createElement("button", { style: styles.monthStatBtn, onClick: () => setModalType("completed") }, React.createElement("div", { style: styles.monthStatVal }, totalCompleted), React.createElement("div", { style: styles.monthStatLabel }, "completed")),[m
+[32m+[m[32m          React.createElement("button", { style: styles.monthStatBtn, onClick: () => setModalType("completed") },[m
+[32m+[m[32m            React.createElement("div", { style: styles.monthStatVal }, totalCompleted),[m
+[32m+[m[32m            React.createElement("div", { style: styles.monthStatLabel }, "completed")[m
+[32m+[m[32m          ),[m
+           React.createElement("div", { style: styles.monthDivider }),[m
+[31m-          React.createElement("button", { style: styles.monthStatBtn, onClick: () => setModalType("remaining") }, React.createElement("div", { style: { ...styles.monthStatVal, color: "#FAEEDA" } }, remaining !== null ? remaining : "-"), React.createElement("div", { style: styles.monthStatLabel }, "remaining")),[m
+[31m-          isToday && React.createElement(React.Fragment, null,[m
+[31m-            React.createElement("div", { style: styles.monthDivider }),[m
+[31m-            React.createElement("div", { style: styles.monthStatBtn }, React.createElement("div", { style: { ...styles.monthStatVal, color: "#7dd3fc" } }, displayMiles + " mi"), React.createElement("div", { style: styles.monthStatLabel }, "today"))[m
+[32m+[m[32m          React.createElement("button", { style: styles.monthStatBtn, onClick: () => setModalType("remaining") },[m
+[32m+[m[32m            React.createElement("div", { style: { ...styles.monthStatVal, color: "#FAEEDA" } }, remaining !== null ? remaining : "-"),[m
+[32m+[m[32m            React.createElement("div", { style: styles.monthStatLabel }, "remaining")[m
+           )[m
+         )[m
+       ),[m
+[31m-      (isToday || dayStatus) && React.createElement("div", { style: styles.dayBar },[m
+[31m-        isToday && (!dayStarted[m
+[31m-          ? React.createElement("button", { style: { ...styles.startBtn, opacity: gpsWaiting ? 0.7 : 1, cursor: gpsWaiting ? "default" : "pointer" }, onClick: gpsWaiting ? undefined : handleStartDay, disabled: gpsWaiting }, gpsWaiting ? "📡 Getting GPS..." : "🚗 Start Day")[m
+[32m+[m[32m      isToday && React.createElement("div", { style: styles.dayBar },[m
+[32m+[m[32m        !dayStarted[m
+[32m+[m[32m          ? React.createElement("button", { style: styles.startBtn, onClick: handleStartDay }, "🚗 Start Day")[m
+           : !dayFinished[m
+[31m-            ? (confirmFinish[m
+[31m-              ? React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } },[m
+[31m-                  React.createElement("span", { style: { fontSize: 13, color: "#633806", fontWeight: 600 } }, "Done for the day?"),[m
+[31m-                  React.createElement("button", { style: styles.finishBtn, onClick: handleFinishDay }, "✅ Yes, finish"),[m
+[31m-                  React.createElement("button", { style: { ...styles.finishBtn, background: "#888" }, onClick: () => setConfirmFinish(false) }, "Cancel")[m
+[31m-                )[m
+[31m-              : React.createElement("button", { style: styles.finishBtn, onClick: () => setConfirmFinish(true) }, "🏁 Finish Day"))[m
+[31m-            : React.createElement("button", { style: { ...styles.finishBtn, background: "#555", fontSize: 12 }, onClick: handleUndoFinishDay }, "↩ Undo Finish")),[m
+[32m+[m[32m            ? React.createElement("button", { style: styles.finishBtn, onClick: handleFinishDay }, "🏁 Finish Day")[m
+[32m+[m[32m            : null,[m
+         dayStatus && React.createElement("div", { style: styles.dayStatus }, dayStatus),[m
+[31m-        logSheetId && React.createElement("a", { href: "https://docs.google.com/spreadsheets/d/" + logSheetId + "/edit#gid=0", target: "_blank", rel: "noreferrer", style: styles.sheetLink }, "📊 View Job Log")[m
+[32m+[m[32m        logSheetId && React.createElement("a", { href: "https://docs.google.com/spreadsheets/d/" + logSheetId, target: "_blank", rel: "noreferrer", style: styles.sheetLink }, "📊 View Job Log")[m
+       ),[m
+[31m-      (isToday || mileageLog.length > 0) && React.createElement("div", { style: styles.mileageBar },[m
+[31m-        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },[m
+[31m-          React.createElement("div", { style: styles.mileageTitle }, isToday ? "Today's mileage log" : "Mileage log"),[m
+[31m-          isToday && dayStarted && React.createElement("button", { style: { fontSize: 11, padding: "3px 10px", borderRadius: 8, background: "#F0F4FF", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 500 }, onClick: handleAddManualLeg }, "+ Add leg")[m
+[31m-        ),[m
+[31m-        mileageLog.length === 0[m
+[31m-          ? React.createElement("div", { style: styles.mileageEmpty }, dayStarted ? "Check in to your first job to start tracking" : "Start your day to begin tracking miles")[m
+[31m-          : mileageLog.map((m, i) => {[m
+[31m-              let duration = "";[m
+[31m-              if (m.checkIn && m.checkOut) {[m
+[31m-                const parseTime = (t) => { const d = new Date(); const [time, ampm] = t.split(" "); let [h, min] = time.split(":").map(Number); if (ampm === "PM" && h !== 12) h += 12; if (ampm === "AM" && h === 12) h = 0; d.setHours(h, min, 0, 0); return d; };[m
+[31m-                const diff = Math.round((parseTime(m.checkOut) - parseTime(m.checkIn)) / 60000);[m
+[31m-                if (diff > 0) duration = diff >= 60 ? Math.floor(diff/60) + "h " + (diff%60) + "m" : diff + "m";[m
+[31m-              }[m
+[31m-              return React.createElement("div", { key: i, style: styles.mileageRow },[m
+[31m-                React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 1, flex: 1 } },[m
+[31m-                  React.createElement("span", { style: { fontSize: 11, color: "#aaa" } }, (m.from || "Start") + " →"),[m
+[31m-                  React.createElement("span", null, m.jobTitle),[m
+[31m-                  m.checkIn && React.createElement("span", { style: { fontSize: 11, color: "#888" } }, "⏱ " + m.checkIn + (m.checkOut ? " – " + m.checkOut : "") + (duration ? " (" + duration + ")" : ""))[m
+[31m-                ),[m
+[31m-                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },[m
+[31m-                  React.createElement("span", { style: styles.mileageVal }, m.miles > 0 ? m.miles + " mi" : "—"),[m
+[31m-                  m.jobId !== "__home__" && m.jobId !== "__finish__" && React.createElement("button", { onClick: () => saveMileage(prev => prev.filter((_, idx) => idx !== i)), style: { fontSize: 14, color: "#c0392b", background: "none", border: "none", cursor: "pointer", padding: "2px 6px", fontWeight: 700, lineHeight: 1 }, title: "Remove this leg" }, "✕")[m
+[31m-                )[m
+[31m-              );[m
+[31m-            }),[m
+[31m-        React.createElement("div", { style: styles.mileageTotal },[m
+[31m-          React.createElement("span", null, "Total"),[m
+[31m-          React.createElement("div", { style: { textAlign: "right" } },[m
+[31m-            React.createElement("div", null, displayMiles + " mi"),[m
+[31m-            gpsTrackedMiles !== null && React.createElement("div", { style: { fontSize: 10, color: "#888", marginTop: 1 } }, "GPS tracked")[m
+[31m-          )[m
+[31m-        ),[m
+[31m-        gpsTrack.length >= 2 && React.createElement("button", { onClick: handleViewRoute, style: { marginTop: 10, width: "100%", padding: "8px", borderRadius: 8, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600 } }, "🗺️ View Route in Maps")[m
+[32m+[m[32m      totalMiles > 0 && React.createElement("div", { style: styles.mileageBar },[m
+[32m+[m[32m        React.createElement("div", { style: styles.mileageTitle }, "Today's mileage log"),[m
+[32m+[m[32m        mileageLog.map((m, i) => React.createElement("div", { key: i, style: styles.mileageRow }, React.createElement("span", null, m.jobTitle), React.createElement("span", { style: styles.mileageVal }, m.miles + " mi"))),[m
+[32m+[m[32m        React.createElement("div", { style: styles.mileageTotal }, React.createElement("span", null, "Total"), React.createElement("span", null, (Math.round(totalMiles * 10) / 10) + " mi"))[m
+       ),[m
+[31m-      React.createElement("div", { style: { ...styles.page, paddingBottom: "3rem" } },[m
+[31m-        React.createElement("div", { style: styles.statsGrid },[m
+[31m-          [{ label: isToday ? "Today's jobs" : "Day's jobs", val: counts.total }, { label: "Completed", val: counts.done }, { label: "In progress", val: counts.inProgress }, { label: "Scheduled", val: counts.scheduled }][m
+[31m-            .map(s => React.createElement("div", { key: s.label, style: styles.statCard }, React.createElement("div", { style: styles.statLabel }, s.label), React.createElement("div", { style: styles.statVal }, s.val)))[m
+[31m-        ),[m
+[31m-        React.createElement("div", { style: styles.filterRow },[m
+[31m-          ["All", "Scheduled", "Checked In", "Done"].map(f =>[m
+[31m-            React.createElement("button", { key: f, style: { ...styles.filterBtn, ...(filter === f ? styles.filterActive : {}) }, onClick: () => setFilter(f) }, f)[m
+[31m-          )[m
+[31m-        ),[m
+[31m-        React.createElement("div", { style: styles.dateNav },[m
+[31m-          React.createElement("button", { style: styles.navBtn, onClick: goToPrevDay }, "← Prev"),[m
+[31m-          React.createElement("div", { style: styles.dateCenter }, React.createElement("div", { style: styles.dateLabel }, displayDate), !isToday && React.createElement("button", { style: styles.todayBtn, onClick: goToToday }, "Back to today")),[m
+[31m-          React.createElement("button", { style: styles.navBtn, onClick: goToNextDay }, "Next →")[m
+[31m-        ),[m
+[31m-        React.createElement("div", { style: styles.jobList },[m
+[31m-          (loading || statusLoading) && React.createElement("div", { style: styles.message }, "Loading..."),[m
+[31m-          error && React.createElement("div", { style: { ...styles.message, color: "#c0392b" } }, error),[m
+[31m-          !loading && !statusLoading && !error && filtered.length === 0 && React.createElement("div", { style: styles.message }, "No jobs found for this day."),[m
+[31m-          !loading && !statusLoading && filtered.map(job => {[m
+[31m-            const nid = normalizeId(job.id);[m
+[31m-            const isNearby = geofenceStatus[nid] === "nearby";[m
+[31m-            return React.createElement(JobCard, {[m
+[31m-              key: job.id, job, location, status: getStatus(job),[m
+[31m-              checkedIn: checkedIn[nid], checkedOut: checkedOut[nid], completed: completed[nid],[m
+[31m-              invoiceUrl: invoicedJobs[nid], isNearby,[m
+[31m-              accessToken: accessTokenRef.current,[m
+[31m-              logSheetId,[m
+[31m-              onTimeUpdated: refresh,[m
+[31m-              onNotesSaved: handleNotesSaved,[m
+[31m-              onCheckIn: () => handleCheckIn(nid, job.title),[m
+[31m-              onCheckOut: () => handleCheckOut(nid, job.title),[m
+[31m-              onComplete: () => handleComplete(nid),[m
+[31m-              onNavigate: () => handleNavigate(nid),[m
+[31m-              onUndo: () => handleUndo(nid),[m
+[31m-              onInvoice: () => handleInvoice({ ...job, id: nid }),[m
+[31m-              onMissed: () => handleMissed(nid, job.title, job.location, job.calendarId, job.id),[m
+[31m-            });[m
+[32m+[m[32m      React.createElement("div", { style: styles.statsGrid },[m
+[32m+[m[32m        [{ label: "Today's jobs", val: counts.total }, { label: "Completed", val: counts.done }, { label: "In progress", val: counts.inProgress }, { label: "Scheduled", val: counts.scheduled }][m
+[32m+[m[32m          .map((s) => React.createElement("div", { key: s.label, style: styles.statCard }, React.createElement("div", { style: styles.statLabel }, s.label), React.createElement("div", { style: styles.statVal }, s.val)))[m
+[32m+[m[32m      ),[m
+[32m+[m[32m      React.createElement("div", { style: styles.filterRow },[m
+[32m+[m[32m        ["All", "Scheduled", "Checked In", "Done"].map((f) =>[m
+[32m+[m[32m          React.createElement("button", { key: f, style: { ...styles.filterBtn, ...(filter === f ? styles.filterActive : {}) }, onClick: () => setFilter(f) }, f)[m
+[32m+[m[32m        )[m
+[32m+[m[32m      ),[m
+[32m+[m[32m      React.createElement("div", { style: styles.dateNav },[m
+[32m+[m[32m        React.createElement("button", { style: styles.navBtn, onClick: goToPrevDay }, "\u2190 Prev"),[m
+[32m+[m[32m        React.createElement("div", { style: styles.dateCenter }, React.createElement("div", { style: styles.dateLabel }, displayDate), !isToday && React.createElement("button", { style: styles.todayBtn, onClick: goToToday }, "Back to today")),[m
+[32m+[m[32m        React.createElement("button", { style: styles.navBtn, onClick: goToNextDay }, "Next \u2192")[m
+[32m+[m[32m      ),[m
+[32m+[m[32m      React.createElement("div", { style: styles.jobList },[m
+[32m+[m[32m        loading && React.createElement("div", { style: styles.message }, "Loading calendar..."),[m
+[32m+[m[32m        error && React.createElement("div", { style: { ...styles.message, color: "#c0392b" } }, error),[m
+[32m+[m[32m        !loading && !error && filtered.length === 0 && React.createElement("div", { style: styles.message }, "No jobs found for this day."),[m
+[32m+[m[32m        !loading && filtered.map((job) =>[m
+[32m+[m[32m          React.createElement(JobCard, {[m
+[32m+[m[32m            key: job.id,[m
+[32m+[m[32m            job: job,[m
+[32m+[m[32m            location: location,[m
+[32m+[m[32m            status: getStatus(job),[m
+[32m+[m[32m            checkedIn: checkedIn[job.id],[m
+[32m+[m[32m            completed: completed[job.id],[m
+[32m+[m[32m            invoiced: invoicedJobs[job.id],[m
+[32m+[m[32m            cashPaid: cashPaid[job.id],[m
+[32m+[m[32m            onCheckIn: () => handleCheckIn(job.id, job.title),[m
+[32m+[m[32m            onComplete: () => handleComplete(job.id),[m
+[32m+[m[32m            onNavigate: () => handleNavigate(job.id),[m
+[32m+[m[32m            onUndo: () => handleUndo(job.id),[m
+[32m+[m[32m            onInvoice: () => handleInvoice(job),[m
+[32m+[m[32m            onCashPaid: () => handleCashPaid(job.id, job.title)[m
+           })[m
+         )[m
+       )[m
+     )[m
+   );[m
+[31m-});[m
+[32m+[m[32m}[m
+ [m
+[31m-export default Dashboard;[m
+[32m+[m[32mfunction JobCard({ job, location, status, checkedIn, completed, invoiced, cashPaid, onCheckIn, onComplete, onNavigate, onUndo, onInvoice, onCashPaid }) {[m
+[32m+[m[32m  const badge = STATUS_STYLES[status] || STATUS_STYLES["Scheduled"];[m
+[32m+[m[32m  let navigateUrl = null;[m
+[32m+[m[32m  if (job.location) { navigateUrl = location ? "https://www.google.com/maps/dir/" + location.lat + "," + location.lng + "/" + encodeURIComponent(job.location) : "https://www.google.com/maps/search/" + encodeURIComponent(job.location); }[m
+[32m+[m[32m  return ([m
+[32m+[m[32m    React.createElement("div", { style: styles.card },[m
+[32m+[m[32m      React.createElement("div", { style: styles.cardTop },[m
+[32m+[m[32m        React.createElement("span", { style: styles.time }, job.startTime + (job.endTime ? " - " + job.endTime : "")),[m
+[32m+[m[32m        React.createElement("span", { style: { ...styles.badge, background: badge.bg, color: badge.color } }, status)[m
+[32m+[m[32m      ),[m
+[32m+[m[32m      React.createElement("div", { style: styles.cardTitle }, job.title),[m
+[32m+[m[32m      job.location && React.createElement("div", { style: styles.cardMeta }, "\uD83D\uDCCD " + job.location),[m
+[32m+[m[32m      job.description && React.createElement("div", { style: styles.cardDesc }, job.description.slice(0, 120) + (job.description.length > 120 ? "\u2026" : "")),[m
+[32m+[m[32m      React.createElement("div", { style: styles.actionRow },[m
+[32m+[m[32m        navigateUrl && !completed && React.createElement("a", { href: navigateUrl, target: "_blank", rel: "noreferrer", style: styles.navButton, onClick: onNavigate }, "\uD83D\uddFA\uFE0F Navigate"),[m
+[32m+[m[32m        !checkedIn && !completed && React.createElement("button", { style: styles.checkInBtn, onClick: onCheckIn }, "\uD83D\uDCCD Check in"),[m
+[32m+[m[32m        checkedIn && !completed && React.createElement("button", { style: styles.completeBtn, onClick: onComplete }, "\u2705 Mark complete"),[m
+[32m+[m[32m        checkedIn && !completed && React.createElement("button", { style: styles.undoBtn, onClick: onUndo }, "\u21A9 Undo"),[m
+[32m+[m[32m        completed && React.createElement("span", { style: styles.checkedInLabel }, "\u2705 Completed" + (checkedIn ? " \u00B7 " + checkedIn : "")),[m
+[32m+[m[32m        completed && React.createElement("button", { style: styles.undoBtn, onClick: onUndo }, "\u21A9 Undo"),[m
+[32m+[m[32m        React.createElement("button", { style: { ...styles.invoiceBtn, ...(invoiced ? { background: "#EAF3DE", color: "#27500A" } : {}) }, onClick: onInvoice }, invoiced ? "\u2705 Invoiced" : "\uD83D\uDCB5 Invoice"),[m
+[32m+[m[32m        React.createElement("button", {[m
+[32m+[m[32m          style: {[m
+[32m+[m[32m            ...styles.cashBtn,[m
+[32m+[m[32m            ...(cashPaid ? { background: "#EAF3DE", color: "#27500A", cursor: "default" } : {})[m
+[32m+[m[32m          },[m
+[32m+[m[32m          onClick: cashPaid ? undefined : onCashPaid,[m
+[32m+[m[32m          disabled: cashPaid[m
+[32m+[m[32m        }, cashPaid ? "✅ Cash/Check Paid" : "💵 Paid Cash/Check"),[m
+[32m+[m[32m        React.createElement("a", { href: job.calendarLink, target: "_blank", rel: "noreferrer", style: styles.calLink }, "\uD83D\uDCC5 Event")[m
+[32m+[m[32m      )[m
+[32m+[m[32m    )[m
+[32m+[m[32m  );[m
+[32m+[m[32m}[m
+ [m
+ const styles = {[m
+   page: { fontFamily: "system-ui, sans-serif", maxWidth: 680, margin: "0 auto", paddingBottom: "2rem" },[m
+   topbar: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "1rem 1.5rem", borderBottom: "0.5px solid #e0e0e0", background: "#fff" },[m
+   name: { fontSize: 15, fontWeight: 600, color: "#1a1a1a" }, email: { fontSize: 13, color: "#888" },[m
+[31m-  hamburgerBtn: { background: "none", border: "none", cursor: "pointer", padding: "4px 6px", display: "flex", flexDirection: "column", gap: 5, justifyContent: "center" },[m
+[31m-  hamburgerLine: { display: "block", width: 20, height: 2, background: "#555", borderRadius: 2 },[m
+   refreshBtn: { fontSize: 18, background: "none", border: "none", cursor: "pointer", color: "#555", padding: "4px 8px" },[m
+   logoutBtn: { fontSize: 13, color: "#185FA5", background: "none", border: "none", cursor: "pointer" },[m
+[31m-  menuOverlay: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.4)", zIndex: 2000 },[m
+[31m-  menuDrawer: { position: "absolute", top: 0, left: 0, bottom: 0, width: 260, background: "#fff", boxShadow: "4px 0 24px rgba(0,0,0,0.15)", display: "flex", flexDirection: "column" },[m
+[31m-  menuHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "1.25rem 1.25rem 1rem", borderBottom: "0.5px solid #e0e0e0" },[m
+[31m-  menuTitle: { fontSize: 16, fontWeight: 700, color: "#1a1a1a" },[m
+[31m-  menuClose: { fontSize: 24, background: "none", border: "none", cursor: "pointer", color: "#888" },[m
+[31m-  menuSection: { padding: "0.75rem 0", borderBottom: "0.5px solid #f0f0f0" },[m
+[31m-  menuSectionLabel: { fontSize: 11, fontWeight: 700, color: "#aaa", textTransform: "uppercase", letterSpacing: "0.08em", padding: "0 1.25rem 0.4rem" },[m
+[31m-  menuItem: { display: "block", padding: "0.65rem 1.25rem", fontSize: 14, color: "#1a1a1a", textDecoration: "none", fontWeight: 500 },[m
+   locationBar: { display: "flex", alignItems: "center", gap: 8, padding: "0.6rem 1.5rem", background: "#f5f5f3", borderBottom: "0.5px solid #e0e0e0" },[m
+   locationText: { fontSize: 12, color: "#666" }, locationLink: { color: "#185FA5", fontSize: 12 },[m
+   monthBar: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0.75rem 1.5rem", background: "#185FA5" },[m
+[36m@@ -1268,9 +368,7 @@[m [mconst styles = {[m
+   sheetLink: { fontSize: 12, color: "#185FA5", marginLeft: "auto" },[m
+   mileageBar: { margin: "1rem 1.5rem 0", background: "#fff", border: "0.5px solid #e0e0e0", borderRadius: 12, padding: "0.75rem 1rem" },[m
+   mileageTitle: { fontSize: 12, fontWeight: 600, color: "#888", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 },[m
+[31m-  mileageEmpty: { fontSize: 13, color: "#bbb", fontStyle: "italic", paddingBottom: 6 },[m
+[31m-  mileageRow: { display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, color: "#444", padding: "4px 0", borderBottom: "0.5px solid #f5f5f3" },[m
+[31m-  mileageVal: { color: "#1a1a1a", fontWeight: 500 },[m
+[32m+[m[32m  mileageRow: { display: "flex", justifyContent: "space-between", fontSize: 13, color: "#444", padding: "3px 0" }, mileageVal: { color: "#1a1a1a", fontWeight: 500 },[m
+   mileageTotal: { display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 600, color: "#1a1a1a", borderTop: "0.5px solid #e0e0e0", marginTop: 6, paddingTop: 6 },[m
+   statsGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 12, padding: "1.25rem 1.5rem 0" },[m
+   statCard: { background: "#f5f5f3", borderRadius: 8, padding: "0.75rem 1rem" }, statLabel: { fontSize: 12, color: "#888", marginBottom: 4 }, statVal: { fontSize: 24, fontWeight: 600, color: "#1a1a1a" },[m
+[36m@@ -1283,6 +381,20 @@[m [mconst styles = {[m
+   todayBtn: { fontSize: 12, color: "#185FA5", background: "none", border: "none", cursor: "pointer", marginTop: 2 },[m
+   jobList: { padding: "0.75rem 1.5rem", display: "flex", flexDirection: "column", gap: 10 },[m
+   message: { fontSize: 14, color: "#888", padding: "2rem 0", textAlign: "center" },[m
+[32m+[m[32m  card: { background: "#fff", border: "0.5px solid #e0e0e0", borderRadius: 12, padding: "1rem 1.25rem" },[m
+[32m+[m[32m  cardTop: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 },[m
+[32m+[m[32m  time: { fontSize: 12, color: "#888" }, badge: { fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 20 },[m
+[32m+[m[32m  cardTitle: { fontSize: 15, fontWeight: 600, color: "#1a1a1a", marginBottom: 4 }, cardMeta: { fontSize: 13, color: "#666", marginBottom: 4 },[m
+[32m+[m[32m  cardDesc: { fontSize: 13, color: "#888", lineHeight: 1.5, marginBottom: 8 },[m
+[32m+[m[32m  actionRow: { display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" },[m
+[32m+[m[32m  navButton: { fontSize: 12, padding: "6px 12px", borderRadius: 8, background: "#185FA5", color: "#fff", textDecoration: "none", fontWeight: 500 },[m
+[32m+[m[32m  checkInBtn: { fontSize: 12, padding: "6px 12px", borderRadius: 8, background: "#FAEEDA", color: "#633806", border: "none", cursor: "pointer", fontWeight: 500 },[m
+[32m+[m[32m  completeBtn: { fontSize: 12, padding: "6px 12px", borderRadius: 8, background: "#EAF3DE", color: "#27500A", border: "none", cursor: "pointer", fontWeight: 500 },[m
+[32m+[m[32m  undoBtn: { fontSize: 12, padding: "6px 12px", borderRadius: 8, background: "#f5f5f3", color: "#888", border: "none", cursor: "pointer" },[m
+[32m+[m[32m  invoiceBtn: { fontSize: 12, padding: "6px 12px", borderRadius: 8, background: "#F0F4FF", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 500 },[m
+[32m+[m[32m  cashBtn: { fontSize: 12, padding: "6px 12px", borderRadius: 8, background: "#FFF8E1", color: "#7B5800", border: "none", cursor: "pointer", fontWeight: 500 },[m
+[32m+[m[32m  checkedInLabel: { fontSize: 12, color: "#27500A", padding: "6px 0", fontWeight: 500 },[m
+[32m+[m[32m  calLink: { fontSize: 12, padding: "6px 12px", borderRadius: 8, background: "#f5f5f3", color: "#555", textDecoration: "none" },[m
+   overlay: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: "1rem" },[m
+   modalBox: { background: "#fff", borderRadius: 16, width: "100%", maxWidth: 480, maxHeight: "80vh", display: "flex", flexDirection: "column" },[m
+   modalHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "1rem 1.25rem", borderBottom: "0.5px solid #e0e0e0" },[m

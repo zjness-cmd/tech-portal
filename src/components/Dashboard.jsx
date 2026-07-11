@@ -13,7 +13,13 @@ const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
 const PENDING_SAVES_KEY = "techportal_pendingSaves";
 const GEOFENCE_RADIUS_MILES = 0.12;
 const GEOFENCE_DWELL_MS = 30 * 1000;
-const APP_VERSION = "1.5.0";
+// Readings worse than this are unusable for any distance math (the accuracy
+// circle is bigger than a city block) — always skipped, always logged.
+// Anything better than this but still noisy (common indoors — malls,
+// big-box stores, parking ramps) is no longer thrown away outright; it's
+// compensated for in the distance check below instead.
+const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
+const APP_VERSION = "1.5.1";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -328,8 +334,14 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         locationRef.current = c;
         setLocation(c);
         setLocationError(null);
-        if (!pos.coords.accuracy || pos.coords.accuracy > 150) {
-          if (Math.random() < 0.1) dbg("⚠️ Skipping geofence — accuracy " + Math.round(pos.coords.accuracy || 999) + "m too low", "warn");
+        const accuracyM = pos.coords.accuracy || 9999;
+        // Readings worse than the hard cutoff are unusable for any distance
+        // math (the accuracy circle is bigger than a city block) — always
+        // skip AND always log (no more 10% random sampling), so a repeat of
+        // an indoor-GPS miss is diagnosable from the debug log in real time
+        // instead of guessed at after the fact.
+        if (accuracyM > GEOFENCE_HARD_ACCURACY_CUTOFF_M) {
+          dbg("⚠️ Skipping geofence — accuracy " + Math.round(accuracyM) + "m too low (cutoff " + GEOFENCE_HARD_ACCURACY_CUTOFF_M + "m)", "warn");
           return;
         }
         const dayStartedNow = dayStartedRef.current;
@@ -340,6 +352,11 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         const currentCompleted = completedRef.current;
         const checkedOutRef_current = checkedOutRef.current;
         const nowMs = Date.now();
+        // Miles-equivalent of this reading's accuracy circle, used to
+        // compensate the distance check below — a noisy indoor reading
+        // (e.g. 300m accuracy in a mall) can still legitimately place you
+        // inside the geofence even if the raw point estimate lands outside it.
+        const accuracyMiles = accuracyM / 1609.344;
         currentJobs.forEach(async (job) => {
           const nid = normalizeId(job.id);
           const isCheckedIn = currentCheckedIn[nid];
@@ -351,7 +368,14 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
             return;
           }
           const dist = calcMiles(c.lat, c.lng, coords.lat, coords.lng);
-          const inZone = dist <= GEOFENCE_RADIUS_MILES;
+          // Accuracy-compensated distance: subtract the accuracy radius
+          // before comparing against the geofence, instead of requiring the
+          // raw point estimate alone to land inside GEOFENCE_RADIUS_MILES.
+          const effectiveDist = Math.max(0, dist - accuracyMiles);
+          const inZone = effectiveDist <= GEOFENCE_RADIUS_MILES;
+          if (accuracyM > 150 && !isCheckedIn && !isCompleted && Math.random() < 0.15) {
+            dbg("📶 Noisy reading (" + Math.round(accuracyM) + "m accuracy) near " + job.title + " — raw " + Math.round(dist * 5280) + "ft, accuracy-adjusted " + Math.round(effectiveDist * 5280) + "ft", "warn");
+          }
           if (!isCheckedIn && !isCompleted) {
             if (inZone) {
               if (!geofenceDwellRef.current[nid]) {
