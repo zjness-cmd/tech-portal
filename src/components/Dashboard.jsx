@@ -19,7 +19,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.5.2";
+const APP_VERSION = "1.6.0";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -869,6 +869,87 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const goToToday = () => { setSelectedDate(new Date()); setFilter("All"); };
   const handleNavigate = (jobId) => { if (location) setNavStart((prev) => ({ ...prev, [jobId]: { lat: location.lat, lng: location.lng } })); };
 
+  // ── Cascading reschedule ──────────────────────────────────────────────
+  // When you check in late (or early), the calendar slot planned for this
+  // job no longer matches reality — and neither do the jobs still scheduled
+  // after it, since they were all planned assuming this one started on
+  // time. This moves the checked-in event to your actual arrival time
+  // (keeping its original duration), then shifts every job later today
+  // that hasn't started yet by that same delta, so the rest of the day's
+  // schedule stays realistic instead of just drifting out of sync as the
+  // day goes on. Jobs already checked in or completed are left alone —
+  // those reflect what already happened, not a plan.
+  const CASCADE_THRESHOLD_MS = 5 * 60 * 1000; // ignore drift under 5 min — not worth rewriting the calendar over
+
+  const shiftCalendarEventTime = async (calendarId, eventId, deltaMs, note) => {
+    const token = accessTokenRef.current;
+    if (!calendarId || !eventId || !token) return;
+    const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(calendarId) + "/events/" + eventId, { headers: { Authorization: "Bearer " + token } });
+    if (!res.ok) throw new Error("Fetch failed: " + res.status);
+    const event = await res.json();
+    const patch = {};
+    // Only timed events have a real slot to move — all-day events have no
+    // dateTime and are left untouched.
+    if (event.start?.dateTime) patch.start = { dateTime: new Date(new Date(event.start.dateTime).getTime() + deltaMs).toISOString(), timeZone: event.start.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone };
+    if (event.end?.dateTime) patch.end = { dateTime: new Date(new Date(event.end.dateTime).getTime() + deltaMs).toISOString(), timeZone: event.end.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone };
+    if (!patch.start && !patch.end) return;
+    if (note) {
+      const stripped = (event.description || "").replace(/\n?---TechPortal Reschedule---[\s\S]*?---End TechPortal Reschedule---/g, "").trimEnd();
+      const block = ["---TechPortal Reschedule---", note, "---End TechPortal Reschedule---"].join("\n");
+      patch.description = stripped ? stripped + "\n\n" + block : block;
+    }
+    await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(calendarId) + "/events/" + eventId, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+      body: JSON.stringify(patch),
+    });
+  };
+
+  const cascadeReschedule = async (job, actualTime) => {
+    if (!job?.startRaw) return; // all-day / no scheduled time to compare against
+    const scheduledStart = new Date(job.startRaw);
+    if (isNaN(scheduledStart)) return;
+    const deltaMs = actualTime.getTime() - scheduledStart.getTime();
+    if (Math.abs(deltaMs) < CASCADE_THRESHOLD_MS) return;
+
+    const minutesStr = (deltaMs > 0 ? "+" : "") + Math.round(deltaMs / 60000) + " min";
+    dbg("🔄 Checked in " + minutesStr + " vs. planned — updating calendar");
+
+    try {
+      await shiftCalendarEventTime(
+        job.calendarId, job.id, deltaMs,
+        "Originally scheduled " + scheduledStart.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + " — moved to actual check-in time (" + minutesStr + ")"
+      );
+    } catch (e) {
+      dbg("❌ Reschedule failed for " + job.title + ": " + e.message, "error");
+    }
+
+    const nid = normalizeId(job.id);
+    // "Following" = scheduled later than this job today, and not already
+    // underway or done — those are the only ones a shift is meaningful for.
+    const following = jobsRef.current.filter(j => {
+      if (!j.startRaw) return false;
+      const jid = normalizeId(j.id);
+      if (jid === nid) return false;
+      const jStart = new Date(j.startRaw);
+      if (isNaN(jStart) || jStart <= scheduledStart) return false;
+      if (checkedInRef.current[jid] || completedRef.current[jid]) return false;
+      return true;
+    });
+
+    if (following.length > 0) {
+      dbg("🔄 Cascading " + minutesStr + " to " + following.length + " later job(s)");
+      for (const j of following) {
+        try {
+          await shiftCalendarEventTime(j.calendarId, j.id, deltaMs);
+        } catch (e) {
+          dbg("❌ Cascade failed for " + j.title + ": " + e.message, "error");
+        }
+      }
+    }
+    refresh(); // re-pull the calendar so the UI reflects the new times
+  };
+
   const handleCheckIn = async (jobId, jobTitle, auto = false) => {
     const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
@@ -910,7 +991,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     setPending(jobId + "__ci", { status: "checkedIn", extra: time });
     flushStatusSaves();
     const job = jobsRef.current.find(j => normalizeId(j.id) === jobId);
-    if (job) updateCalendarEvent(job, { checkIn: time });
+    if (job) updateCalendarEvent(job, { checkIn: time }).then(() => cascadeReschedule(job, new Date()));
   };
 
   const handleCheckOut = async (jobId, jobTitle, auto = false) => {
