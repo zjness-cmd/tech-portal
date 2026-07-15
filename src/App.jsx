@@ -34,10 +34,18 @@ export default function App() {
   }, []);
 
   // Silent token refresh — calls /api/refresh which uses the httpOnly cookie
-  const silentRefresh = useCallback(async () => {
+  const silentRefresh = useCallback(async (retryCount = 0) => {
     try {
-      console.log("[TechPortal] Silently refreshing token...");
+      console.log("[TechPortal] Silently refreshing token" + (retryCount ? " (retry " + retryCount + ")" : "") + "...");
       const res = await fetch("/api/refresh", { method: "POST" });
+      if (res.status === 401) {
+        // The refresh token itself is invalid/revoked (Google said so
+        // explicitly) — no amount of retrying fixes that, only a real
+        // sign-in will. Fail fast here instead of burning retries on it.
+        const err = new Error("Refresh token invalid");
+        err.fatal = true;
+        throw err;
+      }
       if (!res.ok) throw new Error("Refresh failed: " + res.status);
       const { access_token } = await res.json();
       setAccessToken(access_token);
@@ -46,7 +54,16 @@ export default function App() {
       setRefreshError(false);
       console.log("[TechPortal] Token refreshed silently ✅");
     } catch (e) {
-      console.error("[TechPortal] Silent refresh failed:", e);
+      console.error("[TechPortal] Silent refresh failed:", e.message);
+      // A plain network blip (fetch throwing "Failed to fetch" — common on
+      // spotty signal at a job site) isn't a real session problem. Retry a
+      // few times with backoff before showing the "sign in again" banner;
+      // only skip straight to the banner if the server told us the refresh
+      // token is actually dead (401, marked .fatal above).
+      if (!e.fatal && retryCount < 3) {
+        setTimeout(() => silentRefresh(retryCount + 1), (retryCount + 1) * 5000);
+        return;
+      }
       setRefreshError(true);
     }
   }, []);
@@ -57,6 +74,33 @@ export default function App() {
     refreshTimer.current = setInterval(silentRefresh, REFRESH_INTERVAL_MS);
     console.log("[TechPortal] Auto-refresh timer started (every 50 min)");
   }, [silentRefresh]);
+
+  // Recover as soon as possible instead of waiting for the next scheduled
+  // 50-min tick. Two real scenarios this catches: (1) the phone was
+  // backgrounded/screen-locked through a long job — Android/Chrome throttle
+  // or fully suspend JS timers on hidden tabs, so the interval can silently
+  // miss its window entirely while backgrounded; (2) a transient dead zone
+  // caused the last scheduled refresh to fail and show the "sign in again"
+  // banner even though the underlying refresh token was fine the whole
+  // time. Both cases just need "try again now" — the tab becoming visible
+  // again, or the device regaining connectivity, are exactly the right
+  // moments to retry immediately rather than sit on a stale/failed state.
+  useEffect(() => {
+    const tryRecover = () => {
+      if (document.visibilityState !== "visible" || !accessToken) return;
+      const expiry = parseInt(localStorage.getItem("google_token_expiry") || "0");
+      if (Date.now() > expiry - 5 * 60 * 1000) {
+        console.log("[TechPortal] App resumed/reconnected — checking token freshness...");
+        silentRefresh();
+      }
+    };
+    document.addEventListener("visibilitychange", tryRecover);
+    window.addEventListener("online", tryRecover);
+    return () => {
+      document.removeEventListener("visibilitychange", tryRecover);
+      window.removeEventListener("online", tryRecover);
+    };
+  }, [accessToken, silentRefresh]);
 
   // Auth-code login — gets refresh token from Google
   const login = useGoogleLogin({

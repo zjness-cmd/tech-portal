@@ -19,7 +19,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.5.1";
+const APP_VERSION = "1.5.2";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -168,6 +168,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const mileageLogRef = useRef([]);
   const gpsTrackRef = useRef([]);
   const loadingStatusesRef = useRef(false);
+  const flushInFlightRef = useRef(false);
+  const flushQueuedRef = useRef(false);
   const jobsRef = useRef([]);
   const dayStartedRef = useRef(false);
   const dayFinishedRef = useRef(false);
@@ -645,7 +647,33 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   // "catch after 3 retries" — dropped them entirely) and (b) persists them
   // to localStorage via requeue(), so a killed/reloaded tab can recover them
   // on next launch instead of losing the write silently.
+  // ── Overlapping-flush guard ──────────────────────────────────────────────
+  // flushStatusSaves() gets called from many independent places (check-in,
+  // check-out, job-value edits, the 30s GPS-track tick, the geocode effect
+  // syncing to the service worker, etc). Two calls landing close together
+  // both read the sheet before either had appended, so both independently
+  // decided "this key doesn't exist yet" and both appended it — duplicate
+  // rows for the same save. If a flush is already running, queue a follow-up
+  // instead of starting a second one in parallel; the follow-up will pick up
+  // whatever's newly pending once the in-flight one finishes.
   const flushStatusSaves = async (retryCount = 0) => {
+    if (flushInFlightRef.current) {
+      flushQueuedRef.current = true;
+      return;
+    }
+    flushInFlightRef.current = true;
+    try {
+      await doFlushStatusSaves(retryCount);
+    } finally {
+      flushInFlightRef.current = false;
+      if (flushQueuedRef.current) {
+        flushQueuedRef.current = false;
+        flushStatusSaves();
+      }
+    }
+  };
+
+  const doFlushStatusSaves = async (retryCount = 0) => {
     const token = accessTokenRef.current;
     const pending = { ...pendingStatusRef.current }; // snapshot only — do NOT clear yet
     if (Object.keys(pending).length === 0) return;
@@ -852,7 +880,18 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     let miles = 0;
     // ── KEY FIX: fall back to startPosRef when lastPos is null ──────────────
     const fromPos = lastPositionRef.current || startPosRef.current;
-    if (dayStarted && fromPos && accuracyOk) {
+    // ── STALE-CLOSURE FIX ────────────────────────────────────────────────
+    // handleCheckIn is called from two places: JobCard's onClick (re-wired
+    // fresh every render — sees current state) and the watchPosition
+    // geofence effect (mounted once with a `[]` dep array, so its captured
+    // reference to this whole function is frozen at mount time). Reading
+    // the plain `dayStarted` state here meant every AUTO check-in silently
+    // read `dayStarted = false` forever (its value when the app first
+    // mounted, before Start Day was even tapped) — so auto-checked-in jobs
+    // never got a mileage leg at all. dayStartedRef.current is a ref, kept
+    // current by its own effect, and reads correctly regardless of which
+    // closure is calling.
+    if (dayStartedRef.current && fromPos && accuracyOk) {
       miles = await getDrivingMiles(fromPos.lat, fromPos.lng, currentPos.lat, currentPos.lng);
       if (miles > 0.05 && miles < 150) {
         saveMileage((prev) => [...prev, { jobId, jobTitle, from: prev.length === 0 ? "Start" : prev[prev.length - 1].jobTitle, miles, time, checkIn: time }]);
@@ -864,7 +903,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       miles = await getDrivingMiles(navStart[jobId].lat, navStart[jobId].lng, livePos.lat, livePos.lng);
       if (miles > 0.05 && miles < 150) saveMileage((prev) => [...prev, { jobId, jobTitle, from: prev.length === 0 ? "Start" : prev[prev.length - 1].jobTitle, miles, time, checkIn: time }]);
     } else {
-      dbg("⚠️ No fromPos for mileage — fromPos=" + (fromPos ? "set" : "null") + " dayStarted=" + dayStarted, "warn");
+      dbg("⚠️ No fromPos for mileage — fromPos=" + (fromPos ? "set" : "null") + " dayStarted=" + dayStartedRef.current, "warn");
     }
     if (livePos) setLastPos({ lat: livePos.lat, lng: livePos.lng });
     await appendToLog([date, jobTitle + (auto ? " (auto)" : ""), time, miles > 0.05 && miles < 150 ? miles : "", invoicedJobs[jobId] ? "Yes" : "No", auto ? "Auto check-in" : ""]);
@@ -892,8 +931,14 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     saveMileage((prev) => prev.map(m => m.jobId === jobId ? { ...m, checkOut: time } : m));
     setPending(jobId + "__co", { status: "checkedOut", extra: time });
     flushStatusSaves();
-    const job = jobs.find(j => normalizeId(j.id) === jobId);
-    updateCalendarEvent(job, { checkIn: checkedIn[jobId], checkOut: time });
+    // Same stale-closure issue as handleCheckIn: this function is called
+    // from the mount-time watchPosition effect for auto check-outs, so
+    // reading component state `jobs`/`checkedIn` directly here always saw
+    // their mount-time values ([] / {}) — meaning the Calendar event
+    // description silently never got updated on an auto check-out. The
+    // ref versions are kept current regardless of which closure calls in.
+    const job = jobsRef.current.find(j => normalizeId(j.id) === jobId);
+    updateCalendarEvent(job, { checkIn: checkedInRef.current[jobId], checkOut: time });
   };
 
   const handleComplete = (jobId) => {
