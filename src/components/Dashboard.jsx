@@ -9,6 +9,7 @@ import EtsyStats from "./EtsyStats";
 const HOME = { lat: 45.292159, lng: -93.683355 };
 const LOG_SHEET_NAME = "TechPortal Job Log 2026";
 const STATUS_SHEET_NAME = "Job Status";
+const AR_SHEET_NAME = "Accounts Receivable";
 const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
 const PENDING_SAVES_KEY = "techportal_pendingSaves";
 const GEOFENCE_RADIUS_MILES = 0.12;
@@ -19,7 +20,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.6.1";
+const APP_VERSION = "1.7.0";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -150,6 +151,11 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [showDebug, setShowDebug] = useState(false);
   const [driveMode, setDriveMode] = useState(false);
   const [showEtsy, setShowEtsy] = useState(false);
+  // Accounts receivable — persists across days (not scoped to selectedDate
+  // like mileage/jobValues), so it lives in its own always-loaded key.
+  const [unpaidAccounts, setUnpaidAccounts] = useState(() => {
+    try { const s = localStorage.getItem("techportal_unpaidAccounts"); return s ? JSON.parse(s) : []; } catch { return []; }
+  });
 
   const startPosRef = useRef((() => { try { const s = localStorage.getItem("techportal_startPos"); return s ? JSON.parse(s) : null; } catch { return null; } })());
   const lastPositionRef = useRef((() => { try { const s = localStorage.getItem("techportal_lastPos"); return s ? JSON.parse(s) : null; } catch { return null; } })());
@@ -160,6 +166,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const saveTimerRef = useRef(null);
   const trackIntervalRef = useRef(null);
   const jobCoordsRef = useRef({});
+  const arLoadedRef = useRef(false);
   const geofenceDwellRef = useRef({});
   const departureDwellRef = useRef({});
   const checkedInRef = useRef(checkedIn);
@@ -459,6 +466,11 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   }, [selectedDate]);
 
   useEffect(() => { if (!accessToken) return; fetchMonthlyCount(accessToken); }, [accessToken, selectedDate]);
+  useEffect(() => {
+    if (!accessToken || arLoadedRef.current) return;
+    arLoadedRef.current = true;
+    loadARAccounts();
+  }, [accessToken]);
   useEffect(() => { if (!accessToken || loading) return; loadJobStatuses(); }, [accessToken, selectedDate, loading]);
 
   useEffect(() => {
@@ -552,6 +564,120 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + ":batchUpdate", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ requests: [{ addSheet: { properties: { title: STATUS_SHEET_NAME } } }] }) });
       await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + STATUS_SHEET_NAME + "'!A1:D1?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [["Date", "Job ID", "Status", "Extra"]] }) });
     }
+  };
+
+  const ensureARTab = async (sheetId) => {
+    const token = accessTokenRef.current;
+    const infoRes = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "?fields=sheets.properties", { headers: { Authorization: "Bearer " + token } });
+    const info = await infoRes.json();
+    const hasTab = (info.sheets || []).find(s => s.properties.title === AR_SHEET_NAME);
+    if (!hasTab) {
+      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + ":batchUpdate", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ requests: [{ addSheet: { properties: { title: AR_SHEET_NAME } } }] }) });
+      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + AR_SHEET_NAME + "'!A1:E1?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [["ID", "Name", "Amount", "Date Added", "Paid"]] }) });
+    }
+  };
+
+  // ── Accounts Receivable ──────────────────────────────────────────────
+  // Unlike mileage/jobValues (scoped to selectedDate), unpaid accounts carry
+  // over across days until settled — so this loads once per session rather
+  // than re-fetching on every day change, and lives in its own sheet tab.
+  const loadARAccounts = async () => {
+    const token = accessTokenRef.current;
+    if (!token) return;
+    try {
+      const sheetId = await getOrCreateLogSheet();
+      if (!sheetId) return;
+      await ensureARTab(sheetId);
+      const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + AR_SHEET_NAME + "'!A:E", { headers: { Authorization: "Bearer " + token } });
+      if (!res.ok) { dbg("❌ AR sheet read failed: " + res.status, "error"); return; }
+      const data = await res.json();
+      const rows = (data.values || []).slice(1); // skip header row
+      const accounts = rows
+        .filter(r => r[0] && r[4] !== "Yes") // only still-unpaid rows
+        .map(r => ({ id: r[0], name: r[1] || "Untitled", amount: parseFloat(r[2]) || 0, dateAdded: r[3] || "" }));
+      setUnpaidAccounts(accounts);
+      try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(accounts)); } catch {}
+      dbg("💳 Loaded " + accounts.length + " unpaid account(s)");
+    } catch (e) {
+      dbg("❌ loadARAccounts error: " + e.message, "error");
+    }
+  };
+
+  const saveARAccountRow = async (account, isUpdate) => {
+    const token = accessTokenRef.current;
+    if (!token) return;
+    try {
+      const sheetId = await getOrCreateLogSheet();
+      if (!sheetId) return;
+      const row = [account.id, account.name, String(account.amount), account.dateAdded, account.paid ? "Yes" : ""];
+      if (isUpdate) {
+        const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + AR_SHEET_NAME + "'!A:E", { headers: { Authorization: "Bearer " + token } });
+        const data = await res.json();
+        const rows = data.values || [];
+        const idx = rows.findIndex(r => r[0] === account.id);
+        if (idx === -1) {
+          await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + AR_SHEET_NAME + "'!A:E:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [row] }) });
+          return;
+        }
+        await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + AR_SHEET_NAME + "'!A" + (idx + 1) + ":E" + (idx + 1) + "?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [row] }) });
+      } else {
+        await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + AR_SHEET_NAME + "'!A:E:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [row] }) });
+      }
+    } catch (e) {
+      dbg("❌ AR save failed for " + account.name + ": " + e.message, "error");
+    }
+  };
+
+  const handleAddUnpaidAccount = () => {
+    const name = prompt("Customer / account name:");
+    if (!name || !name.trim()) return;
+    const amountStr = prompt("Amount owed for " + name.trim() + " ($):");
+    if (amountStr === null) return;
+    const amount = parseFloat(amountStr.trim());
+    if (isNaN(amount) || amount <= 0) { alert("Enter a valid dollar amount (e.g. 150 or 150.50)."); return; }
+    const account = {
+      id: "ar_" + Date.now(),
+      name: name.trim(),
+      amount,
+      dateAdded: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+    };
+    setUnpaidAccounts(prev => {
+      const next = [...prev, account];
+      try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
+      return next;
+    });
+    saveARAccountRow(account, false);
+    dbg("💳 Added unpaid account: " + account.name + " — $" + amount);
+  };
+
+  const handleEditUnpaidAccount = (id) => {
+    const account = unpaidAccounts.find(a => a.id === id);
+    if (!account) return;
+    const input = prompt("Amount owed for " + account.name + " ($):", String(account.amount));
+    if (input === null) return;
+    const amount = parseFloat(input.trim());
+    if (isNaN(amount) || amount < 0) { alert("Enter a valid dollar amount."); return; }
+    const updated = { ...account, amount };
+    setUnpaidAccounts(prev => {
+      const next = prev.map(a => a.id === id ? updated : a);
+      try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
+      return next;
+    });
+    saveARAccountRow(updated, true);
+    dbg("💳 Updated unpaid account: " + account.name + " → $" + amount);
+  };
+
+  const handleMarkPaid = (id) => {
+    const account = unpaidAccounts.find(a => a.id === id);
+    if (!account) return;
+    if (!confirm(account.name + " — mark $" + account.amount.toFixed(2) + " as paid?")) return;
+    setUnpaidAccounts(prev => {
+      const next = prev.filter(a => a.id !== id);
+      try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
+      return next;
+    });
+    saveARAccountRow({ ...account, paid: true }, true);
+    dbg("💳 Marked paid: " + account.name);
   };
 
   const loadJobStatuses = async (isRetry = false) => {
@@ -1484,6 +1610,30 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           React.createElement("span", null, "$" + hourlyRate.toFixed(2) + " / hr")
         ),
         dayHours === null && Object.keys(jobValues).length > 0 && React.createElement("div", { style: { fontSize: 11, color: "#bbb", fontStyle: "italic", marginTop: 6 } }, "Start your day to begin tracking hours")
+      ),
+      React.createElement("div", { style: styles.mileageBar },
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
+          React.createElement("div", { style: styles.mileageTitle }, "💳 Unpaid Accounts"),
+          React.createElement("button", { style: { fontSize: 11, padding: "3px 10px", borderRadius: 8, background: "#F0F4FF", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 500 }, onClick: handleAddUnpaidAccount }, "+ Add account")
+        ),
+        unpaidAccounts.length === 0
+          ? React.createElement("div", { style: styles.mileageEmpty }, "No unpaid accounts")
+          : unpaidAccounts.map((a) =>
+              React.createElement("div", { key: a.id, style: styles.mileageRow },
+                React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 1, flex: 1, cursor: "pointer" }, onClick: () => handleEditUnpaidAccount(a.id) },
+                  React.createElement("span", null, a.name),
+                  React.createElement("span", { style: { fontSize: 11, color: "#888" } }, "Added " + a.dateAdded)
+                ),
+                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+                  React.createElement("span", { style: styles.mileageVal }, "$" + a.amount.toFixed(2)),
+                  React.createElement("button", { onClick: (e) => { e.stopPropagation(); handleMarkPaid(a.id); }, style: { fontSize: 11, padding: "3px 8px", borderRadius: 6, background: "#27500A", color: "#fff", border: "none", cursor: "pointer", fontWeight: 500 }, title: "Mark as paid" }, "✓ Paid")
+                )
+              )
+            ),
+        unpaidAccounts.length > 0 && React.createElement("div", { style: styles.mileageTotal },
+          React.createElement("span", null, "Total outstanding"),
+          React.createElement("span", null, "$" + unpaidAccounts.reduce((s, a) => s + a.amount, 0).toFixed(2))
+        )
       ),
       React.createElement("div", { style: { ...styles.page, paddingBottom: "3rem" } },
         React.createElement("div", { style: styles.statsGrid },
