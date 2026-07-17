@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef, useImperativeHandle, forwardRef } from "react";
+import React, { useState, useEffect, useRef, useImperativeHandle, forwardRef } from "react";
 import { useCalendarJobs } from "../hooks/useCalendarJobs";
 import InvoiceModal from "./InvoiceModal";
 import JobCard from "./JobCard";
@@ -20,7 +20,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.7.2";
+const APP_VERSION = "1.8.0";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -151,6 +151,11 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [showDebug, setShowDebug] = useState(false);
   const [driveMode, setDriveMode] = useState(false);
   const [showEtsy, setShowEtsy] = useState(false);
+  // Two-step "From job" picker: null when closed, {step:"pick"} showing a
+  // tappable list, {step:"amount", event} showing the amount entry for
+  // whichever job was tapped.
+  const [arPicker, setArPicker] = useState(null);
+  const [arAmountInput, setArAmountInput] = useState("");
   // Accounts receivable — persists across days (not scoped to selectedDate
   // like mileage/jobValues), so it lives in its own always-loaded key.
   const [unpaidAccounts, setUnpaidAccounts] = useState(() => {
@@ -632,36 +637,32 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   // already fetched for the "completed/remaining this month" stats at the
   // top — instead of just whichever single day happens to be selected. So a
   // job from last week is just as reachable as one from today, with no
-  // extra API calls since this data's already loaded.
-  const handleAddUnpaidAccountFromJob = () => {
-    const candidates = [...monthlyEvents]
-      .filter(e => e.start?.dateTime || e.start?.date)
-      .sort((a, b) => new Date(b.start?.dateTime || b.start?.date) - new Date(a.start?.dateTime || a.start?.date))
-      .slice(0, 40); // keep the picker list a manageable length to type a number against
+  // extra API calls since this data's already loaded. Only jobs that have
+  // already ended are candidates — a job still scheduled for later isn't
+  // "unpaid" yet, it just hasn't happened.
+  const arCandidates = [...monthlyEvents]
+    .filter(e => {
+      if (!e.start?.dateTime && !e.start?.date) return false;
+      const end = new Date(e.end?.dateTime || e.end?.date);
+      return !isNaN(end) && end < now;
+    })
+    .sort((a, b) => new Date(b.start?.dateTime || b.start?.date) - new Date(a.start?.dateTime || a.start?.date));
 
-    if (candidates.length === 0) { alert("No jobs found this month to pull from."); return; }
+  const handleAddUnpaidAccountFromJob = () => setArPicker({ step: "pick" });
 
-    const list = candidates.map((e, i) => {
-      const start = new Date(e.start?.dateTime || e.start?.date);
-      const dateStr = start.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-      const title = (e.summary || "Untitled").replace(/^(⚠️ MISSED - )+/, "");
-      return (i + 1) + ". " + dateStr + " — " + title;
-    }).join("\n");
-
-    const pick = prompt("Pick a job to add as an unpaid account (most recent first):\n\n" + list + "\n\nEnter the number:");
-    if (pick === null) return;
-    const idx = parseInt(pick.trim(), 10) - 1;
-    if (isNaN(idx) || idx < 0 || idx >= candidates.length) { alert("Enter a number between 1 and " + candidates.length + "."); return; }
-    const event = candidates[idx];
-    const cleanTitle = (event.summary || "Untitled").replace(/^(⚠️ MISSED - )+/, "");
+  const handlePickArJob = (event) => {
     const nid = normalizeId(event.id);
     // If this job happens to be from the day currently loaded, its $ value
     // might already be in jobValues — prefill it so there's less to retype.
     const existingVal = jobValues[nid];
-    const amountStr = prompt("Amount owed for " + cleanTitle + " ($):", existingVal != null ? String(existingVal) : "");
-    if (amountStr === null) return;
-    const amount = parseFloat(amountStr.trim());
+    setArAmountInput(existingVal != null ? String(existingVal) : "");
+    setArPicker({ step: "amount", event });
+  };
+
+  const handleConfirmArAmount = () => {
+    const amount = parseFloat(arAmountInput.trim());
     if (isNaN(amount) || amount <= 0) { alert("Enter a valid dollar amount (e.g. 150 or 150.50)."); return; }
+    const cleanTitle = (arPicker.event.summary || "Untitled").replace(/^(⚠️ MISSED - )+/, "");
     const account = {
       id: "ar_" + Date.now(),
       name: cleanTitle,
@@ -675,6 +676,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     });
     saveARAccountRow(account, false);
     dbg("💳 Added unpaid account from job: " + account.name + " — $" + amount);
+    setArPicker(null);
+    setArAmountInput("");
   };
 
   const handleAddUnpaidAccount = () => {
@@ -1519,6 +1522,49 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
                   );
                 })
           )
+        )
+      ),
+      arPicker && React.createElement("div", { style: styles.overlay, onClick: () => { setArPicker(null); setArAmountInput(""); } },
+        React.createElement("div", { style: styles.modalBox, onClick: e => e.stopPropagation() },
+          arPicker.step === "pick"
+            ? React.createElement(React.Fragment, null,
+                React.createElement("div", { style: styles.modalHeader },
+                  React.createElement("div", { style: styles.modalTitle }, "💳 Pick a job (" + arCandidates.length + ")"),
+                  React.createElement("button", { style: styles.modalClose, onClick: () => setArPicker(null) }, "×")
+                ),
+                React.createElement("div", { style: styles.modalList },
+                  arCandidates.length === 0
+                    ? React.createElement("div", { style: styles.modalEmpty }, "No completed jobs found this month.")
+                    : arCandidates.map(e => {
+                        const start = new Date(e.start?.dateTime || e.start?.date);
+                        const dateStr = start.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+                        const title = (e.summary || "Untitled").replace(/^(⚠️ MISSED - )+/, "");
+                        return React.createElement("div", { key: e.id, style: { ...styles.modalRow, cursor: "pointer" }, onClick: () => handlePickArJob(e) },
+                          React.createElement("div", { style: styles.modalRowDate }, dateStr),
+                          React.createElement("div", { style: styles.modalRowTitle }, title)
+                        );
+                      })
+                )
+              )
+            : React.createElement(React.Fragment, null,
+                React.createElement("div", { style: styles.modalHeader },
+                  React.createElement("div", { style: styles.modalTitle }, (arPicker.event.summary || "Untitled").replace(/^(⚠️ MISSED - )+/, "")),
+                  React.createElement("button", { style: styles.modalClose, onClick: () => { setArPicker(null); setArAmountInput(""); } }, "×")
+                ),
+                React.createElement("div", { style: { padding: "1.25rem" } },
+                  React.createElement("label", { style: { fontSize: 13, color: "#666", display: "block", marginBottom: 6 } }, "Amount owed ($)"),
+                  React.createElement("input", {
+                    type: "number", inputMode: "decimal", autoFocus: true, value: arAmountInput,
+                    onChange: e => setArAmountInput(e.target.value),
+                    onKeyDown: e => { if (e.key === "Enter") handleConfirmArAmount(); },
+                    style: { width: "100%", padding: "10px 12px", fontSize: 16, borderRadius: 8, border: "1px solid #ccc", boxSizing: "border-box", marginBottom: 14 },
+                  }),
+                  React.createElement("div", { style: { display: "flex", gap: 8 } },
+                    React.createElement("button", { onClick: () => setArPicker({ step: "pick" }), style: { flex: 1, padding: "10px", borderRadius: 8, background: "#f5f5f3", color: "#666", border: "none", cursor: "pointer", fontWeight: 500 } }, "← Back"),
+                    React.createElement("button", { onClick: handleConfirmArAmount, style: { flex: 1, padding: "10px", borderRadius: 8, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 } }, "Add account")
+                  )
+                )
+              )
         )
       ),
       React.createElement("div", { style: styles.topbar },
