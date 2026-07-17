@@ -24,6 +24,15 @@ export default function App() {
   const [refreshError, setRefreshError] = useState(false);
   const dashboardRef   = useRef(null);
   const refreshTimer   = useRef(null);
+  // Guards against two concurrent /api/refresh calls — seen in the field as
+  // two "accessToken updated" log entries 18 seconds apart, more than the
+  // scheduled 50-min interval would produce on its own. The scheduled
+  // timer, the visibilitychange listener, and the online listener can all
+  // ask for a refresh independently and land close together; without this,
+  // two in-flight requests both succeed and race to set state, which is
+  // harmless by itself but wasteful and makes the debug log confusing.
+  const refreshInFlightRef = useRef(false);
+  const refreshQueuedRef = useRef(false);
   const isGolfPage = window.location.pathname === "/golf";
 
   // Capture PWA install prompt
@@ -35,6 +44,23 @@ export default function App() {
 
   // Silent token refresh — calls /api/refresh which uses the httpOnly cookie
   const silentRefresh = useCallback(async (retryCount = 0) => {
+    // Only the initial call (not a scheduled retry continuing the same
+    // attempt) checks/acquires the lock — retries need to run regardless,
+    // since they're part of an attempt that already holds it.
+    if (retryCount === 0) {
+      if (refreshInFlightRef.current) {
+        refreshQueuedRef.current = true;
+        return;
+      }
+      refreshInFlightRef.current = true;
+    }
+    const release = () => {
+      refreshInFlightRef.current = false;
+      if (refreshQueuedRef.current) {
+        refreshQueuedRef.current = false;
+        silentRefresh();
+      }
+    };
     try {
       console.log("[TechPortal] Silently refreshing token" + (retryCount ? " (retry " + retryCount + ")" : "") + "...");
       const res = await fetch("/api/refresh", { method: "POST" });
@@ -53,6 +79,7 @@ export default function App() {
       localStorage.setItem("google_token_expiry", (Date.now() + 58 * 60 * 1000).toString());
       setRefreshError(false);
       console.log("[TechPortal] Token refreshed silently ✅");
+      release();
     } catch (e) {
       console.error("[TechPortal] Silent refresh failed:", e.message);
       // A plain network blip (fetch throwing "Failed to fetch" — common on
@@ -62,9 +89,10 @@ export default function App() {
       // token is actually dead (401, marked .fatal above).
       if (!e.fatal && retryCount < 3) {
         setTimeout(() => silentRefresh(retryCount + 1), (retryCount + 1) * 5000);
-        return;
+        return; // still in flight — don't release the lock yet
       }
       setRefreshError(true);
+      release();
     }
   }, []);
 

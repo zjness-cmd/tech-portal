@@ -19,7 +19,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.6.0";
+const APP_VERSION = "1.6.1";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -170,6 +170,30 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const loadingStatusesRef = useRef(false);
   const flushInFlightRef = useRef(false);
   const flushQueuedRef = useRef(false);
+  // Guards against a job being processed twice, from two different causes
+  // seen in the field: (1) a fast double-tap on Check In before the UI has
+  // re-rendered to reflect the first tap, and (2) the geofence watcher
+  // re-firing an auto check-in because a reload briefly lost track of the
+  // job's checked-in status (see recentlyConfirmedRef below) while you were
+  // still standing in the zone. checkInLockRef is a plain ref set
+  // synchronously — not React state — so it can't lose the race the way
+  // checkedInRef (which only updates after a render commits) can.
+  const checkInLockRef = useRef({});
+  // Tracks which jobs have already had a cascade reschedule applied today,
+  // so even if handleCheckIn does get called again for the same job (lock
+  // notwithstanding — belt and suspenders), the calendar doesn't get shoved
+  // a second time on top of an already-applied shift.
+  const cascadedTodayRef = useRef({});
+  // A write that's just been confirmed successfully saved can still get
+  // silently reverted by a read that lands moments later, if Sheets hasn't
+  // caught up to its own write yet (observed: Tin Shed's check-in vanished
+  // on a reload ~50s after it was confirmed flushed). pendingStatusRef only
+  // protects writes that are still in flight; this remembers writes for a
+  // short grace period *after* they're confirmed too, so a read landing in
+  // that window still gets reconciled correctly instead of trusting a
+  // possibly-stale sheet response.
+  const recentlyConfirmedRef = useRef({});
+  const RECENT_CONFIRM_GRACE_MS = 90 * 1000;
   const jobsRef = useRef([]);
   const dayStartedRef = useRef(false);
   const dayFinishedRef = useRef(false);
@@ -426,6 +450,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     setCheckedIn({}); setCheckedOut({}); setCompleted({}); setNavStart({}); setJobValues({});
     setDayStarted(false); setDayFinished(false); setDayStatus(""); setPastDayStatus(""); setStatusLoading(true);
     jobCoordsRef.current = {}; geofenceDwellRef.current = {}; departureDwellRef.current = {}; setGeofenceStatus({});
+    checkInLockRef.current = {}; cascadedTodayRef.current = {};
     if (new Date().toDateString() !== selectedDate.toDateString()) { try { localStorage.removeItem("techportal_lastPos"); } catch {} lastPositionRef.current = null; }
     try { const ck = JOB_STATUS_CACHE_KEY + selectedDate.toDateString(); const c = localStorage.getItem(ck); if (c) { const { checkedIn: ci, checkedOut: co, completed: comp, invoiced: inv } = JSON.parse(c); if (ci) setCheckedIn(ci); if (co) setCheckedOut(co); if (comp) setCompleted(comp); if (inv) setInvoicedJobs(inv); } } catch {}
     try { const k = "techportal_jobValues_" + selectedDate.toDateString(); const s = localStorage.getItem(k); setJobValues(s ? JSON.parse(s) : {}); } catch { setJobValues({}); }
@@ -612,15 +637,27 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       // whatever this read just fetched. Re-apply those on top so a
       // reload can't clobber a check-in/check-out that's simply still
       // in flight (e.g. mid-retry after a 401).
+      //
+      // Writes that HAVE already been confirmed can still get silently
+      // reverted by a read landing moments later — Sheets doesn't
+      // guarantee a values.get right after a values.append/batchUpdate
+      // reflects that write yet. recentlyConfirmedRef covers that gap: a
+      // write stays "protected" for RECENT_CONFIRM_GRACE_MS after it's
+      // confirmed, not just while it's still pending.
+      const now2 = Date.now();
+      Object.keys(recentlyConfirmedRef.current).forEach((k) => {
+        if (now2 - recentlyConfirmedRef.current[k].confirmedAt > RECENT_CONFIRM_GRACE_MS) delete recentlyConfirmedRef.current[k];
+      });
+      const reconcileEntries = { ...Object.fromEntries(Object.entries(recentlyConfirmedRef.current).map(([k, v]) => [k, v.entry])), ...pendingStatusRef.current };
       let reconciledCount = 0;
-      Object.entries(pendingStatusRef.current).forEach(([key, entry]) => {
+      Object.entries(reconcileEntries).forEach(([key, entry]) => {
         if (!entry || key.startsWith("__")) return;
         if (key.endsWith("__ci")) { const id = normalizeId(key.slice(0, -4)); if (entry.status === "checkedIn") { newCI[id] = entry.extra || "—"; reconciledCount++; } if (entry.status === "undone") delete newCI[id]; }
         else if (key.endsWith("__co")) { const id = normalizeId(key.slice(0, -4)); if (entry.status === "checkedOut") { newCO[id] = entry.extra || "—"; reconciledCount++; } if (entry.status === "undone") delete newCO[id]; }
         else if (key.endsWith("__done")) { const id = normalizeId(key.slice(0, -6)); if (entry.status === "completed" || entry.status === "missed") { newComp[id] = true; reconciledCount++; } if (entry.status === "undone") delete newComp[id]; }
         else if (key.endsWith("__value")) { const id = normalizeId(key.slice(0, -7)); const v = parseFloat(entry.extra); if (entry.status === "jobValue" && !isNaN(v)) { newValues[id] = v; reconciledCount++; } }
       });
-      if (reconciledCount > 0) dbg("♻️ Reconciled " + reconciledCount + " in-flight pending write(s) over sheet read", "warn");
+      if (reconciledCount > 0) dbg("♻️ Reconciled " + reconciledCount + " in-flight/recent pending write(s) over sheet read", "warn");
       if (missedFromSheet.length > 0) {
         try {
           const existingMissed = JSON.parse(localStorage.getItem("techportal_missedJobs") || "[]");
@@ -687,7 +724,11 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     // on top of a sheet read that hasn't caught up yet, instead of a stale
     // read silently reverting a tap (e.g. "missed") that's still in transit.
     const clearFlushed = () => {
-      Object.keys(pending).forEach((k) => { delete pendingStatusRef.current[k]; });
+      const confirmedAt = Date.now();
+      Object.entries(pending).forEach(([k, entry]) => {
+        delete pendingStatusRef.current[k];
+        recentlyConfirmedRef.current[k] = { entry, confirmedAt };
+      });
       persistPending();
     };
     const requeue = (scheduleRetry) => {
@@ -907,10 +948,16 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
 
   const cascadeReschedule = async (job, actualTime) => {
     if (!job?.startRaw) return; // all-day / no scheduled time to compare against
+    const nid = normalizeId(job.id);
+    if (cascadedTodayRef.current[nid]) {
+      dbg("⏭️ Skipping cascade for " + job.title + " — already rescheduled today", "warn");
+      return;
+    }
     const scheduledStart = new Date(job.startRaw);
     if (isNaN(scheduledStart)) return;
     const deltaMs = actualTime.getTime() - scheduledStart.getTime();
     if (Math.abs(deltaMs) < CASCADE_THRESHOLD_MS) return;
+    cascadedTodayRef.current[nid] = true;
 
     const minutesStr = (deltaMs > 0 ? "+" : "") + Math.round(deltaMs / 60000) + " min";
     dbg("🔄 Checked in " + minutesStr + " vs. planned — updating calendar");
@@ -924,7 +971,6 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       dbg("❌ Reschedule failed for " + job.title + ": " + e.message, "error");
     }
 
-    const nid = normalizeId(job.id);
     // "Following" = scheduled later than this job today, and not already
     // underway or done — those are the only ones a shift is meaningful for.
     const following = jobsRef.current.filter(j => {
@@ -951,6 +997,16 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   };
 
   const handleCheckIn = async (jobId, jobTitle, auto = false) => {
+    // Synchronous guard — set immediately, before any await, so it can't
+    // lose the race to a second call landing before React has re-rendered
+    // with the first check-in's state (a fast double-tap) or before a
+    // reload's stale read has a chance to make the geofence watcher think
+    // this job isn't checked in yet when you never actually left the zone.
+    if (checkedInRef.current[jobId] || checkInLockRef.current[jobId]) {
+      dbg("⏭️ Ignoring check-in for " + jobTitle + " — already checked in" + (auto ? " (auto)" : ""), "warn");
+      return;
+    }
+    checkInLockRef.current[jobId] = true;
     const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
     dbg("📍 Check-in: " + jobTitle + (auto ? " (auto)" : ""));
@@ -1049,6 +1105,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     setPending(jobId + "__ci", { status: "undone", extra: "" });
     setPending(jobId + "__co", { status: "undone", extra: "" });
     setPending(jobId + "__done", { status: "undone", extra: "" });
+    delete checkInLockRef.current[jobId];
+    delete cascadedTodayRef.current[normalizeId(jobId)];
     flushStatusSaves();
     const job = jobs.find(j => normalizeId(j.id) === jobId);
     updateCalendarEvent(job, {});
