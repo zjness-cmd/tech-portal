@@ -20,7 +20,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.7.1";
+const APP_VERSION = "1.7.2";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -628,20 +628,35 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     }
   };
 
-  // Pulls from the calendar-backed `jobs` list for whichever day is
-  // currently selected, so you don't have to retype a name that's already
-  // sitting right there in the job list — and prefills the amount from
-  // Today's Earnings if you'd already entered a $ value for that job.
+  // Pulls from monthlyEvents — the whole current month's calendar events,
+  // already fetched for the "completed/remaining this month" stats at the
+  // top — instead of just whichever single day happens to be selected. So a
+  // job from last week is just as reachable as one from today, with no
+  // extra API calls since this data's already loaded.
   const handleAddUnpaidAccountFromJob = () => {
-    if (jobs.length === 0) { alert("No jobs on " + (isToday ? "today" : "this day") + " to pull from."); return; }
-    const list = jobs.map((j, i) => (i + 1) + ". " + j.title.replace(/^(⚠️ MISSED - )+/, "")).join("\n");
-    const pick = prompt("Pick a job to add as an unpaid account:\n\n" + list + "\n\nEnter the number:");
+    const candidates = [...monthlyEvents]
+      .filter(e => e.start?.dateTime || e.start?.date)
+      .sort((a, b) => new Date(b.start?.dateTime || b.start?.date) - new Date(a.start?.dateTime || a.start?.date))
+      .slice(0, 40); // keep the picker list a manageable length to type a number against
+
+    if (candidates.length === 0) { alert("No jobs found this month to pull from."); return; }
+
+    const list = candidates.map((e, i) => {
+      const start = new Date(e.start?.dateTime || e.start?.date);
+      const dateStr = start.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      const title = (e.summary || "Untitled").replace(/^(⚠️ MISSED - )+/, "");
+      return (i + 1) + ". " + dateStr + " — " + title;
+    }).join("\n");
+
+    const pick = prompt("Pick a job to add as an unpaid account (most recent first):\n\n" + list + "\n\nEnter the number:");
     if (pick === null) return;
     const idx = parseInt(pick.trim(), 10) - 1;
-    if (isNaN(idx) || idx < 0 || idx >= jobs.length) { alert("Enter a number between 1 and " + jobs.length + "."); return; }
-    const job = jobs[idx];
-    const nid = normalizeId(job.id);
-    const cleanTitle = job.title.replace(/^(⚠️ MISSED - )+/, "");
+    if (isNaN(idx) || idx < 0 || idx >= candidates.length) { alert("Enter a number between 1 and " + candidates.length + "."); return; }
+    const event = candidates[idx];
+    const cleanTitle = (event.summary || "Untitled").replace(/^(⚠️ MISSED - )+/, "");
+    const nid = normalizeId(event.id);
+    // If this job happens to be from the day currently loaded, its $ value
+    // might already be in jobValues — prefill it so there's less to retype.
     const existingVal = jobValues[nid];
     const amountStr = prompt("Amount owed for " + cleanTitle + " ($):", existingVal != null ? String(existingVal) : "");
     if (amountStr === null) return;
