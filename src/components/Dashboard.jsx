@@ -20,7 +20,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.7.0";
+const APP_VERSION = "1.7.1";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -626,6 +626,40 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     } catch (e) {
       dbg("❌ AR save failed for " + account.name + ": " + e.message, "error");
     }
+  };
+
+  // Pulls from the calendar-backed `jobs` list for whichever day is
+  // currently selected, so you don't have to retype a name that's already
+  // sitting right there in the job list — and prefills the amount from
+  // Today's Earnings if you'd already entered a $ value for that job.
+  const handleAddUnpaidAccountFromJob = () => {
+    if (jobs.length === 0) { alert("No jobs on " + (isToday ? "today" : "this day") + " to pull from."); return; }
+    const list = jobs.map((j, i) => (i + 1) + ". " + j.title.replace(/^(⚠️ MISSED - )+/, "")).join("\n");
+    const pick = prompt("Pick a job to add as an unpaid account:\n\n" + list + "\n\nEnter the number:");
+    if (pick === null) return;
+    const idx = parseInt(pick.trim(), 10) - 1;
+    if (isNaN(idx) || idx < 0 || idx >= jobs.length) { alert("Enter a number between 1 and " + jobs.length + "."); return; }
+    const job = jobs[idx];
+    const nid = normalizeId(job.id);
+    const cleanTitle = job.title.replace(/^(⚠️ MISSED - )+/, "");
+    const existingVal = jobValues[nid];
+    const amountStr = prompt("Amount owed for " + cleanTitle + " ($):", existingVal != null ? String(existingVal) : "");
+    if (amountStr === null) return;
+    const amount = parseFloat(amountStr.trim());
+    if (isNaN(amount) || amount <= 0) { alert("Enter a valid dollar amount (e.g. 150 or 150.50)."); return; }
+    const account = {
+      id: "ar_" + Date.now(),
+      name: cleanTitle,
+      amount,
+      dateAdded: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+    };
+    setUnpaidAccounts(prev => {
+      const next = [...prev, account];
+      try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
+      return next;
+    });
+    saveARAccountRow(account, false);
+    dbg("💳 Added unpaid account from job: " + account.name + " — $" + amount);
   };
 
   const handleAddUnpaidAccount = () => {
@@ -1614,7 +1648,10 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       React.createElement("div", { style: styles.mileageBar },
         React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
           React.createElement("div", { style: styles.mileageTitle }, "💳 Unpaid Accounts"),
-          React.createElement("button", { style: { fontSize: 11, padding: "3px 10px", borderRadius: 8, background: "#F0F4FF", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 500 }, onClick: handleAddUnpaidAccount }, "+ Add account")
+          React.createElement("div", { style: { display: "flex", gap: 6 } },
+            React.createElement("button", { style: { fontSize: 11, padding: "3px 10px", borderRadius: 8, background: "#F0F4FF", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 500 }, onClick: handleAddUnpaidAccountFromJob }, "📅 From job"),
+            React.createElement("button", { style: { fontSize: 11, padding: "3px 10px", borderRadius: 8, background: "#F0F4FF", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 500 }, onClick: handleAddUnpaidAccount }, "+ Add account")
+          )
         ),
         unpaidAccounts.length === 0
           ? React.createElement("div", { style: styles.mileageEmpty }, "No unpaid accounts")
