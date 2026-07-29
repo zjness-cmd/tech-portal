@@ -20,7 +20,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.10.0";
+const APP_VERSION = "1.11.0";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -1189,28 +1189,129 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   // those reflect what already happened, not a plan.
   const CASCADE_THRESHOLD_MS = 5 * 60 * 1000; // ignore drift under 5 min — not worth rewriting the calendar over
 
-  const shiftCalendarEventTime = async (calendarId, eventId, deltaMs, note) => {
+  const shiftCalendarEventTime = async (calendarId, eventId, deltaMs, note, retryCount = 0) => {
     const token = accessTokenRef.current;
-    if (!calendarId || !eventId || !token) return;
-    const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(calendarId) + "/events/" + eventId, { headers: { Authorization: "Bearer " + token } });
-    if (!res.ok) throw new Error("Fetch failed: " + res.status);
-    const event = await res.json();
-    const patch = {};
-    // Only timed events have a real slot to move — all-day events have no
-    // dateTime and are left untouched.
-    if (event.start?.dateTime) patch.start = { dateTime: new Date(new Date(event.start.dateTime).getTime() + deltaMs).toISOString(), timeZone: event.start.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone };
-    if (event.end?.dateTime) patch.end = { dateTime: new Date(new Date(event.end.dateTime).getTime() + deltaMs).toISOString(), timeZone: event.end.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone };
-    if (!patch.start && !patch.end) return;
-    if (note) {
-      const stripped = (event.description || "").replace(/\n?---TechPortal Reschedule---[\s\S]*?---End TechPortal Reschedule---/g, "").trimEnd();
-      const block = ["---TechPortal Reschedule---", note, "---End TechPortal Reschedule---"].join("\n");
-      patch.description = stripped ? stripped + "\n\n" + block : block;
+    if (!calendarId || !eventId || !token) return null;
+    try {
+      const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(calendarId) + "/events/" + eventId, { headers: { Authorization: "Bearer " + token } });
+      if (!res.ok) throw new Error("Fetch failed: " + res.status);
+      const event = await res.json();
+      const patch = {};
+      // Only timed events have a real slot to move — all-day events have no
+      // dateTime and are left untouched.
+      if (event.start?.dateTime) patch.start = { dateTime: new Date(new Date(event.start.dateTime).getTime() + deltaMs).toISOString(), timeZone: event.start.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone };
+      if (event.end?.dateTime) patch.end = { dateTime: new Date(new Date(event.end.dateTime).getTime() + deltaMs).toISOString(), timeZone: event.end.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone };
+      if (!patch.start && !patch.end) return event;
+      if (note) {
+        const stripped = (event.description || "").replace(/\n?---TechPortal Reschedule---[\s\S]*?---End TechPortal Reschedule---/g, "").trimEnd();
+        const block = ["---TechPortal Reschedule---", note, "---End TechPortal Reschedule---"].join("\n");
+        patch.description = stripped ? stripped + "\n\n" + block : block;
+      }
+      const patchRes = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(calendarId) + "/events/" + eventId, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify(patch),
+      });
+      if (!patchRes.ok) throw new Error("Patch failed: " + patchRes.status);
+      return event;
+    } catch (e) {
+      // A transient network blip here (the original cause of the Coopers
+      // Pub calendar time silently staying wrong) shouldn't permanently
+      // strand one event — retry a couple times with backoff before
+      // actually giving up and surfacing the error to the caller.
+      if (retryCount < 2) {
+        await new Promise(r => setTimeout(r, (retryCount + 1) * 2000));
+        return shiftCalendarEventTime(calendarId, eventId, deltaMs, note, retryCount + 1);
+      }
+      throw e;
     }
-    await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(calendarId) + "/events/" + eventId, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-      body: JSON.stringify(patch),
-    });
+  };
+
+  // ── Update future occurrences of a repeating job ─────────────────────────
+  // When a job that's part of a real Google Calendar recurring series gets
+  // checked in at a different time than scheduled, this asks whether to
+  // carry that corrected time forward to future weeks too — not just
+  // today's instance. Mirrors how Google Calendar's own "this and
+  // following events" edit works: the OLD series is truncated to stop the
+  // day before this occurrence (so past occurrences are never touched),
+  // and a NEW series is created starting today at the corrected time,
+  // continuing the same repeat pattern.
+  //
+  // Known limitation: if the original series had a COUNT (fixed number of
+  // occurrences) or an UNTIL end date, the new continuing series drops
+  // that limit and repeats with no end date instead — computing the exact
+  // remaining count/date correctly would need enumerating past instances,
+  // which isn't done here. Worth knowing before confirming on a series
+  // that's meant to end at some point.
+  const maybeUpdateRecurringSeries = async (job, actualTime, recurringEventId) => {
+    const token = accessTokenRef.current;
+    const calendarId = job.calendarId;
+    try {
+      const masterRes = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(calendarId) + "/events/" + recurringEventId, { headers: { Authorization: "Bearer " + token } });
+      if (!masterRes.ok) { dbg("❌ Could not fetch recurring series for " + job.title, "error"); return; }
+      const master = await masterRes.json();
+      if (!master.recurrence || master.recurrence.length === 0) return; // not actually recurring
+
+      const cleanTitle = job.title.replace(/^(⚠️ MISSED - )+/, "");
+      const originalStart = new Date(job.startRaw);
+      const timeStr = actualTime.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      const originalTimeStr = originalStart.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      if (originalTimeStr === timeStr) return; // nothing meaningfully different to carry forward
+
+      const wants = confirm(cleanTitle + " repeats weekly. Update future occurrences to start at " + timeStr + " (was " + originalTimeStr + ")?\n\nPast occurrences are left as-is.");
+      if (!wants) return;
+
+      // Use the actual checked-in instance (not the master template) for
+      // duration, so the new series keeps the same length appointment.
+      const instanceRes = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(calendarId) + "/events/" + job.id, { headers: { Authorization: "Bearer " + token } });
+      const instance = await instanceRes.json();
+      const instanceStart = new Date(instance.start?.dateTime || instance.start?.date);
+      const instanceEnd = new Date(instance.end?.dateTime || instance.end?.date);
+      const durationMs = instanceEnd - instanceStart;
+      const timeZone = instance.start?.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+      const newStart = new Date(originalStart);
+      newStart.setHours(actualTime.getHours(), actualTime.getMinutes(), 0, 0);
+      const newEnd = new Date(newStart.getTime() + durationMs);
+
+      // 1) Truncate the OLD series to stop the day before this occurrence.
+      const dayBefore = new Date(originalStart);
+      dayBefore.setDate(dayBefore.getDate() - 1);
+      dayBefore.setHours(23, 59, 59, 0);
+      const untilStr = dayBefore.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+      const oldRule = master.recurrence.find(r => r.startsWith("RRULE")) || master.recurrence[0];
+      const truncatedRule = oldRule.replace(/;?UNTIL=[^;]+/i, "").replace(/;?COUNT=[^;]+/i, "") + ";UNTIL=" + untilStr;
+      const truncateRes = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(calendarId) + "/events/" + recurringEventId, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({ recurrence: [truncatedRule] }),
+      });
+      if (!truncateRes.ok) { dbg("❌ Could not truncate old series for " + cleanTitle, "error"); return; }
+
+      // 2) Create a NEW series starting today at the corrected time,
+      // continuing the same repeat pattern (minus any old end condition —
+      // see the known-limitation note above).
+      const newRuleBase = oldRule.replace(/;?UNTIL=[^;]+/i, "").replace(/;?COUNT=[^;]+/i, "");
+      const createRes = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(calendarId) + "/events?sendUpdates=none", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({
+          summary: master.summary,
+          description: master.description,
+          location: master.location,
+          colorId: master.colorId,
+          reminders: master.reminders,
+          start: { dateTime: newStart.toISOString(), timeZone },
+          end: { dateTime: newEnd.toISOString(), timeZone },
+          recurrence: [newRuleBase],
+        }),
+      });
+      if (!createRes.ok) { dbg("❌ Failed to create updated recurring series for " + cleanTitle, "error"); return; }
+      dbg("🔁 Updated recurring series for " + cleanTitle + " — future occurrences now start at " + timeStr);
+      refresh();
+    } catch (e) {
+      dbg("❌ Recurring series update failed for " + job.title + ": " + e.message, "error");
+    }
   };
 
   const cascadeReschedule = async (job, actualTime) => {
@@ -1230,10 +1331,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     dbg("🔄 Checked in " + minutesStr + " vs. planned — updating calendar");
 
     try {
-      await shiftCalendarEventTime(
+      const event = await shiftCalendarEventTime(
         job.calendarId, job.id, deltaMs,
         "Originally scheduled " + scheduledStart.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + " — moved to actual check-in time (" + minutesStr + ")"
       );
+      if (event?.recurringEventId) {
+        maybeUpdateRecurringSeries(job, actualTime, event.recurringEventId);
+      }
     } catch (e) {
       dbg("❌ Reschedule failed for " + job.title + ": " + e.message, "error");
     }
