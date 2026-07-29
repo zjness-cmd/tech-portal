@@ -55,6 +55,7 @@ export default function JobCard({
   job, location, status, checkedIn, checkedOut, completed, invoiceUrl,
   onCheckIn, onCheckOut, onComplete, onNavigate, onUndo, onInvoice, onMissed,
   isNearby, accessToken, onTimeUpdated, onNotesSaved, logSheetId,
+  paymentStatus, onTogglePaid,
 }) {
   const [imgFailed, setImgFailed] = useState(false);
   const [imgChecked, setImgChecked] = useState(false);
@@ -265,6 +266,18 @@ export default function JobCard({
         completed && React.createElement("span", { style: s.checkedInLabel }, "✅ Completed"),
         completed && React.createElement("button", { style: s.undoBtn, onClick: onUndo }, "↩ Undo"),
 
+        // Quick Paid/Unpaid toggle — separate from the full invoice flow,
+        // for jobs you're tracking payment on without generating a formal
+        // invoice. Only shown once a job is completed, since payment
+        // status isn't meaningful before then. Marking "Unpaid" adds it to
+        // the Unpaid Accounts page; toggling back to "Paid" removes it.
+        completed && onTogglePaid &&
+          React.createElement("button", {
+            style: paymentStatus === "paid" ? s.paidBtn : s.unpaidBtn,
+            onClick: onTogglePaid,
+            title: paymentStatus === "paid" ? "Tap to mark unpaid" : "Tap to mark paid",
+          }, paymentStatus === "paid" ? "💳 Paid" : "⚠️ Unpaid"),
+
         invoiceUrl
           ? React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
               React.createElement("a", { href: invoiceUrl, target: "_blank", rel: "noreferrer", style: s.viewInvoiceBtn }, "📄 View Invoice"),
@@ -297,4 +310,6 @@ const s = {
   viewInvoiceBtn:{ fontSize: 12, padding: "6px 10px", borderRadius: 8, background: "#EAF3DE", color: "#27500A", textDecoration: "none", fontWeight: 500, display: "inline-block", whiteSpace: "nowrap" },
   reInvoiceBtn:  { fontSize: 12, padding: "6px 8px", borderRadius: 8, background: "#F0F4FF", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 500 },
   checkedInLabel:{ fontSize: 12, color: "#27500A", padding: "6px 0", fontWeight: 500 },
+  paidBtn:       { fontSize: 12, padding: "6px 10px", borderRadius: 8, background: "#EAF3DE", color: "#27500A", border: "none", cursor: "pointer", fontWeight: 500, whiteSpace: "nowrap" },
+  unpaidBtn:     { fontSize: 12, padding: "6px 10px", borderRadius: 8, background: "#FAEEDA", color: "#633806", border: "none", cursor: "pointer", fontWeight: 500, whiteSpace: "nowrap" },
 };

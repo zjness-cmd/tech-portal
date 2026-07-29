@@ -20,7 +20,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.9.1";
+const APP_VERSION = "1.10.0";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -114,6 +114,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [checkedIn, setCheckedIn] = useState({});
   const [checkedOut, setCheckedOut] = useState({});
   const [completed, setCompleted] = useState({});
+  const [paymentStatus, setPaymentStatus] = useState({});
   const [jobValues, setJobValues] = useState(() => {
     try { const k = "techportal_jobValues_" + new Date().toDateString(); const s = localStorage.getItem(k); return s ? JSON.parse(s) : {}; } catch { return {}; }
   });
@@ -197,6 +198,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   // notwithstanding — belt and suspenders), the calendar doesn't get shoved
   // a second time on top of an already-applied shift.
   const cascadedTodayRef = useRef({});
+  // Links a job (by normalized id) to the Unpaid Accounts entry it created
+  // via the quick job-card toggle, so switching back to "paid" can close
+  // out that specific entry. Session-scoped (not persisted) — if the app
+  // reloads before you toggle back, the link is lost and the entry just
+  // sits in Unpaid Accounts until cleared manually there, same as any
+  // other unpaid account.
+  const paymentLinkRef = useRef({});
   // A write that's just been confirmed successfully saved can still get
   // silently reverted by a read that lands moments later, if Sheets hasn't
   // caught up to its own write yet (observed: Tin Shed's check-in vanished
@@ -460,10 +468,10 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   }, []);
 
   useEffect(() => {
-    setCheckedIn({}); setCheckedOut({}); setCompleted({}); setNavStart({}); setJobValues({});
+    setCheckedIn({}); setCheckedOut({}); setCompleted({}); setNavStart({}); setJobValues({}); setPaymentStatus({});
     setDayStarted(false); setDayFinished(false); setDayStatus(""); setPastDayStatus(""); setStatusLoading(true);
     jobCoordsRef.current = {}; geofenceDwellRef.current = {}; departureDwellRef.current = {}; setGeofenceStatus({});
-    checkInLockRef.current = {}; cascadedTodayRef.current = {};
+    checkInLockRef.current = {}; cascadedTodayRef.current = {}; paymentLinkRef.current = {};
     if (new Date().toDateString() !== selectedDate.toDateString()) { try { localStorage.removeItem("techportal_lastPos"); } catch {} lastPositionRef.current = null; }
     try { const ck = JOB_STATUS_CACHE_KEY + selectedDate.toDateString(); const c = localStorage.getItem(ck); if (c) { const { checkedIn: ci, checkedOut: co, completed: comp, invoiced: inv } = JSON.parse(c); if (ci) setCheckedIn(ci); if (co) setCheckedOut(co); if (comp) setCompleted(comp); if (inv) setInvoicedJobs(inv); } } catch {}
     try { const k = "techportal_jobValues_" + selectedDate.toDateString(); const s = localStorage.getItem(k); setJobValues(s ? JSON.parse(s) : {}); } catch { setJobValues({}); }
@@ -597,10 +605,21 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + AR_SHEET_NAME + "'!A:E", { headers: { Authorization: "Bearer " + token } });
       if (!res.ok) { dbg("❌ AR sheet read failed: " + res.status, "error"); return; }
       const data = await res.json();
-      const rows = (data.values || []).slice(1); // skip header row
-      const accounts = rows
-        .filter(r => r[0] && r[4] !== "Yes") // only still-unpaid rows
-        .map(r => ({ id: r[0], name: r[1] || "Untitled", amount: parseFloat(r[2]) || 0, dateAdded: r[3] || "" }));
+      const rows = data.values || [];
+      // Some older test/legacy rows predate the ID column entirely, so
+      // several can share an identical (or blank) value in column A —
+      // matching purely by "id" can't tell those apart. _sheetRow (the
+      // row's actual 1-indexed position in the sheet) always uniquely
+      // identifies a specific row regardless of duplicate content, and is
+      // what delete/edit/markPaid now use directly instead of re-searching
+      // by id.
+      const accounts = [];
+      rows.forEach((r, i) => {
+        if (i === 0) return; // header row
+        if (!r[0] || r[4] === "Yes") return; // blank/paid — not a candidate
+        const sheetRow = i + 1;
+        accounts.push({ id: r[0], name: r[1] || "Untitled", amount: parseFloat(r[2]) || 0, dateAdded: r[3] || "", _sheetRow: sheetRow, _key: "row_" + sheetRow });
+      });
       setUnpaidAccounts(accounts);
       try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(accounts)); } catch {}
       dbg("💳 Loaded " + accounts.length + " unpaid account(s)");
@@ -616,7 +635,15 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       const sheetId = await getOrCreateLogSheet();
       if (!sheetId) return;
       const row = [account.id, account.name, String(account.amount), account.dateAdded, account.paid ? "Yes" : ""];
-      if (isUpdate) {
+      if (isUpdate && account._sheetRow) {
+        // Known exact position from the last load — write straight there,
+        // no re-search needed (and no ambiguity from duplicate content).
+        await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + AR_SHEET_NAME + "'!A" + account._sheetRow + ":E" + account._sheetRow + "?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [row] }) });
+      } else if (isUpdate) {
+        // No known row position — this is an account added earlier this
+        // session and not yet reloaded. Its id is a freshly-generated
+        // "ar_<timestamp>" and is genuinely unique, so searching by id is
+        // still safe here (unlike the legacy rows this doesn't apply to).
         const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + AR_SHEET_NAME + "'!A:E", { headers: { Authorization: "Bearer " + token } });
         const data = await res.json();
         const rows = data.values || [];
@@ -664,11 +691,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const handleConfirmArAmount = () => {
     const amount = parseFloat(arAmountInput.trim());
     if (isNaN(amount) || amount <= 0) { alert("Enter a valid dollar amount (e.g. 150 or 150.50)."); return; }
+    const id = "ar_" + Date.now();
     const account = {
-      id: "ar_" + Date.now(),
+      id,
       name: arPicker.title,
       amount,
       dateAdded: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+      _key: id, // freshly generated id is genuinely unique — safe to use directly
     };
     setUnpaidAccounts(prev => {
       const next = [...prev, account];
@@ -688,11 +717,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     if (amountStr === null) return;
     const amount = parseFloat(amountStr.trim());
     if (isNaN(amount) || amount <= 0) { alert("Enter a valid dollar amount (e.g. 150 or 150.50)."); return; }
+    const id = "ar_" + Date.now();
     const account = {
-      id: "ar_" + Date.now(),
+      id,
       name: name.trim(),
       amount,
       dateAdded: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+      _key: id,
     };
     setUnpaidAccounts(prev => {
       const next = [...prev, account];
@@ -703,8 +734,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     dbg("💳 Added unpaid account: " + account.name + " — $" + amount);
   };
 
-  const handleEditUnpaidAccount = (id) => {
-    const account = unpaidAccounts.find(a => a.id === id);
+  const handleEditUnpaidAccount = (key) => {
+    const account = unpaidAccounts.find(a => a._key === key);
     if (!account) return;
     const input = prompt("Amount owed for " + account.name + " ($):", String(account.amount));
     if (input === null) return;
@@ -712,7 +743,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     if (isNaN(amount) || amount < 0) { alert("Enter a valid dollar amount."); return; }
     const updated = { ...account, amount };
     setUnpaidAccounts(prev => {
-      const next = prev.map(a => a.id === id ? updated : a);
+      const next = prev.map(a => a._key === key ? updated : a);
       try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
       return next;
     });
@@ -720,12 +751,12 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     dbg("💳 Updated unpaid account: " + account.name + " → $" + amount);
   };
 
-  const handleMarkPaid = (id) => {
-    const account = unpaidAccounts.find(a => a.id === id);
+  const handleMarkPaid = (key) => {
+    const account = unpaidAccounts.find(a => a._key === key);
     if (!account) return;
     if (!confirm(account.name + " — mark $" + account.amount.toFixed(2) + " as paid?")) return;
     setUnpaidAccounts(prev => {
-      const next = prev.filter(a => a.id !== id);
+      const next = prev.filter(a => a._key !== key);
       try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
       return next;
     });
@@ -738,12 +769,25 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   // record. Delete is for entries that shouldn't have existed at all (test
   // data, mistakes) — it removes the row entirely rather than leaving a
   // fake "paid" record behind.
-  const handleDeleteUnpaidAccount = async (id) => {
-    const account = unpaidAccounts.find(a => a.id === id);
+  //
+  // Uses _sheetRow directly (the row's exact position, captured at load
+  // time) rather than re-searching the sheet by id — some legacy rows
+  // predate the ID column and share identical/blank values there, so an
+  // id-based search couldn't reliably tell them apart. Falls back to an
+  // id search only for accounts added this session that haven't been
+  // reloaded yet (their id is freshly generated and genuinely unique, so
+  // that fallback is safe).
+  const handleDeleteUnpaidAccount = async (key) => {
+    const account = unpaidAccounts.find(a => a._key === key);
     if (!account) return;
     if (!confirm("Delete \"" + account.name + "\" ($" + account.amount.toFixed(2) + ")? This removes it entirely — not the same as marking it paid.")) return;
     setUnpaidAccounts(prev => {
-      const next = prev.filter(a => a.id !== id);
+      const next = prev
+        .filter(a => a._key !== key)
+        // Deleting a sheet row shifts every row below it up by one — keep
+        // locally-cached row positions in sync so a second delete this
+        // same session (before any reload) still targets the right row.
+        .map(a => (account._sheetRow && a._sheetRow && a._sheetRow > account._sheetRow) ? { ...a, _sheetRow: a._sheetRow - 1 } : a);
       try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
       return next;
     });
@@ -755,15 +799,19 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       const info = await infoRes.json();
       const tab = (info.sheets || []).find(s => s.properties.title === AR_SHEET_NAME);
       if (!tab) return;
-      const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + AR_SHEET_NAME + "'!A:E", { headers: { Authorization: "Bearer " + token } });
-      const data = await res.json();
-      const rows = data.values || [];
-      const idx = rows.findIndex(r => r[0] === id);
-      if (idx === -1) { dbg("⚠️ Delete: row for " + account.name + " not found in sheet", "warn"); return; }
+      let targetRow = account._sheetRow;
+      if (!targetRow) {
+        const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + AR_SHEET_NAME + "'!A:E", { headers: { Authorization: "Bearer " + token } });
+        const data = await res.json();
+        const rows = data.values || [];
+        const idx = rows.findIndex(r => r[0] === account.id);
+        if (idx === -1) { dbg("⚠️ Delete: row for " + account.name + " not found in sheet", "warn"); return; }
+        targetRow = idx + 1;
+      }
       await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + ":batchUpdate", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-        body: JSON.stringify({ requests: [{ deleteDimension: { range: { sheetId: tab.properties.sheetId, dimension: "ROWS", startIndex: idx, endIndex: idx + 1 } } }] }),
+        body: JSON.stringify({ requests: [{ deleteDimension: { range: { sheetId: tab.properties.sheetId, dimension: "ROWS", startIndex: targetRow - 1, endIndex: targetRow } } }] }),
       });
       dbg("🗑️ Deleted unpaid account: " + account.name);
     } catch (e) {
@@ -794,7 +842,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       if (rows.length <= 1 && !isRetry && localStorage.getItem("techportal_logSheetId")) {
         localStorage.removeItem("techportal_logSheetId"); setLogSheetId(null); setStatusLoading(false); loadingStatusesRef.current = false; loadJobStatuses(true); return;
       }
-      const newCI = {}; const newCO = {}; const newComp = {}; const newInv = {}; const newValues = {};
+      const newCI = {}; const newCO = {}; const newComp = {}; const newInv = {}; const newValues = {}; const newPaymentStatus = {};
       let loadedStarted = false; let loadedFinished = false; let loadedStatus = "";
       let lastMileageRow = null; let lastGpsRow = null;
       todayRows.forEach(row => { if (row[1] === "__MILEAGE_LOG__") lastMileageRow = row; if (row[1] === "__GPS_TRACK__") lastGpsRow = row; });
@@ -828,11 +876,12 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         if (jobId === "__DAY_STARTED__") { loadedStarted = true; loadedStatus = "Day started at " + extra; }
         if (jobId === "__DAY_FINISHED__") { if (status !== "unfinished") { loadedStarted = true; loadedFinished = true; loadedStatus = extra; } }
         if (jobId && !jobId.startsWith("__")) {
-          const baseId = normalizeId(jobId.replace(/__ci$/, "").replace(/__co$/, "").replace(/__done$/, "").replace(/__invoice$/, "").replace(/__value$/, ""));
+          const baseId = normalizeId(jobId.replace(/__ci$/, "").replace(/__co$/, "").replace(/__done$/, "").replace(/__invoice$/, "").replace(/__value$/, "").replace(/__paid$/, ""));
           if (status === "checkedIn") newCI[baseId] = extra || "—";
           if (status === "checkedOut") newCO[baseId] = extra || "—";
           if (status === "completed") { newComp[baseId] = true; newCI[baseId] = newCI[baseId] || "—"; }
           if (status === "jobValue") { const v = parseFloat(extra); if (!isNaN(v)) newValues[baseId] = v; }
+          if (status === "paid" || status === "unpaid") newPaymentStatus[baseId] = status;
           // "missed" is its own status value (written by handleMissed) distinct
           // from "completed" — it needs to count as done for job-status
           // purposes too, or the job silently reverts to "Scheduled" on any
@@ -873,6 +922,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         else if (key.endsWith("__co")) { const id = normalizeId(key.slice(0, -4)); if (entry.status === "checkedOut") { newCO[id] = entry.extra || "—"; reconciledCount++; } if (entry.status === "undone") delete newCO[id]; }
         else if (key.endsWith("__done")) { const id = normalizeId(key.slice(0, -6)); if (entry.status === "completed" || entry.status === "missed") { newComp[id] = true; reconciledCount++; } if (entry.status === "undone") delete newComp[id]; }
         else if (key.endsWith("__value")) { const id = normalizeId(key.slice(0, -7)); const v = parseFloat(entry.extra); if (entry.status === "jobValue" && !isNaN(v)) { newValues[id] = v; reconciledCount++; } }
+        else if (key.endsWith("__paid")) { const id = normalizeId(key.slice(0, -6)); if (entry.status === "paid" || entry.status === "unpaid") { newPaymentStatus[id] = entry.status; reconciledCount++; } }
       });
       if (reconciledCount > 0) dbg("♻️ Reconciled " + reconciledCount + " in-flight/recent pending write(s) over sheet read", "warn");
       if (missedFromSheet.length > 0) {
@@ -883,7 +933,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           dbg("⚠️ Rebuilt " + missedFromSheet.length + " missed-job entry(ies) from sheet data", "warn");
         } catch {}
       }
-      setCheckedIn(newCI); setCheckedOut(newCO); setCompleted(newComp); setInvoicedJobs(newInv); setJobValues(newValues);
+      setCheckedIn(newCI); setCheckedOut(newCO); setCompleted(newComp); setInvoicedJobs(newInv); setJobValues(newValues); setPaymentStatus(newPaymentStatus);
       try { const k = "techportal_jobValues_" + selectedDate.toDateString(); localStorage.setItem(k, JSON.stringify(newValues)); } catch {}
       try { const ck = JOB_STATUS_CACHE_KEY + selectedDate.toDateString(); localStorage.setItem(ck, JSON.stringify({ checkedIn: newCI, checkedOut: newCO, completed: newComp, invoiced: newInv })); } catch {}
       if (loadedStarted) { setDayStarted(true); if (!lastPositionRef.current && locationRef.current) setLastPos({ lat: locationRef.current.lat, lng: locationRef.current.lng }); try { const sp = localStorage.getItem("techportal_startPos"); if (sp) startPosRef.current = JSON.parse(sp); } catch {} }
@@ -1349,11 +1399,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     if (status !== "pending") return;
     const name = (info?.clientName || "Untitled").trim();
     const addAccount = (amount) => {
+      const id = "ar_" + Date.now();
       const account = {
-        id: "ar_" + Date.now(),
+        id,
         name,
         amount,
         dateAdded: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+        _key: id,
       };
       setUnpaidAccounts(prev => {
         const next = [...prev, account];
@@ -1368,6 +1420,70 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       return;
     }
     const amountStr = prompt("Amount owed for " + name + " ($):");
+    if (amountStr === null) return;
+    const amount = parseFloat(amountStr.trim());
+    if (isNaN(amount) || amount <= 0) { alert("Enter a valid dollar amount — skipped adding to Unpaid Accounts."); return; }
+    addAccount(amount);
+  };
+
+  // Quick Paid/Unpaid toggle right on the job card — separate from the full
+  // invoice flow, for jobs you're tracking payment on without generating a
+  // formal invoice. Toggling to "unpaid" creates an Unpaid Accounts entry
+  // (prefilled from Today's Earnings if a $ value is already set); toggling
+  // back to "paid" closes out that specific entry via paymentLinkRef, so
+  // going back and forth doesn't leave duplicate or orphaned rows.
+  const handleTogglePaid = (jobId, jobTitle) => {
+    const nid = normalizeId(jobId);
+    const current = paymentStatus[nid];
+    const cleanTitle = (jobTitle || "This job").replace(/^(⚠️ MISSED - )+/, "");
+
+    if (current === "unpaid") {
+      setPaymentStatus(prev => ({ ...prev, [nid]: "paid" }));
+      setPending(nid + "__paid", { status: "paid", extra: "" });
+      flushStatusSaves();
+      const linkedKey = paymentLinkRef.current[nid];
+      if (linkedKey) {
+        const acct = unpaidAccounts.find(a => a._key === linkedKey);
+        if (acct) {
+          setUnpaidAccounts(prev => {
+            const next = prev.filter(a => a._key !== linkedKey);
+            try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
+            return next;
+          });
+          saveARAccountRow({ ...acct, paid: true }, true);
+          dbg("💳 Marked paid via job card: " + acct.name);
+        }
+        delete paymentLinkRef.current[nid];
+      }
+      return;
+    }
+
+    // Switching to unpaid — add the Unpaid Accounts entry.
+    setPaymentStatus(prev => ({ ...prev, [nid]: "unpaid" }));
+    setPending(nid + "__paid", { status: "unpaid", extra: "" });
+    flushStatusSaves();
+    const addAccount = (amount) => {
+      const id = "ar_" + Date.now();
+      const account = {
+        id, name: cleanTitle, amount,
+        dateAdded: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+        _key: id,
+      };
+      setUnpaidAccounts(prev => {
+        const next = [...prev, account];
+        try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
+        return next;
+      });
+      saveARAccountRow(account, false);
+      paymentLinkRef.current[nid] = id;
+      dbg("💳 Added unpaid account from job card: " + account.name + " — $" + amount);
+    };
+    const existingVal = jobValues[nid];
+    if (existingVal != null && !isNaN(existingVal) && existingVal > 0) {
+      addAccount(existingVal);
+      return;
+    }
+    const amountStr = prompt("Amount owed for " + cleanTitle + " ($):");
     if (amountStr === null) return;
     const amount = parseFloat(amountStr.trim());
     if (isNaN(amount) || amount <= 0) { alert("Enter a valid dollar amount — skipped adding to Unpaid Accounts."); return; }
@@ -1554,19 +1670,20 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         React.createElement("div", { style: { ...styles.mileageBar, margin: "1rem 1.5rem" } },
           unpaidAccounts.length === 0
             ? React.createElement("div", { style: styles.mileageEmpty }, "No unpaid accounts")
-            : unpaidAccounts.map((a) =>
-                React.createElement("div", { key: a.id, style: styles.mileageRow },
-                  React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 1, flex: 1, cursor: "pointer" }, onClick: () => handleEditUnpaidAccount(a.id) },
+            : unpaidAccounts.map((a, i) => {
+                const key = a._key || a.id || ("idx_" + i);
+                return React.createElement("div", { key, style: styles.mileageRow },
+                  React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 1, flex: 1, cursor: "pointer" }, onClick: () => handleEditUnpaidAccount(key) },
                     React.createElement("span", null, a.name),
                     React.createElement("span", { style: { fontSize: 11, color: "#888" } }, "Added " + a.dateAdded)
                   ),
                   React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
                     React.createElement("span", { style: styles.mileageVal }, "$" + a.amount.toFixed(2)),
-                    React.createElement("button", { onClick: (e) => { e.stopPropagation(); handleMarkPaid(a.id); }, style: { fontSize: 11, padding: "3px 8px", borderRadius: 6, background: "#27500A", color: "#fff", border: "none", cursor: "pointer", fontWeight: 500 }, title: "Mark as paid" }, "✓ Paid"),
-                    React.createElement("button", { onClick: (e) => { e.stopPropagation(); handleDeleteUnpaidAccount(a.id); }, style: { fontSize: 14, color: "#c0392b", background: "none", border: "none", cursor: "pointer", padding: "2px 6px", fontWeight: 700, lineHeight: 1 }, title: "Delete this entry (not the same as paid)" }, "✕")
+                    React.createElement("button", { onClick: (e) => { e.stopPropagation(); handleMarkPaid(key); }, style: { fontSize: 11, padding: "3px 8px", borderRadius: 6, background: "#27500A", color: "#fff", border: "none", cursor: "pointer", fontWeight: 500 }, title: "Mark as paid" }, "✓ Paid"),
+                    React.createElement("button", { onClick: (e) => { e.stopPropagation(); handleDeleteUnpaidAccount(key); }, style: { fontSize: 14, color: "#c0392b", background: "none", border: "none", cursor: "pointer", padding: "2px 6px", fontWeight: 700, lineHeight: 1 }, title: "Delete this entry (not the same as paid)" }, "✕")
                   )
-                )
-              ),
+                );
+              }),
           unpaidAccounts.length > 0 && React.createElement("div", { style: styles.mileageTotal },
             React.createElement("span", null, "Total outstanding"),
             React.createElement("span", null, "$" + unpaidAccounts.reduce((s, a) => s + a.amount, 0).toFixed(2))
@@ -1839,6 +1956,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               key: job.id, job, location, status: getStatus(job),
               checkedIn: checkedIn[nid], checkedOut: checkedOut[nid], completed: completed[nid],
               invoiceUrl: invoicedJobs[nid], isNearby,
+              paymentStatus: paymentStatus[nid],
               accessToken: accessTokenRef.current,
               logSheetId,
               onTimeUpdated: refresh,
@@ -1850,6 +1968,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               onUndo: () => handleUndo(nid),
               onInvoice: () => handleInvoice({ ...job, id: nid }),
               onMissed: () => handleMissed(nid, job.title, job.location, job.calendarId, job.id),
+              onTogglePaid: () => handleTogglePaid(nid, job.title),
             });
           })
         )
