@@ -3,7 +3,7 @@ import React, { useState, useEffect } from "react";
 const TEMPLATE_ID = "1mk7ZUarysG0TTAYHlmJAfCjNXAXTWTzq-b6vtewW95c";
 const BUSINESS = { name: "Ness Draft Beer Service", address1: "PO Box 222", address2: "Albertville, MN 55301", phone: "612-293-9459" };
 
-export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreated }) {
+export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreated, onPaymentStatusSaved }) {
   const checkInTime = job.checkInTime || null;
   const checkOutTime = job.checkOutTime || null;
   const [step, setStep] = useState("type");
@@ -26,7 +26,6 @@ export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreat
   const [paymentStatus, setPaymentStatus] = useState(null);
   const [savingStatus, setSavingStatus] = useState(false);
   const [statusSaved, setStatusSaved] = useState(false);
-  const [arSheetUrl, setArSheetUrl] = useState(null);
 
   const total = taps && pricePerTap ? (parseFloat(taps) * parseFloat(pricePerTap)).toFixed(2) : null;
   const now = new Date();
@@ -164,79 +163,25 @@ export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreat
     setSending(false);
   };
 
-  // Get or create the job log sheet and ensure AR tab exists
-  const getLogSheetAndEnsureAR = async () => {
-    const logSearchRes = await fetch(
-      "https://www.googleapis.com/drive/v3/files?q=name='TechPortal Job Log 2026'+and+mimeType='application/vnd.google-apps.spreadsheet'&fields=files(id)",
-      { headers: { Authorization: "Bearer " + accessToken } }
-    );
-    const logSearchData = await logSearchRes.json();
-    if (!logSearchData.files || logSearchData.files.length === 0) return null;
-    const logSheetId = logSearchData.files[0].id;
-
-    const sheetInfoRes = await fetch(
-      "https://sheets.googleapis.com/v4/spreadsheets/" + logSheetId + "?fields=sheets.properties",
-      { headers: { Authorization: "Bearer " + accessToken } }
-    );
-    const sheetInfo = await sheetInfoRes.json();
-    const sheets = sheetInfo.sheets || [];
-    const arSheet = sheets.find(s => s.properties.title === "Accounts Receivable");
-
-    if (!arSheet) {
-      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + logSheetId + ":batchUpdate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
-        body: JSON.stringify({
-          requests: [{ addSheet: { properties: { title: "Accounts Receivable" } } }]
-        })
-      });
-      await fetch(
-        "https://sheets.googleapis.com/v4/spreadsheets/" + logSheetId + "/values/'Accounts Receivable'!A1:E1?valueInputOption=USER_ENTERED",
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
-          body: JSON.stringify({ values: [["Date", "Client", "Amount", "Invoice #", "Status"]] })
-        }
-      );
-    }
-
-    return logSheetId;
-  };
-
-  const savePaymentStatus = async (status) => {
+  // Payment status is no longer written directly by this component — it's
+  // handed off to Dashboard via onPaymentStatusSaved. Dashboard owns the
+  // single "Accounts Receivable" tab (ID, Name, Amount, Date Added, Paid)
+  // used by the Unpaid Accounts page; this component writing its own rows
+  // there previously used a different column layout (Date, Client, Amount,
+  // Invoice #, Status) that silently corrupted reads from that page — e.g.
+  // "$150.00" isn't parseable the same way "150" is, and an invoice marked
+  // Paid here would still show up as unpaid there. One writer, one schema.
+  const savePaymentStatus = (status) => {
     setPaymentStatus(status);
     setSavingStatus(true);
     try {
-      const date = now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-      const statusLabel = status === "paid" ? "✅ Paid" : "⏳ Awaiting Payment";
-
-      const logSheetId = await getLogSheetAndEnsureAR();
-      if (!logSheetId) throw new Error("Could not find log sheet");
-
-      setArSheetUrl("https://docs.google.com/spreadsheets/d/" + logSheetId + "/edit#gid=0");
-
-      await fetch(
-        "https://sheets.googleapis.com/v4/spreadsheets/" + logSheetId + "/values/'Accounts Receivable'!A:E:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
-          body: JSON.stringify({
-            values: [[date, clientName, "$" + (total || ""), invoiceNumber, statusLabel]]
-          })
-        }
-      );
-
-      await fetch(
-        "https://sheets.googleapis.com/v4/spreadsheets/" + logSheetId + "/values/A:F:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
-          body: JSON.stringify({
-            values: [[date, clientName + " Invoice", "", "", statusLabel, "$" + (total || "")]]
-          })
-        }
-      );
-
+      if (onPaymentStatusSaved) {
+        onPaymentStatusSaved(status, {
+          clientName,
+          amount: total ? parseFloat(total) : null,
+          invoiceNumber,
+        });
+      }
       setStatusSaved(true);
     } catch (e) {
       setError("Could not save payment status: " + e.message);
@@ -308,16 +253,11 @@ export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreat
                 savingStatus && React.createElement("div", { style: styles.savingText }, "Saving...")
               )
             ) : (
-              React.createElement("div", null,
-                React.createElement("div", { style: {
-                  ...styles.statusSavedBadge,
-                  background: paymentStatus === "paid" ? "#EAF3DE" : "#FAEEDA",
-                  color: paymentStatus === "paid" ? "#27500A" : "#633806"
-                }}, paymentStatus === "paid" ? "✅ Marked as Paid" : "⏳ Marked as Awaiting Payment"),
-                arSheetUrl && React.createElement("a", {
-                  href: arSheetUrl, target: "_blank", rel: "noreferrer", style: styles.arLink
-                }, "📊 View Accounts Receivable")
-              )
+              React.createElement("div", { style: {
+                ...styles.statusSavedBadge,
+                background: paymentStatus === "paid" ? "#EAF3DE" : "#FAEEDA",
+                color: paymentStatus === "paid" ? "#27500A" : "#633806"
+              }}, paymentStatus === "paid" ? "✅ Marked as Paid" : "⏳ Marked as Awaiting Payment — added to Unpaid Accounts")
             ),
 
             sheetUrl && React.createElement("a", { href: sheetUrl, target: "_blank", rel: "noreferrer", style: styles.openSheetBtn }, "\uD83D\uDCC4 Open Invoice in Sheets"),
@@ -440,7 +380,6 @@ const styles = {
   paymentBtnPending: { background: "#FAEEDA", color: "#633806", borderColor: "#633806" },
   savingText: { fontSize: 12, color: "#888", marginTop: 8 },
   statusSavedBadge: { margin: "0 0 12px", padding: "0.75rem 1rem", borderRadius: 8, fontSize: 14, fontWeight: 500 },
-  arLink: { display: "block", margin: "0 auto 16px", fontSize: 13, color: "#185FA5", fontWeight: 500 },
   openSheetBtn: { display: "block", margin: "0 auto 12px", padding: "10px 20px", background: "#185FA5", color: "#fff", borderRadius: 8, textDecoration: "none", fontSize: 14, fontWeight: 500 },
   doneBtn: { padding: "10px 24px", background: "#f5f5f3", color: "#555", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14 },
 };

@@ -20,7 +20,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.8.0";
+const APP_VERSION = "1.9.1";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -151,6 +151,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [showDebug, setShowDebug] = useState(false);
   const [driveMode, setDriveMode] = useState(false);
   const [showEtsy, setShowEtsy] = useState(false);
+  const [showUnpaidPage, setShowUnpaidPage] = useState(false);
   // Two-step "From job" picker: null when closed, {step:"pick"} showing a
   // tappable list, {step:"amount", event} showing the amount entry for
   // whichever job was tapped.
@@ -652,20 +653,20 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
 
   const handlePickArJob = (event) => {
     const nid = normalizeId(event.id);
+    const cleanTitle = (event.summary || "Untitled").replace(/^(⚠️ MISSED - )+/, "");
     // If this job happens to be from the day currently loaded, its $ value
     // might already be in jobValues — prefill it so there's less to retype.
     const existingVal = jobValues[nid];
     setArAmountInput(existingVal != null ? String(existingVal) : "");
-    setArPicker({ step: "amount", event });
+    setArPicker({ step: "amount", title: cleanTitle });
   };
 
   const handleConfirmArAmount = () => {
     const amount = parseFloat(arAmountInput.trim());
     if (isNaN(amount) || amount <= 0) { alert("Enter a valid dollar amount (e.g. 150 or 150.50)."); return; }
-    const cleanTitle = (arPicker.event.summary || "Untitled").replace(/^(⚠️ MISSED - )+/, "");
     const account = {
       id: "ar_" + Date.now(),
-      name: cleanTitle,
+      name: arPicker.title,
       amount,
       dateAdded: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
     };
@@ -675,7 +676,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       return next;
     });
     saveARAccountRow(account, false);
-    dbg("💳 Added unpaid account from job: " + account.name + " — $" + amount);
+    dbg("💳 Added unpaid account: " + account.name + " — $" + amount);
     setArPicker(null);
     setArAmountInput("");
   };
@@ -730,6 +731,44 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     });
     saveARAccountRow({ ...account, paid: true }, true);
     dbg("💳 Marked paid: " + account.name);
+  };
+
+  // Distinct from handleMarkPaid: "Paid" is for real accounts that actually
+  // got settled — it leaves a permanent Paid:Yes row in the sheet as a
+  // record. Delete is for entries that shouldn't have existed at all (test
+  // data, mistakes) — it removes the row entirely rather than leaving a
+  // fake "paid" record behind.
+  const handleDeleteUnpaidAccount = async (id) => {
+    const account = unpaidAccounts.find(a => a.id === id);
+    if (!account) return;
+    if (!confirm("Delete \"" + account.name + "\" ($" + account.amount.toFixed(2) + ")? This removes it entirely — not the same as marking it paid.")) return;
+    setUnpaidAccounts(prev => {
+      const next = prev.filter(a => a.id !== id);
+      try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
+      return next;
+    });
+    try {
+      const token = accessTokenRef.current;
+      const sheetId = await getOrCreateLogSheet();
+      if (!sheetId || !token) return;
+      const infoRes = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "?fields=sheets.properties", { headers: { Authorization: "Bearer " + token } });
+      const info = await infoRes.json();
+      const tab = (info.sheets || []).find(s => s.properties.title === AR_SHEET_NAME);
+      if (!tab) return;
+      const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + AR_SHEET_NAME + "'!A:E", { headers: { Authorization: "Bearer " + token } });
+      const data = await res.json();
+      const rows = data.values || [];
+      const idx = rows.findIndex(r => r[0] === id);
+      if (idx === -1) { dbg("⚠️ Delete: row for " + account.name + " not found in sheet", "warn"); return; }
+      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + ":batchUpdate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({ requests: [{ deleteDimension: { range: { sheetId: tab.properties.sheetId, dimension: "ROWS", startIndex: idx, endIndex: idx + 1 } } }] }),
+      });
+      dbg("🗑️ Deleted unpaid account: " + account.name);
+    } catch (e) {
+      dbg("❌ Delete failed for " + account.name + ": " + e.message, "error");
+    }
   };
 
   const loadJobStatuses = async (isRetry = false) => {
@@ -1293,11 +1332,46 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const handleInvoice = (job) => { setInvoiceJob({ ...job, checkInTime: checkedIn[job.id] || null, checkOutTime: checkedOut[job.id] || null }); };
   const handleInvoiceClose = () => { setInvoiceJob(null); };
   const handleInvoiceCreated = (jobId, invoiceUrl) => {
+    const nid = normalizeId(jobId);
     setInvoicedJobs((prev) => ({ ...prev, [jobId]: invoiceUrl }));
-    setPending(normalizeId(jobId) + "__invoice", { status: "invoiced", extra: invoiceUrl });
+    setPending(nid + "__invoice", { status: "invoiced", extra: invoiceUrl });
     flushStatusSaves();
     const job = jobs.find(j => normalizeId(j.id) === jobId);
     updateCalendarEvent(job, { checkIn: checkedIn[jobId], checkOut: checkedOut[jobId], completed: !!completed[jobId], invoiceUrl });
+  };
+
+  // Called by InvoiceModal's own built-in "✅ Paid" / "⏳ Awaiting Payment"
+  // buttons (it already had this UI — Dashboard doesn't need a second,
+  // redundant prompt of its own). Only "pending" does anything here: it
+  // creates the Unpaid Accounts entry, using the invoice's own total when
+  // available and falling back to asking if it wasn't set for some reason.
+  const handlePaymentStatusSaved = (status, info) => {
+    if (status !== "pending") return;
+    const name = (info?.clientName || "Untitled").trim();
+    const addAccount = (amount) => {
+      const account = {
+        id: "ar_" + Date.now(),
+        name,
+        amount,
+        dateAdded: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+      };
+      setUnpaidAccounts(prev => {
+        const next = [...prev, account];
+        try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
+        return next;
+      });
+      saveARAccountRow(account, false);
+      dbg("💳 Added unpaid account from invoice: " + account.name + " — $" + amount);
+    };
+    if (info?.amount != null && !isNaN(info.amount) && info.amount > 0) {
+      addAccount(info.amount);
+      return;
+    }
+    const amountStr = prompt("Amount owed for " + name + " ($):");
+    if (amountStr === null) return;
+    const amount = parseFloat(amountStr.trim());
+    if (isNaN(amount) || amount <= 0) { alert("Enter a valid dollar amount — skipped adding to Unpaid Accounts."); return; }
+    addAccount(amount);
   };
 
   const handleUndoFinishDay = async () => {
@@ -1464,8 +1538,41 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
 
   return (
     React.createElement("div", { style: styles.page },
-      invoiceJob && React.createElement(InvoiceModal, { job: invoiceJob, accessToken, onClose: handleInvoiceClose, onInvoiceCreated: handleInvoiceCreated }),
+      invoiceJob && React.createElement(InvoiceModal, { job: invoiceJob, accessToken, onClose: handleInvoiceClose, onInvoiceCreated: handleInvoiceCreated, onPaymentStatusSaved: handlePaymentStatusSaved }),
       showEtsy && React.createElement(EtsyStats, { onClose: () => setShowEtsy(false) }),
+      showUnpaidPage && React.createElement("div", { style: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "#fff", zIndex: 500, overflowY: "auto" } },
+        React.createElement("div", { style: styles.topbar },
+          React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
+            React.createElement("button", { style: styles.hamburgerBtn, onClick: () => setShowUnpaidPage(false) }, "←"),
+            React.createElement("div", { style: styles.name }, "💳 Unpaid Accounts")
+          ),
+          React.createElement("div", { style: { display: "flex", gap: 6 } },
+            React.createElement("button", { style: { fontSize: 12, padding: "6px 12px", borderRadius: 8, background: "#F0F4FF", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 500 }, onClick: handleAddUnpaidAccountFromJob }, "📅 From job"),
+            React.createElement("button", { style: { fontSize: 12, padding: "6px 12px", borderRadius: 8, background: "#F0F4FF", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 500 }, onClick: handleAddUnpaidAccount }, "+ Add account")
+          )
+        ),
+        React.createElement("div", { style: { ...styles.mileageBar, margin: "1rem 1.5rem" } },
+          unpaidAccounts.length === 0
+            ? React.createElement("div", { style: styles.mileageEmpty }, "No unpaid accounts")
+            : unpaidAccounts.map((a) =>
+                React.createElement("div", { key: a.id, style: styles.mileageRow },
+                  React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 1, flex: 1, cursor: "pointer" }, onClick: () => handleEditUnpaidAccount(a.id) },
+                    React.createElement("span", null, a.name),
+                    React.createElement("span", { style: { fontSize: 11, color: "#888" } }, "Added " + a.dateAdded)
+                  ),
+                  React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+                    React.createElement("span", { style: styles.mileageVal }, "$" + a.amount.toFixed(2)),
+                    React.createElement("button", { onClick: (e) => { e.stopPropagation(); handleMarkPaid(a.id); }, style: { fontSize: 11, padding: "3px 8px", borderRadius: 6, background: "#27500A", color: "#fff", border: "none", cursor: "pointer", fontWeight: 500 }, title: "Mark as paid" }, "✓ Paid"),
+                    React.createElement("button", { onClick: (e) => { e.stopPropagation(); handleDeleteUnpaidAccount(a.id); }, style: { fontSize: 14, color: "#c0392b", background: "none", border: "none", cursor: "pointer", padding: "2px 6px", fontWeight: 700, lineHeight: 1 }, title: "Delete this entry (not the same as paid)" }, "✕")
+                  )
+                )
+              ),
+          unpaidAccounts.length > 0 && React.createElement("div", { style: styles.mileageTotal },
+            React.createElement("span", null, "Total outstanding"),
+            React.createElement("span", null, "$" + unpaidAccounts.reduce((s, a) => s + a.amount, 0).toFixed(2))
+          )
+        )
+      ),
       rescheduleJob && React.createElement(RescheduleModal, {
         missed: rescheduleJob,
         accessToken: accessTokenRef.current,
@@ -1497,7 +1604,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           React.createElement("div", { style: styles.menuSection },
             React.createElement("div", { style: styles.menuSectionLabel }, "📊 Logs & Reports"),
             React.createElement("a", { href: "#", style: styles.menuItem, onClick: async e => { e.preventDefault(); const id = logSheetId || await getOrCreateLogSheet(); if (id) window.open("https://docs.google.com/spreadsheets/d/" + id + "/edit#gid=0", "_blank"); setMenuOpen(false); } }, "📋 Job Log"),
-            React.createElement("a", { href: "#", style: styles.menuItem, onClick: async e => { e.preventDefault(); const id = logSheetId || await getOrCreateLogSheet(); if (id) window.open("https://docs.google.com/spreadsheets/d/" + id + "/edit#gid=0", "_blank"); setMenuOpen(false); } }, "💰 Accounts Receivable")
+            React.createElement("button", { style: { ...styles.menuItem, background: "none", border: "none", width: "100%", textAlign: "left", cursor: "pointer", fontFamily: "system-ui, sans-serif" }, onClick: () => { setMenuOpen(false); setShowUnpaidPage(true); } }, "💳 Unpaid Accounts")
           ),
           React.createElement("div", { style: styles.menuSection }, React.createElement("div", { style: styles.menuSectionLabel }, "⛳ Golf"), React.createElement("a", { href: "/golf", style: styles.menuItem, onClick: () => setMenuOpen(false) }, "⛳ Golf Scorecard")),
           React.createElement("div", { style: styles.menuSection }, React.createElement("div", { style: styles.menuSectionLabel }, "🛍️ Etsy"), React.createElement("button", { style: { ...styles.menuItem, background: "none", border: "none", width: "100%", textAlign: "left", cursor: "pointer", fontFamily: "system-ui, sans-serif" }, onClick: () => { setMenuOpen(false); setShowEtsy(true); } }, "🛍️ Etsy Shop Stats")),
@@ -1548,7 +1655,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               )
             : React.createElement(React.Fragment, null,
                 React.createElement("div", { style: styles.modalHeader },
-                  React.createElement("div", { style: styles.modalTitle }, (arPicker.event.summary || "Untitled").replace(/^(⚠️ MISSED - )+/, "")),
+                  React.createElement("div", { style: styles.modalTitle }, arPicker.title),
                   React.createElement("button", { style: styles.modalClose, onClick: () => { setArPicker(null); setArAmountInput(""); } }, "×")
                 ),
                 React.createElement("div", { style: { padding: "1.25rem" } },
@@ -1705,33 +1812,6 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           React.createElement("span", null, "$" + hourlyRate.toFixed(2) + " / hr")
         ),
         dayHours === null && Object.keys(jobValues).length > 0 && React.createElement("div", { style: { fontSize: 11, color: "#bbb", fontStyle: "italic", marginTop: 6 } }, "Start your day to begin tracking hours")
-      ),
-      React.createElement("div", { style: styles.mileageBar },
-        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
-          React.createElement("div", { style: styles.mileageTitle }, "💳 Unpaid Accounts"),
-          React.createElement("div", { style: { display: "flex", gap: 6 } },
-            React.createElement("button", { style: { fontSize: 11, padding: "3px 10px", borderRadius: 8, background: "#F0F4FF", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 500 }, onClick: handleAddUnpaidAccountFromJob }, "📅 From job"),
-            React.createElement("button", { style: { fontSize: 11, padding: "3px 10px", borderRadius: 8, background: "#F0F4FF", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 500 }, onClick: handleAddUnpaidAccount }, "+ Add account")
-          )
-        ),
-        unpaidAccounts.length === 0
-          ? React.createElement("div", { style: styles.mileageEmpty }, "No unpaid accounts")
-          : unpaidAccounts.map((a) =>
-              React.createElement("div", { key: a.id, style: styles.mileageRow },
-                React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 1, flex: 1, cursor: "pointer" }, onClick: () => handleEditUnpaidAccount(a.id) },
-                  React.createElement("span", null, a.name),
-                  React.createElement("span", { style: { fontSize: 11, color: "#888" } }, "Added " + a.dateAdded)
-                ),
-                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
-                  React.createElement("span", { style: styles.mileageVal }, "$" + a.amount.toFixed(2)),
-                  React.createElement("button", { onClick: (e) => { e.stopPropagation(); handleMarkPaid(a.id); }, style: { fontSize: 11, padding: "3px 8px", borderRadius: 6, background: "#27500A", color: "#fff", border: "none", cursor: "pointer", fontWeight: 500 }, title: "Mark as paid" }, "✓ Paid")
-                )
-              )
-            ),
-        unpaidAccounts.length > 0 && React.createElement("div", { style: styles.mileageTotal },
-          React.createElement("span", null, "Total outstanding"),
-          React.createElement("span", null, "$" + unpaidAccounts.reduce((s, a) => s + a.amount, 0).toFixed(2))
-        )
       ),
       React.createElement("div", { style: { ...styles.page, paddingBottom: "3rem" } },
         React.createElement("div", { style: styles.statsGrid },
