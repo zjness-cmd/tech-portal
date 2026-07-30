@@ -20,7 +20,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.11.0";
+const APP_VERSION = "1.11.1";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -1274,11 +1274,19 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       newStart.setHours(actualTime.getHours(), actualTime.getMinutes(), 0, 0);
       const newEnd = new Date(newStart.getTime() + durationMs);
 
-      // 1) Truncate the OLD series to stop the day before this occurrence.
-      const dayBefore = new Date(originalStart);
-      dayBefore.setDate(dayBefore.getDate() - 1);
-      dayBefore.setHours(23, 59, 59, 0);
-      const untilStr = dayBefore.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+      // 1) Truncate the OLD series to stop before this occurrence.
+      // Previously this reconstructed "the day before, 11:59:59 PM local
+      // time" and converted that to UTC — fragile, because depending on
+      // timezone offset and what time this job normally starts, that
+      // conversion can land in the wrong place and fail to fully exclude
+      // today, leaving the old series to keep generating an occurrence
+      // that overlaps the new one (exactly what happened with Hopkins
+      // Legion). Cutting off exactly one minute before this occurrence's
+      // own precise start instant needs no local-time reconstruction at
+      // all — it's just subtracting milliseconds from an already-correct
+      // absolute timestamp, so it can't drift across timezones.
+      const untilInstant = new Date(originalStart.getTime() - 60 * 1000);
+      const untilStr = untilInstant.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
       const oldRule = master.recurrence.find(r => r.startsWith("RRULE")) || master.recurrence[0];
       const truncatedRule = oldRule.replace(/;?UNTIL=[^;]+/i, "").replace(/;?COUNT=[^;]+/i, "") + ";UNTIL=" + untilStr;
       const truncateRes = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(calendarId) + "/events/" + recurringEventId, {
