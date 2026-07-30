@@ -20,7 +20,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.11.1";
+const APP_VERSION = "1.12.0";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -894,7 +894,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
             }
           }
           if (status === "invoiced") newInv[baseId] = extra || "";
-          if (status === "undone") { delete newCI[baseId]; delete newCO[baseId]; delete newComp[baseId]; }
+          if (status === "undone") { delete newCI[baseId]; delete newCO[baseId]; delete newComp[baseId]; delete newPaymentStatus[baseId]; }
         }
       });
       // ── Stale-read guard: check-in / check-out / completed ───────────────
@@ -922,7 +922,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         else if (key.endsWith("__co")) { const id = normalizeId(key.slice(0, -4)); if (entry.status === "checkedOut") { newCO[id] = entry.extra || "—"; reconciledCount++; } if (entry.status === "undone") delete newCO[id]; }
         else if (key.endsWith("__done")) { const id = normalizeId(key.slice(0, -6)); if (entry.status === "completed" || entry.status === "missed") { newComp[id] = true; reconciledCount++; } if (entry.status === "undone") delete newComp[id]; }
         else if (key.endsWith("__value")) { const id = normalizeId(key.slice(0, -7)); const v = parseFloat(entry.extra); if (entry.status === "jobValue" && !isNaN(v)) { newValues[id] = v; reconciledCount++; } }
-        else if (key.endsWith("__paid")) { const id = normalizeId(key.slice(0, -6)); if (entry.status === "paid" || entry.status === "unpaid") { newPaymentStatus[id] = entry.status; reconciledCount++; } }
+        else if (key.endsWith("__paid")) { const id = normalizeId(key.slice(0, -6)); if (entry.status === "paid" || entry.status === "unpaid") { newPaymentStatus[id] = entry.status; reconciledCount++; } if (entry.status === "undone") delete newPaymentStatus[id]; }
       });
       if (reconciledCount > 0) dbg("♻️ Reconciled " + reconciledCount + " in-flight/recent pending write(s) over sheet read", "warn");
       if (missedFromSheet.length > 0) {
@@ -1474,18 +1474,28 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       saveMissedJobs(missedJobs.filter(m => m.jobId !== jobId));
     }
     updateCalendarEvent(job, { checkIn: checkedIn[jobId], checkOut: checkedOut[jobId], completed: true, invoiceUrl: invoicedJobs[jobId] });
+    // Every completed job now defaults to "unpaid" immediately — reusing
+    // the exact same toggle logic the job-card button uses (prefilling
+    // from Today's Earnings if already set, otherwise prompting for the
+    // amount right now). You only need to tap something once money
+    // actually comes in, rather than remembering to flag each job as
+    // unpaid yourself.
+    if (job) handleTogglePaid(jobId, job.title);
   };
 
   const handleUndo = (jobId) => {
     setCompleted((prev) => { const n = { ...prev }; delete n[jobId]; return n; });
     setCheckedIn((prev) => { const n = { ...prev }; delete n[jobId]; return n; });
     setCheckedOut((prev) => { const n = { ...prev }; delete n[jobId]; return n; });
+    setPaymentStatus((prev) => { const n = { ...prev }; delete n[normalizeId(jobId)]; return n; });
     saveMileage((prev) => prev.filter((m) => m.jobId !== jobId));
     setPending(jobId + "__ci", { status: "undone", extra: "" });
     setPending(jobId + "__co", { status: "undone", extra: "" });
     setPending(jobId + "__done", { status: "undone", extra: "" });
+    setPending(jobId + "__paid", { status: "undone", extra: "" });
     delete checkInLockRef.current[jobId];
     delete cascadedTodayRef.current[normalizeId(jobId)];
+    delete paymentLinkRef.current[normalizeId(jobId)];
     flushStatusSaves();
     const job = jobs.find(j => normalizeId(j.id) === jobId);
     updateCalendarEvent(job, {});
