@@ -20,7 +20,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.14.4";
+const APP_VERSION = "1.15.0";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -267,7 +267,11 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   };
 
   const [gpsTrack, setGpsTrack] = useState(() => { try { const k = "gpsTrack_" + new Date().toDateString(); const s = localStorage.getItem(k); return s ? JSON.parse(s) : []; } catch { return []; } });
-  const { jobs, loading, error, refresh } = useCalendarJobs(accessToken, selectedDate);
+  const { jobs: rawJobs, loading, error, refresh } = useCalendarJobs(accessToken, selectedDate);
+  // Same exclusion list used for the monthly stats — B Shift/Vacation/etc.
+  // live on the same calendar as real jobs, so they show up here too
+  // unless filtered out the same way.
+  const jobs = rawJobs.filter(j => !isNonJobEvent(j.title));
 
   useEffect(() => { checkedInRef.current = checkedIn; }, [checkedIn]);
   useEffect(() => { mileageLogRef.current = mileageLog; }, [mileageLog]);
