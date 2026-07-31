@@ -20,7 +20,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.12.0";
+const APP_VERSION = "1.13.0";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -1343,9 +1343,18 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         job.calendarId, job.id, deltaMs,
         "Originally scheduled " + scheduledStart.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + " — moved to actual check-in time (" + minutesStr + ")"
       );
-      if (event?.recurringEventId) {
-        maybeUpdateRecurringSeries(job, actualTime, event.recurringEventId);
-      }
+      // DISABLED as of v1.13.0: this always caused a real duplicate event
+      // for TODAY specifically, not just an edge case. The new series'
+      // first occurrence was always set to today at the corrected time —
+      // but today's instance was already separately modified one line
+      // above, so it survives as its own standalone event regardless of
+      // the old series' truncation. Confirmed duplicating Rush Creek,
+      // Ike's, and Sawatdee Mpls in the same session. A correct version
+      // would need the new series to start at the NEXT occurrence instead
+      // of today — not implemented here; ask before re-enabling.
+      // if (event?.recurringEventId) {
+      //   maybeUpdateRecurringSeries(job, actualTime, event.recurringEventId);
+      // }
     } catch (e) {
       dbg("❌ Reschedule failed for " + job.title + ": " + e.message, "error");
     }
@@ -1599,6 +1608,16 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       saveARAccountRow(account, false);
       paymentLinkRef.current[nid] = id;
       dbg("💳 Added unpaid account from job card: " + account.name + " — $" + amount);
+      // Flow the amount straight into Today's Earnings too — same
+      // persistence handleSetJobValue uses — so entering it once here
+      // covers both places instead of having to enter it again separately.
+      setJobValues(prev => {
+        const next = { ...prev, [nid]: amount };
+        try { localStorage.setItem("techportal_jobValues_" + selectedDate.toDateString(), JSON.stringify(next)); } catch {}
+        return next;
+      });
+      setPending(nid + "__value", { status: "jobValue", extra: String(amount) });
+      flushStatusSaves();
     };
     const existingVal = jobValues[nid];
     if (existingVal != null && !isNaN(existingVal) && existingVal > 0) {
