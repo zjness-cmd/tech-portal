@@ -20,7 +20,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.14.1";
+const APP_VERSION = "1.14.2";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -126,6 +126,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [monthlyCount, setMonthlyCount] = useState(null);
   const [monthlyMiles, setMonthlyMiles] = useState(null);
   const [monthlyCompleted, setMonthlyCompleted] = useState(0);
+  const [monthCompletedIds, setMonthCompletedIds] = useState(() => new Set());
   const [monthlyEvents, setMonthlyEvents] = useState([]);
   const [invoiceJob, setInvoiceJob] = useState(null);
   const [invoicedJobs, setInvoicedJobs] = useState({});
@@ -367,20 +368,25 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const hourlyRate = dayHours && dayHours > 0.01 ? totalRevenue / dayHours : null;
 
   const monthName = selectedDate.toLocaleDateString("en-US", { month: "long", year: "numeric" });
-  const totalCompleted = Object.keys(completed).length + monthlyCompleted;
-  const remaining = monthlyCount !== null ? Math.max(0, monthlyCount - totalCompleted) : null;
   const now = new Date();
   const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
-  // completedEvents previously used startOfToday (midnight) as its cutoff
-  // while remainingEvents used `now` — any event that had already ended
-  // earlier TODAY but hadn't been marked done fell into neither list
-  // (not "completed" since its end wasn't before midnight, not
-  // "remaining" since its end had already passed `now`). That's exactly
-  // what showed as "2 remaining" in the count but nothing in the modal —
-  // both filters now share the same `now` boundary so every event lands
-  // in exactly one bucket.
-  const completedEvents = monthlyEvents.filter((e) => { const end = new Date(e.end?.dateTime || e.end?.date); return end < now; });
-  const remainingEvents = monthlyEvents.filter((e) => { const end = new Date(e.end?.dateTime || e.end?.date); return end >= now; });
+  // Previously this used two different definitions of "done" — the
+  // number came from app-state (Object.keys(completed)) plus a
+  // date-based "pastEvents" count, while the modal lists filtered
+  // purely by calendar time. Those disagreed constantly (e.g. a job
+  // whose time passed today but was never marked complete). Now both
+  // the numbers AND the lists come from the exact same source:
+  // monthCompletedIds (built from a full sheet scan — see
+  // loadJobStatuses) merged with today's live local `completed` state
+  // for anything not yet flushed to the sheet.
+  const isEventDone = (e) => {
+    const nid = normalizeId(e.id);
+    return monthCompletedIds.has(nid) || !!completed[nid];
+  };
+  const completedEvents = monthlyEvents.filter(isEventDone);
+  const remainingEvents = monthlyEvents.filter((e) => !isEventDone(e));
+  const totalCompleted = completedEvents.length;
+  const remaining = monthlyCount !== null ? remainingEvents.length : null;
 
   useEffect(() => {
     if (!navigator.geolocation) { setLocationError("GPS not supported."); return; }
@@ -853,13 +859,17 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       // Group every row by its date, and for each date in the current
       // month, compute that day's total the same way displayMiles does
       // (GPS track distance when available, else summed mileage legs),
-      // then add up across all days.
+      // then add up across all days. Also builds monthCompletedIds — the
+      // single source of truth for which jobs are actually done this
+      // month, used by both the "completed/remaining" numbers and their
+      // modal lists so they can't disagree with each other anymore.
       try {
         const rowsByDate = {};
         rows.forEach(r => { if (r[0]) (rowsByDate[r[0]] = rowsByDate[r[0]] || []).push(r); });
         const curMonth = selectedDate.getMonth();
         const curYear = selectedDate.getFullYear();
         let monthTotal = 0;
+        const doneIds = new Set();
         Object.entries(rowsByDate).forEach(([dStr, dRows]) => {
           const parsed = new Date(dStr);
           if (isNaN(parsed) || parsed.getMonth() !== curMonth || parsed.getFullYear() !== curYear) return;
@@ -881,8 +891,16 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
             } catch {}
           }
           monthTotal += dayMiles;
+          dRows.forEach(r => {
+            const jobId = r[1];
+            const status = r[2];
+            if (jobId && jobId.endsWith("__done") && (status === "completed" || status === "missed")) {
+              doneIds.add(normalizeId(jobId.slice(0, -6)));
+            }
+          });
         });
         setMonthlyMiles(Math.round(monthTotal * 10) / 10);
+        setMonthCompletedIds(doneIds);
       } catch (e) {
         dbg("❌ Monthly mileage calc error: " + e.message, "error");
       }
