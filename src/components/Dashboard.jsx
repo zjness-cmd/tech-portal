@@ -20,7 +20,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.14.2";
+const APP_VERSION = "1.14.4";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -88,6 +88,19 @@ async function geocodeAddress(address, dbgFn) {
 function normalizeId(id) {
   if (!id) return id;
   return id.replace(/_\d{8}T\d{6}Z$/, "").replace(/_[a-z0-9]{26}$/, "");
+}
+
+// Personal/non-job calendar entries live on the SAME calendar as real jobs
+// (confirmed — B Shift 1/2 are on "Beer Line Cleaning" alongside actual
+// client visits), so there's no calendar-ID-based way to separate them.
+// This is a manually-maintained title blacklist instead — it'll catch
+// recurring patterns like shift labels, but one-off personal entries
+// (e.g. "Hot tub maintenance", a convention, an appointment) will slip
+// through unless added here. Add more patterns as they come up.
+const NON_JOB_TITLE_PATTERNS = [/^B Shift \d+$/i, /^Vacation$/i, /^Hot tub maintenance$/i];
+function isNonJobEvent(summary) {
+  const title = (summary || "").trim();
+  return NON_JOB_TITLE_PATTERNS.some(p => p.test(title));
 }
 
 // Converts the app's "h:mm AM/PM" time strings (as stored on mileage log
@@ -558,7 +571,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       const calendarIds = ["primary", "f2nn520vkuublps8kegfbg45ts@group.calendar.google.com"];
       const results = await Promise.all(calendarIds.map((id) => fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(id) + "/events?" + params, { headers: { Authorization: "Bearer " + token } }).then((r) => r.ok ? r.json() : { items: [] })));
       const allEvents = results.flatMap((d) => d.items || []);
-      const unique = Array.from(new Map(allEvents.map((e) => [e.id, e])).values());
+      const unique = Array.from(new Map(allEvents.map((e) => [e.id, e])).values()).filter(e => !isNonJobEvent(e.summary));
       const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
       const pastEvents = unique.filter((e) => { const end = new Date(e.end?.dateTime || e.end?.date); return end < startOfToday; });
       setMonthlyEvents(unique); setMonthlyCount(unique.length); setMonthlyCompleted(pastEvents.length);
