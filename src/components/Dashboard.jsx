@@ -20,7 +20,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.15.0";
+const APP_VERSION = "1.15.1";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -97,7 +97,7 @@ function normalizeId(id) {
 // recurring patterns like shift labels, but one-off personal entries
 // (e.g. "Hot tub maintenance", a convention, an appointment) will slip
 // through unless added here. Add more patterns as they come up.
-const NON_JOB_TITLE_PATTERNS = [/^B Shift \d+$/i, /^Vacation$/i, /^Hot tub maintenance$/i];
+const NON_JOB_TITLE_PATTERNS = [/^B Shift \d+$/i, /^Vacation$/i, /^Hot tub maintenance/i];
 function isNonJobEvent(summary) {
   const title = (summary || "").trim();
   return NON_JOB_TITLE_PATTERNS.some(p => p.test(title));
