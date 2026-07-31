@@ -20,7 +20,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.13.0";
+const APP_VERSION = "1.14.0";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -124,6 +124,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [pastDayStatus, setPastDayStatus] = useState("");
   const [navStart, setNavStart] = useState({});
   const [monthlyCount, setMonthlyCount] = useState(null);
+  const [monthlyMiles, setMonthlyMiles] = useState(null);
   const [monthlyCompleted, setMonthlyCompleted] = useState(0);
   const [monthlyEvents, setMonthlyEvents] = useState([]);
   const [invoiceJob, setInvoiceJob] = useState(null);
@@ -839,6 +840,45 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       const rows = data.values || [];
       const todayRows = rows.filter(r => r[0] === dateKey);
       dbg("📊 Loaded " + todayRows.length + " rows for " + dateKey);
+
+      // Month-to-date miles — reuses this same fetch (no extra API call).
+      // Group every row by its date, and for each date in the current
+      // month, compute that day's total the same way displayMiles does
+      // (GPS track distance when available, else summed mileage legs),
+      // then add up across all days.
+      try {
+        const rowsByDate = {};
+        rows.forEach(r => { if (r[0]) (rowsByDate[r[0]] = rowsByDate[r[0]] || []).push(r); });
+        const curMonth = selectedDate.getMonth();
+        const curYear = selectedDate.getFullYear();
+        let monthTotal = 0;
+        Object.entries(rowsByDate).forEach(([dStr, dRows]) => {
+          const parsed = new Date(dStr);
+          if (isNaN(parsed) || parsed.getMonth() !== curMonth || parsed.getFullYear() !== curYear) return;
+          const gRow = dRows.find(r => r[1] === "__GPS_TRACK__");
+          const mRow = dRows.find(r => r[1] === "__MILEAGE_LOG__");
+          let dayMiles = 0;
+          if (gRow) {
+            try {
+              const track = JSON.parse(gRow[3]);
+              if (Array.isArray(track) && track.length >= 2) {
+                dayMiles = track.reduce((sum, pt, i) => i === 0 ? 0 : sum + calcMiles(track[i - 1][0], track[i - 1][1], pt[0], pt[1]), 0);
+              }
+            } catch {}
+          }
+          if (dayMiles === 0 && mRow) {
+            try {
+              const log = JSON.parse(mRow[3]);
+              if (Array.isArray(log)) dayMiles = log.reduce((s, m) => s + (m.miles || 0), 0);
+            } catch {}
+          }
+          monthTotal += dayMiles;
+        });
+        setMonthlyMiles(Math.round(monthTotal * 10) / 10);
+      } catch (e) {
+        dbg("❌ Monthly mileage calc error: " + e.message, "error");
+      }
+
       if (rows.length <= 1 && !isRetry && localStorage.getItem("techportal_logSheetId")) {
         localStorage.removeItem("techportal_logSheetId"); setLogSheetId(null); setStatusLoading(false); loadingStatusesRef.current = false; loadJobStatuses(true); return;
       }
@@ -1122,13 +1162,19 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     const livePos = locationRef.current;
     const currentPos = livePos || lastPositionRef.current || HOME;
     const endPt = [parseFloat(currentPos.lat.toFixed(5)), parseFloat(currentPos.lng.toFixed(5)), Date.now()];
-    setGpsTrack(prev => {
-      const next = [...prev, endPt];
-      try { localStorage.setItem("gpsTrack_" + new Date().toDateString(), JSON.stringify(next)); } catch {}
-      setPending("__GPS_TRACK__", { status: "gpsTrack", extra: JSON.stringify(next) });
-      return next;
-    });
-    const gpsTotal = gpsTrackedMiles !== null ? gpsTrackedMiles : Math.round(totalMiles * 10) / 10;
+    const nextTrack = [...gpsTrack, endPt];
+    try { localStorage.setItem("gpsTrack_" + new Date().toDateString(), JSON.stringify(nextTrack)); } catch {}
+    setPending("__GPS_TRACK__", { status: "gpsTrack", extra: JSON.stringify(nextTrack) });
+    setGpsTrack(nextTrack);
+    // Compute the total from `nextTrack` directly (includes the finish
+    // point we just appended) rather than the `gpsTrackedMiles` render
+    // variable, which still reflects the track from BEFORE this point was
+    // added — setGpsTrack is async, so reading that variable here was
+    // always one point behind, which is exactly why the frozen "Total: X
+    // mi" text could undercount versus the live total shown elsewhere.
+    const gpsTotal = nextTrack.length >= 2
+      ? Math.round(nextTrack.reduce((sum, pt, i) => i === 0 ? 0 : sum + calcMiles(nextTrack[i - 1][0], nextTrack[i - 1][1], pt[0], pt[1]), 0) * 10) / 10
+      : Math.round(totalMiles * 10) / 10;
     let finishLabel = "Finish";
     if (currentPos) {
       try {
@@ -1987,10 +2033,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           React.createElement("button", { style: styles.monthStatBtn, onClick: () => setModalType("completed") }, React.createElement("div", { style: styles.monthStatVal }, totalCompleted), React.createElement("div", { style: styles.monthStatLabel }, "completed")),
           React.createElement("div", { style: styles.monthDivider }),
           React.createElement("button", { style: styles.monthStatBtn, onClick: () => setModalType("remaining") }, React.createElement("div", { style: { ...styles.monthStatVal, color: "#FAEEDA" } }, remaining !== null ? remaining : "-"), React.createElement("div", { style: styles.monthStatLabel }, "remaining")),
-          isToday && React.createElement(React.Fragment, null,
-            React.createElement("div", { style: styles.monthDivider }),
-            React.createElement("div", { style: styles.monthStatBtn }, React.createElement("div", { style: { ...styles.monthStatVal, color: "#7dd3fc" } }, displayMiles + " mi"), React.createElement("div", { style: styles.monthStatLabel }, "today"))
-          )
+          React.createElement("div", { style: styles.monthDivider }),
+          React.createElement("div", { style: styles.monthStatBtn }, React.createElement("div", { style: { ...styles.monthStatVal, color: "#7dd3fc" } }, monthlyMiles !== null ? monthlyMiles + " mi" : "—"), React.createElement("div", { style: styles.monthStatLabel }, "this month"))
         )
       ),
       (isToday || dayStatus) && React.createElement("div", { style: styles.dayBar },
@@ -2005,7 +2049,9 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
                 )
               : React.createElement("button", { style: styles.finishBtn, onClick: () => setConfirmFinish(true) }, "🏁 Finish Day"))
             : React.createElement("button", { style: { ...styles.finishBtn, background: "#555", fontSize: 12 }, onClick: handleUndoFinishDay }, "↩ Undo Finish")),
-        dayStatus && React.createElement("div", { style: styles.dayStatus }, dayStatus),
+        dayFinished
+          ? React.createElement("div", { style: styles.dayStatus }, displayMiles + " mi · " + (dayHours !== null ? dayHours.toFixed(1) + " hrs" : "—") + " today")
+          : (dayStatus && React.createElement("div", { style: styles.dayStatus }, dayStatus)),
         logSheetId && React.createElement("a", { href: "https://docs.google.com/spreadsheets/d/" + logSheetId + "/edit#gid=0", target: "_blank", rel: "noreferrer", style: styles.sheetLink }, "📊 View Job Log")
       ),
       (isToday || mileageLog.length > 0) && React.createElement("div", { style: styles.mileageBar },
