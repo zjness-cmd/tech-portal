@@ -20,7 +20,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.14.0";
+const APP_VERSION = "1.14.1";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -371,7 +371,15 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const remaining = monthlyCount !== null ? Math.max(0, monthlyCount - totalCompleted) : null;
   const now = new Date();
   const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
-  const completedEvents = monthlyEvents.filter((e) => { const end = new Date(e.end?.dateTime || e.end?.date); return end < startOfToday; });
+  // completedEvents previously used startOfToday (midnight) as its cutoff
+  // while remainingEvents used `now` — any event that had already ended
+  // earlier TODAY but hadn't been marked done fell into neither list
+  // (not "completed" since its end wasn't before midnight, not
+  // "remaining" since its end had already passed `now`). That's exactly
+  // what showed as "2 remaining" in the count but nothing in the modal —
+  // both filters now share the same `now` boundary so every event lands
+  // in exactly one bucket.
+  const completedEvents = monthlyEvents.filter((e) => { const end = new Date(e.end?.dateTime || e.end?.date); return end < now; });
   const remainingEvents = monthlyEvents.filter((e) => { const end = new Date(e.end?.dateTime || e.end?.date); return end >= now; });
 
   useEffect(() => {
