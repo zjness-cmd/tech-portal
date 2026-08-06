@@ -20,7 +20,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.16.1";
+const APP_VERSION = "1.16.2";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -173,6 +173,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   // whichever job was tapped.
   const [arPicker, setArPicker] = useState(null);
   const [arAmountInput, setArAmountInput] = useState("");
+  // Amount-owed modal for the job-card Paid/Unpaid toggle — an in-app modal
+  // rather than window.prompt(), which is unreliable inside installed/
+  // standalone PWAs (some Android builds silently no-op it instead of
+  // showing a dialog, leaving the toggle stuck on "unpaid" with no way to
+  // enter an amount). null when closed, else {nid, cleanTitle}.
+  const [payAmountPrompt, setPayAmountPrompt] = useState(null);
+  const [payAmountInput, setPayAmountInput] = useState("");
   // Accounts receivable — persists across days (not scoped to selectedDate
   // like mileage/jobValues), so it lives in its own always-loaded key.
   const [unpaidAccounts, setUnpaidAccounts] = useState(() => {
@@ -1708,54 +1715,64 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       return;
     }
 
-    // Switching to unpaid — add the Unpaid Accounts entry.
+    // Switching to unpaid — prefill from Today's Earnings if a $ value is
+    // already set (no need to ask again); otherwise open the amount modal.
+    const existingVal = jobValues[nid];
+    if (existingVal != null && !isNaN(existingVal) && existingVal > 0) {
+      setPaymentStatus(prev => ({ ...prev, [nid]: "unpaid" }));
+      setPending(nid + "__paid", { status: "unpaid", extra: "" });
+      flushStatusSaves();
+      addUnpaidAccountForJob(nid, cleanTitle, existingVal);
+      return;
+    }
+    setPayAmountPrompt({ nid, cleanTitle });
+    setPayAmountInput("");
+  };
+
+  // Shared by handleTogglePaid's prefilled-value path and the amount modal
+  // below — creates the Unpaid Accounts entry and flows the amount into
+  // Today's Earnings too, same persistence handleSetJobValue uses, so
+  // entering it once here covers both places.
+  const addUnpaidAccountForJob = (nid, cleanTitle, amount) => {
+    const id = "ar_" + Date.now();
+    const account = {
+      id, name: cleanTitle, amount,
+      dateAdded: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+      _key: id,
+    };
+    setUnpaidAccounts(prev => {
+      const next = [...prev, account];
+      try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
+      return next;
+    });
+    saveARAccountRow(account, false);
+    paymentLinkRef.current[nid] = id;
+    dbg("💳 Added unpaid account from job card: " + account.name + " — $" + amount);
+    setJobValues(prev => {
+      const next = { ...prev, [nid]: amount };
+      try { localStorage.setItem("techportal_jobValues_" + selectedDate.toDateString(), JSON.stringify(next)); } catch {}
+      return next;
+    });
+    setPending(nid + "__value", { status: "jobValue", extra: String(amount) });
+    flushStatusSaves();
+  };
+
+  const handleConfirmPayAmount = () => {
+    const amount = parseFloat(payAmountInput.trim());
+    if (isNaN(amount) || amount < 0) { alert("Enter a valid dollar amount."); return; }
+    const { nid, cleanTitle } = payAmountPrompt;
+    if (amount === 0) {
+      // Nothing owed — leave it as paid, no Unpaid Accounts entry needed.
+      setPayAmountPrompt(null);
+      setPayAmountInput("");
+      return;
+    }
     setPaymentStatus(prev => ({ ...prev, [nid]: "unpaid" }));
     setPending(nid + "__paid", { status: "unpaid", extra: "" });
     flushStatusSaves();
-    const addAccount = (amount) => {
-      const id = "ar_" + Date.now();
-      const account = {
-        id, name: cleanTitle, amount,
-        dateAdded: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
-        _key: id,
-      };
-      setUnpaidAccounts(prev => {
-        const next = [...prev, account];
-        try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
-        return next;
-      });
-      saveARAccountRow(account, false);
-      paymentLinkRef.current[nid] = id;
-      dbg("💳 Added unpaid account from job card: " + account.name + " — $" + amount);
-      // Flow the amount straight into Today's Earnings too — same
-      // persistence handleSetJobValue uses — so entering it once here
-      // covers both places instead of having to enter it again separately.
-      setJobValues(prev => {
-        const next = { ...prev, [nid]: amount };
-        try { localStorage.setItem("techportal_jobValues_" + selectedDate.toDateString(), JSON.stringify(next)); } catch {}
-        return next;
-      });
-      setPending(nid + "__value", { status: "jobValue", extra: String(amount) });
-      flushStatusSaves();
-    };
-    const existingVal = jobValues[nid];
-    if (existingVal != null && !isNaN(existingVal) && existingVal > 0) {
-      addAccount(existingVal);
-      return;
-    }
-    const amountStr = prompt("Amount owed for " + cleanTitle + " ($):");
-    if (amountStr === null) return;
-    const amount = parseFloat(amountStr.trim());
-    if (isNaN(amount) || amount < 0) { alert("Enter a valid dollar amount — skipped adding to Unpaid Accounts."); return; }
-    if (amount === 0) {
-      // Nothing owed — flip straight back to paid instead of leaving the
-      // job stuck flagged "unpaid" with no Unpaid Accounts entry to clear it.
-      setPaymentStatus(prev => ({ ...prev, [nid]: "paid" }));
-      setPending(nid + "__paid", { status: "paid", extra: "" });
-      flushStatusSaves();
-      return;
-    }
-    addAccount(amount);
+    addUnpaidAccountForJob(nid, cleanTitle, amount);
+    setPayAmountPrompt(null);
+    setPayAmountInput("");
   };
 
   const handleUndoFinishDay = async () => {
@@ -2057,6 +2074,24 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
                   )
                 )
               )
+        )
+      ),
+      payAmountPrompt && React.createElement("div", { style: styles.overlay, onClick: () => { setPayAmountPrompt(null); setPayAmountInput(""); } },
+        React.createElement("div", { style: styles.modalBox, onClick: e => e.stopPropagation() },
+          React.createElement("div", { style: styles.modalHeader },
+            React.createElement("div", { style: styles.modalTitle }, "Amount owed for " + payAmountPrompt.cleanTitle),
+            React.createElement("button", { style: styles.modalClose, onClick: () => { setPayAmountPrompt(null); setPayAmountInput(""); } }, "×")
+          ),
+          React.createElement("div", { style: { padding: "1.25rem" } },
+            React.createElement("label", { style: { fontSize: 13, color: "#666", display: "block", marginBottom: 6 } }, "Amount owed ($) — enter 0 if already paid"),
+            React.createElement("input", {
+              type: "number", inputMode: "decimal", autoFocus: true, value: payAmountInput,
+              onChange: e => setPayAmountInput(e.target.value),
+              onKeyDown: e => { if (e.key === "Enter") handleConfirmPayAmount(); },
+              style: { width: "100%", padding: "10px 12px", fontSize: 16, borderRadius: 8, border: "1px solid #ccc", boxSizing: "border-box", marginBottom: 14 },
+            }),
+            React.createElement("button", { onClick: handleConfirmPayAmount, style: { width: "100%", padding: "10px", borderRadius: 8, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 } }, "Save")
+          )
         )
       ),
       React.createElement("div", { style: styles.topbar },
