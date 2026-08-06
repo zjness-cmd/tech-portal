@@ -20,7 +20,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.15.1";
+const APP_VERSION = "1.16.0";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -288,6 +288,36 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   }, [accessToken]);
 
   useImperativeHandle(ref, () => ({ flushPending: () => flushStatusSaves() }));
+
+  // ── Prune old daily localStorage keys ────────────────────────────────
+  // Every day this app has been used, it's created a NEW localStorage key
+  // for that day's debug log, GPS track, mileage log, job status cache,
+  // and job values — and none of them were ever cleaned up. After months
+  // of daily use that can approach or exceed the browser's storage quota,
+  // which causes localStorage.setItem to silently fail wherever it's
+  // wrapped in a bare try/catch (several places are) — plausible root
+  // cause for a debug log that stops capturing mid-day, or general
+  // flakiness that clears up with a fresh reload. Runs once per app load;
+  // keeps the most recent 14 days, deletes anything older.
+  useEffect(() => {
+    try {
+      const PREFIXES = ["techportal_debugLog_", "gpsTrack_", "mileageLog_", "techportal_jobStatus_", "techportal_jobValues_"];
+      const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 14); cutoff.setHours(0, 0, 0, 0);
+      let pruned = 0;
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (!key) continue;
+        const prefix = PREFIXES.find(p => key.startsWith(p));
+        if (!prefix) continue;
+        const dateStr = key.slice(prefix.length);
+        const d = new Date(dateStr);
+        if (!isNaN(d) && d < cutoff) { localStorage.removeItem(key); pruned++; }
+      }
+      if (pruned > 0) dbg("🧹 Pruned " + pruned + " old localStorage key(s) from before " + cutoff.toDateString());
+    } catch (e) {
+      console.warn("[TechPortal] localStorage prune failed:", e);
+    }
+  }, []);
 
   // Rehydrate any pending saves left over from a killed/reloaded session.
   useEffect(() => {
