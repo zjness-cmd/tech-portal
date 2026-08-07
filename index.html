@@ -29,12 +29,40 @@
     <!-- Register service worker -->
     <script>
       if ('serviceWorker' in navigator) {
+        // Whether this page already had a controller before registering —
+        // distinguishes a real update (reload needed to pick up the new
+        // controller) from the very first-ever install (page is already
+        // showing fresh content, nothing to reload for).
+        const hadController = !!navigator.serviceWorker.controller;
+
         navigator.serviceWorker.register('/sw.js', { scope: '/' })
           .then(reg => {
             console.log('[TechPortal] SW registered:', reg.scope);
             reg.update();
+            // Re-check for a new version each time the app is reopened/
+            // foregrounded — not just on the initial load — so a build
+            // shipped while the PWA was closed/backgrounded gets picked up
+            // the next time it's opened, without waiting on the browser's
+            // own (much slower) background update schedule.
+            document.addEventListener('visibilitychange', () => {
+              if (document.visibilityState === 'visible') reg.update();
+            });
           })
           .catch(err => console.warn('[TechPortal] SW failed:', err));
+
+        // sw.js already calls self.skipWaiting()/clients.claim(), so a new
+        // service worker takes over as soon as it's installed — but the
+        // page itself keeps running the old JS in memory until it reloads.
+        // Reload exactly once when control switches to the new worker, so
+        // an update actually reaches the screen instead of silently
+        // installing underneath a stale page (previously the only way to
+        // get unstuck was clearing site data, which also wiped the login).
+        let refreshedForUpdate = false;
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+          if (!hadController || refreshedForUpdate) return;
+          refreshedForUpdate = true;
+          window.location.reload();
+        });
       }
     </script>
   </body>
