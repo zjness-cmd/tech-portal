@@ -21,7 +21,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.18.1";
+const APP_VERSION = "1.19.0";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -205,6 +205,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const jobCoordsRef = useRef({});
   const arLoadedRef = useRef(false);
   const clientSitesLoadedRef = useRef(false);
+  const websiteLookupAttemptedRef = useRef({});
   const geofenceDwellRef = useRef({});
   const departureDwellRef = useRef({});
   const checkedInRef = useRef(checkedIn);
@@ -569,6 +570,14 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     loadClientWebsites();
   }, [accessToken]);
   useEffect(() => { if (!accessToken || loading) return; loadJobStatuses(); }, [accessToken, selectedDate, loading]);
+  // Gated on `loading` flipping to false rather than on `jobs` itself —
+  // `jobs` is a new array reference every render, which would otherwise
+  // re-fire this on every unrelated state change instead of once per
+  // day's worth of jobs actually loading in.
+  useEffect(() => {
+    if (!accessToken || loading || !clientSitesLoadedRef.current) return;
+    jobs.forEach(job => { if (job.location) autoLookupWebsite(job); });
+  }, [accessToken, loading, selectedDate]);
 
   useEffect(() => {
     if (!jobs.length || !dayStarted || !isToday) return;
@@ -815,6 +824,33 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       dbg("🌐 Saved website for " + clientName + ": " + website);
     } catch (e) {
       dbg("❌ saveClientWebsite failed for " + clientName + ": " + e.message, "error");
+    }
+  };
+
+  // Auto-discovers a client's website via api/places.js (Google Places —
+  // business name + address in, website out) instead of requiring it be
+  // typed in by hand. Only runs once per client key: a null/empty result
+  // gets cached the same as a found one (so a client with no website isn't
+  // re-queried every day) UNLESS the lookup itself failed (network error or
+  // a non-OK Places status, e.g. Places API not enabled yet) — those are
+  // deliberately left unsaved so they retry on the next fresh load instead
+  // of permanently caching a bad "no website" answer from a config problem.
+  const autoLookupWebsite = async (job) => {
+    const key = clientKeyFor(job.title);
+    if (!key || !job.location) return;
+    if (clientWebsites[key] !== undefined) return; // already have an answer
+    if (websiteLookupAttemptedRef.current[key]) return; // already tried this session
+    websiteLookupAttemptedRef.current[key] = true;
+    const cleanTitle = job.title.replace(/^(⚠️ MISSED - )+/, "").trim();
+    try {
+      const res = await fetch("/api/places?query=" + encodeURIComponent(cleanTitle + " " + job.location));
+      const data = await res.json();
+      if (!res.ok || data.error) { dbg("❌ Website lookup failed for " + cleanTitle + ": " + (data.error || res.status), "error"); return; }
+      const website = data.website || "";
+      await saveClientWebsite(key, cleanTitle, website);
+      dbg(website ? "🌐 Auto-found website for " + cleanTitle + ": " + website : "🌐 No website found for " + cleanTitle);
+    } catch (e) {
+      dbg("❌ Website auto-lookup error for " + cleanTitle + ": " + e.message, "error");
     }
   };
 

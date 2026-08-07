@@ -192,10 +192,14 @@ export default function JobDetailModal({
             ),
 
             // Website — used to pull the client's logo onto their job cards
-            // (via a domain-keyed logo lookup). Saved once per client, keyed
-            // by title, so it carries over to every future visit.
+            // (via a domain-keyed logo lookup). Auto-discovered via Google
+            // Places when possible (see autoLookupWebsite in Dashboard.jsx)
+            // — this field is the manual override/fallback for when that
+            // doesn't find the right site. Saved once per client, keyed by
+            // title, so it carries over to every future visit.
             onSaveWebsite && React.createElement("div", { style: { marginBottom: 16 } },
               React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 } }, "🌐 Website"),
+              React.createElement("div", { style: { fontSize: 11, color: "#aaa", marginBottom: 6 } }, "Auto-detected when possible — override here if it's wrong or missing."),
               React.createElement("div", { style: { display: "flex", gap: 8 } },
                 React.createElement("input", {
                   type: "text",
