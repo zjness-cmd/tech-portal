@@ -77,7 +77,7 @@ export default function JobCard({
   job, location, status, checkedIn, checkedOut, completed, invoiceUrl,
   onCheckIn, onCheckOut, onComplete, onNavigate, onUndo, onInvoice, onMissed,
   isNearby, accessToken, onTimeUpdated, onNotesSaved, logSheetId,
-  paymentStatus, onTogglePaid, website, onSaveWebsite,
+  paymentStatus, onTogglePaid, website,
 }) {
   const [imgFailed, setImgFailed] = useState(false);
   const [imgChecked, setImgChecked] = useState(false);
@@ -185,7 +185,6 @@ export default function JobCard({
         onNotesSaved,
         logSheetId,
         onUndo, onInvoice, invoiceUrl, paymentStatus, onTogglePaid,
-        website, onSaveWebsite,
       }),
 
       // ── Time edit modal ─────────────────────────────────────────────────
