@@ -20,7 +20,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.16.2";
+const APP_VERSION = "1.17.0";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -1592,7 +1592,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     updateCalendarEvent(job, { checkIn: checkedInRef.current[jobId], checkOut: time });
   };
 
-  const handleComplete = (jobId) => {
+  // paymentChoice is "paid" or "awaiting", coming from the job card's
+  // Paid/Awaiting Payment picker shown right after tapping Mark complete.
+  // Drive Mode's quick "Done" tap has no such picker, so it calls this with
+  // no paymentChoice — falls through to "awaiting", the same default
+  // completing a job always used before.
+  const handleComplete = (jobId, paymentChoice) => {
+    const nid = normalizeId(jobId);
     dbg("✅ Complete: " + jobId);
     setCompleted((prev) => ({ ...prev, [jobId]: true }));
     setPending(jobId + "__done", { status: "completed", extra: checkedIn[jobId] || "" });
@@ -1609,13 +1615,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       saveMissedJobs(missedJobs.filter(m => m.jobId !== jobId));
     }
     updateCalendarEvent(job, { checkIn: checkedIn[jobId], checkOut: checkedOut[jobId], completed: true, invoiceUrl: invoicedJobs[jobId] });
-    // Every completed job now defaults to "unpaid" immediately — reusing
-    // the exact same toggle logic the job-card button uses (prefilling
-    // from Today's Earnings if already set, otherwise prompting for the
-    // amount right now). You only need to tap something once money
-    // actually comes in, rather than remembering to flag each job as
-    // unpaid yourself.
-    if (job) handleTogglePaid(jobId, job.title);
+    if (paymentChoice === "paid") markPaidStatus(nid);
+    else markUnpaidStatus(nid, cleanTitle);
   };
 
   const handleUndo = (jobId) => {
@@ -1683,40 +1684,31 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     addAccount(amount);
   };
 
-  // Quick Paid/Unpaid toggle right on the job card — separate from the full
-  // invoice flow, for jobs you're tracking payment on without generating a
-  // formal invoice. Toggling to "unpaid" creates an Unpaid Accounts entry
-  // (prefilled from Today's Earnings if a $ value is already set); toggling
-  // back to "paid" closes out that specific entry via paymentLinkRef, so
-  // going back and forth doesn't leave duplicate or orphaned rows.
-  const handleTogglePaid = (jobId, jobTitle) => {
-    const nid = normalizeId(jobId);
-    const current = paymentStatus[nid];
-    const cleanTitle = (jobTitle || "This job").replace(/^(⚠️ MISSED - )+/, "");
-
-    if (current === "unpaid") {
-      setPaymentStatus(prev => ({ ...prev, [nid]: "paid" }));
-      setPending(nid + "__paid", { status: "paid", extra: "" });
-      flushStatusSaves();
-      const linkedKey = paymentLinkRef.current[nid];
-      if (linkedKey) {
-        const acct = unpaidAccounts.find(a => a._key === linkedKey);
-        if (acct) {
-          setUnpaidAccounts(prev => {
-            const next = prev.filter(a => a._key !== linkedKey);
-            try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
-            return next;
-          });
-          saveARAccountRow({ ...acct, paid: true }, true);
-          dbg("💳 Marked paid via job card: " + acct.name);
-        }
-        delete paymentLinkRef.current[nid];
+  // Shared by the job-card Paid/Unpaid toggle and the Paid/Awaiting Payment
+  // choice shown right after marking a job complete.
+  const markPaidStatus = (nid) => {
+    setPaymentStatus(prev => ({ ...prev, [nid]: "paid" }));
+    setPending(nid + "__paid", { status: "paid", extra: "" });
+    flushStatusSaves();
+    const linkedKey = paymentLinkRef.current[nid];
+    if (linkedKey) {
+      const acct = unpaidAccounts.find(a => a._key === linkedKey);
+      if (acct) {
+        setUnpaidAccounts(prev => {
+          const next = prev.filter(a => a._key !== linkedKey);
+          try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
+          return next;
+        });
+        saveARAccountRow({ ...acct, paid: true }, true);
+        dbg("💳 Marked paid: " + acct.name);
       }
-      return;
+      delete paymentLinkRef.current[nid];
     }
+  };
 
-    // Switching to unpaid — prefill from Today's Earnings if a $ value is
-    // already set (no need to ask again); otherwise open the amount modal.
+  const markUnpaidStatus = (nid, cleanTitle) => {
+    // Prefill from Today's Earnings if a $ value is already set (no need to
+    // ask again); otherwise open the amount modal.
     const existingVal = jobValues[nid];
     if (existingVal != null && !isNaN(existingVal) && existingVal > 0) {
       setPaymentStatus(prev => ({ ...prev, [nid]: "unpaid" }));
@@ -1727,6 +1719,20 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     }
     setPayAmountPrompt({ nid, cleanTitle });
     setPayAmountInput("");
+  };
+
+  // Quick Paid/Unpaid toggle right on the job card — separate from the full
+  // invoice flow, for jobs you're tracking payment on without generating a
+  // formal invoice. Toggling to "unpaid" creates an Unpaid Accounts entry;
+  // toggling back to "paid" closes out that specific entry via
+  // paymentLinkRef, so going back and forth doesn't leave duplicate or
+  // orphaned rows.
+  const handleTogglePaid = (jobId, jobTitle) => {
+    const nid = normalizeId(jobId);
+    const current = paymentStatus[nid];
+    const cleanTitle = (jobTitle || "This job").replace(/^(⚠️ MISSED - )+/, "");
+    if (current === "unpaid") { markPaidStatus(nid); return; }
+    markUnpaidStatus(nid, cleanTitle);
   };
 
   // Shared by handleTogglePaid's prefilled-value path and the amount modal
@@ -2266,7 +2272,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               onNotesSaved: handleNotesSaved,
               onCheckIn: () => handleCheckIn(nid, job.title),
               onCheckOut: () => handleCheckOut(nid, job.title),
-              onComplete: () => handleComplete(nid),
+              onComplete: (paymentChoice) => handleComplete(nid, paymentChoice),
               onNavigate: () => handleNavigate(nid),
               onUndo: () => handleUndo(nid),
               onInvoice: () => handleInvoice({ ...job, id: nid }),

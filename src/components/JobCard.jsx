@@ -97,7 +97,10 @@ export default function JobCard({
   const showCheckOut = checkedIn && !checkedOut && !completed;
   const showComplete = checkedOut && !completed && !showCompleteChoice;
   const showCompleteChoice_ = checkedOut && !completed && showCompleteChoice;
-  const showUndo = (checkedIn || checkedOut) && !completed;
+  // Navigate is only useful before you've checked in — once you're on site
+  // there's nothing left to navigate to. Undo/Invoice move into the job
+  // detail view (tap the card) to keep this row to one action per state.
+  const showNavigate = !checkedIn && !completed;
 
   const handleOpenTimeEdit = () => {
     setNewTime(timeStrToInput(job.startTime));
@@ -154,6 +157,7 @@ export default function JobCard({
         onClose: () => setShowDetail(false),
         onNotesSaved,
         logSheetId,
+        onUndo, onInvoice, invoiceUrl, paymentStatus, onTogglePaid,
       }),
 
       // ── Time edit modal ─────────────────────────────────────────────────
@@ -237,7 +241,7 @@ export default function JobCard({
       // ── Action buttons ──────────────────────────────────────────────────
       React.createElement("div", { style: s.actionRow },
 
-        navigateUrl && !completed &&
+        navigateUrl && showNavigate &&
           React.createElement("a", { href: navigateUrl, target: "_blank", rel: "noreferrer", style: s.navButton, onClick: onNavigate }, "🗺️ Navigate"),
 
         showMissed &&
@@ -254,36 +258,17 @@ export default function JobCard({
 
         showCompleteChoice_ &&
           React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" } },
-            React.createElement("span", { style: { fontSize: 12, color: "#444", fontWeight: 500 } }, "How'd it go?"),
-            React.createElement("button", { style: s.completeBtn, onClick: () => { setShowCompleteChoice(false); onComplete(); } }, "✅ Completed"),
-            React.createElement("button", { style: { ...s.completeBtn, background: "#FEF3CD", color: "#856404" }, onClick: () => { setShowCompleteChoice(false); onMissed && onMissed(); } }, "⚠️ Missed"),
+            React.createElement("span", { style: { fontSize: 12, color: "#444", fontWeight: 500 } }, "Paid?"),
+            React.createElement("button", { style: s.paidBtn, onClick: () => { setShowCompleteChoice(false); onComplete("paid"); } }, "✅ Paid"),
+            React.createElement("button", { style: s.unpaidBtn, onClick: () => { setShowCompleteChoice(false); onComplete("awaiting"); } }, "⏳ Awaiting Payment"),
             React.createElement("button", { style: { ...s.undoBtn, fontSize: 11 }, onClick: () => setShowCompleteChoice(false) }, "Cancel")
           ),
 
-        showUndo &&
-          React.createElement("button", { style: s.undoBtn, onClick: onUndo }, "↩ Undo"),
-
-        completed && React.createElement("span", { style: s.checkedInLabel }, "✅ Completed"),
-        completed && React.createElement("button", { style: s.undoBtn, onClick: onUndo }, "↩ Undo"),
-
-        // Quick Paid/Unpaid toggle — separate from the full invoice flow,
-        // for jobs you're tracking payment on without generating a formal
-        // invoice. Only shown once a job is completed, since payment
-        // status isn't meaningful before then. Marking "Unpaid" adds it to
-        // the Unpaid Accounts page; toggling back to "Paid" removes it.
-        completed && onTogglePaid &&
-          React.createElement("button", {
-            style: paymentStatus === "paid" ? s.paidBtn : s.unpaidBtn,
-            onClick: onTogglePaid,
-            title: paymentStatus === "paid" ? "Tap to mark unpaid" : "Tap to mark paid",
-          }, paymentStatus === "paid" ? "💳 Paid" : "⚠️ Unpaid"),
-
-        invoiceUrl
-          ? React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
-              React.createElement("a", { href: invoiceUrl, target: "_blank", rel: "noreferrer", style: s.viewInvoiceBtn }, "📄 View Invoice"),
-              React.createElement("button", { style: s.reInvoiceBtn, onClick: onInvoice, title: "Re-invoice" }, "✏️")
-            )
-          : React.createElement("button", { style: s.invoiceBtn, onClick: onInvoice }, "💵 Invoice")
+        // Everything else (Undo, Paid/Unpaid toggle, Invoice) lives in the
+        // job detail view now — tap the card to reach it — so this row
+        // stays to one action per state instead of accumulating buttons.
+        completed &&
+          React.createElement("span", { style: s.checkedInLabel }, "✅ Completed · " + (paymentStatus === "paid" ? "Paid" : "Awaiting Payment"))
       )
     )
   );
