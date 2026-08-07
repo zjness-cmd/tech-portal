@@ -233,7 +233,7 @@ export default function JobCard({
       },
         showLogo && React.createElement("img", {
           src: logoUrl, alt: "",
-          style: { width: 26, height: 26, borderRadius: 6, objectFit: "contain", background: "#fff", border: "0.5px solid #eee", flexShrink: 0 },
+          style: { width: 44, height: 44, padding: 4, borderRadius: 10, objectFit: "contain", background: "#fff", border: "0.5px solid #eee", flexShrink: 0, boxSizing: "border-box" },
           onError: () => setLogoFailed(true),
         }),
         React.createElement("div", { style: { ...s.cardTitle, marginBottom: 0 } },

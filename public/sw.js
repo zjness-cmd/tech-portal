@@ -1,5 +1,5 @@
-// TechPortal Service Worker v12 — persistent background geofence
-const CACHE_NAME = "techportal-v12";
+// TechPortal Service Worker v13 — persistent background geofence
+const CACHE_NAME = "techportal-v13";
 const SHELL_FILES = ["/", "/index.html", "/manifest.json"];
 
 self.addEventListener("install", (event) => {

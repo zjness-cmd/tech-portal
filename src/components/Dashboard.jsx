@@ -21,7 +21,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.19.1";
+const APP_VERSION = "1.19.2";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
