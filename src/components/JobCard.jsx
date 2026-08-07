@@ -38,8 +38,10 @@ function normalizeDomain(website) {
 
 function getLogoUrl(website) {
   const domain = normalizeDomain(website);
-  // Clearbit's public logo API — free, no key required, keyed by domain.
-  return domain ? "https://logo.clearbit.com/" + domain + "?size=128" : null;
+  // unavatar.io — free, no key required, aggregates favicon/social sources
+  // for a domain. fallback=false makes it 404 (rather than a generic avatar
+  // placeholder) when nothing's found, so the onError hide-logic works.
+  return domain ? "https://unavatar.io/" + domain + "?fallback=false" : null;
 }
 
 function getStreetViewUrl(location) {
