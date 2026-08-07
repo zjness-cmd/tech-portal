@@ -10,6 +10,7 @@ const HOME = { lat: 45.292159, lng: -93.683355 };
 const LOG_SHEET_NAME = "TechPortal Job Log 2026";
 const STATUS_SHEET_NAME = "Job Status";
 const AR_SHEET_NAME = "Accounts Receivable";
+const CLIENT_SITES_SHEET_NAME = "Client Websites";
 const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
 const PENDING_SAVES_KEY = "techportal_pendingSaves";
 const GEOFENCE_RADIUS_MILES = 0.12;
@@ -20,7 +21,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.17.0";
+const APP_VERSION = "1.18.0";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -185,6 +186,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [unpaidAccounts, setUnpaidAccounts] = useState(() => {
     try { const s = localStorage.getItem("techportal_unpaidAccounts"); return s ? JSON.parse(s) : []; } catch { return []; }
   });
+  // Client website → logo lookups, keyed by cleaned/lowercased job title so
+  // one entry covers every future visit for the same client rather than
+  // needing to be re-entered per calendar event instance. Persists across
+  // days like unpaidAccounts, for the same reason.
+  const [clientWebsites, setClientWebsites] = useState(() => {
+    try { const s = localStorage.getItem("techportal_clientWebsites"); return s ? JSON.parse(s) : {}; } catch { return {}; }
+  });
 
   const startPosRef = useRef((() => { try { const s = localStorage.getItem("techportal_startPos"); return s ? JSON.parse(s) : null; } catch { return null; } })());
   const lastPositionRef = useRef((() => { try { const s = localStorage.getItem("techportal_lastPos"); return s ? JSON.parse(s) : null; } catch { return null; } })());
@@ -196,6 +204,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const trackIntervalRef = useRef(null);
   const jobCoordsRef = useRef({});
   const arLoadedRef = useRef(false);
+  const clientSitesLoadedRef = useRef(false);
   const geofenceDwellRef = useRef({});
   const departureDwellRef = useRef({});
   const checkedInRef = useRef(checkedIn);
@@ -554,6 +563,11 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     arLoadedRef.current = true;
     loadARAccounts();
   }, [accessToken]);
+  useEffect(() => {
+    if (!accessToken || clientSitesLoadedRef.current) return;
+    clientSitesLoadedRef.current = true;
+    loadClientWebsites();
+  }, [accessToken]);
   useEffect(() => { if (!accessToken || loading) return; loadJobStatuses(); }, [accessToken, selectedDate, loading]);
 
   useEffect(() => {
@@ -660,6 +674,17 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     }
   };
 
+  const ensureClientSitesTab = async (sheetId) => {
+    const token = accessTokenRef.current;
+    const infoRes = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "?fields=sheets.properties", { headers: { Authorization: "Bearer " + token } });
+    const info = await infoRes.json();
+    const hasTab = (info.sheets || []).find(s => s.properties.title === CLIENT_SITES_SHEET_NAME);
+    if (!hasTab) {
+      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + ":batchUpdate", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ requests: [{ addSheet: { properties: { title: CLIENT_SITES_SHEET_NAME } } }] }) });
+      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_SITES_SHEET_NAME + "'!A1:C1?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [["Client Key", "Client Name", "Website"]] }) });
+    }
+  };
+
   // ── Accounts Receivable ──────────────────────────────────────────────
   // Unlike mileage/jobValues (scoped to selectedDate), unpaid accounts carry
   // over across days until settled — so this loads once per session rather
@@ -727,6 +752,69 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       }
     } catch (e) {
       dbg("❌ AR save failed for " + account.name + ": " + e.message, "error");
+    }
+  };
+
+  // ── Client websites (job-card logos) ────────────────────────────────────
+  // Cleaned/lowercased title, not the raw calendar summary — so the same
+  // client matches across recurring visits even though each visit is a
+  // different calendar event id.
+  const clientKeyFor = (title) => (title || "").replace(/^(⚠️ MISSED - )+/, "").trim().toLowerCase();
+
+  const loadClientWebsites = async () => {
+    const token = accessTokenRef.current;
+    if (!token) return;
+    try {
+      const sheetId = await getOrCreateLogSheet();
+      if (!sheetId) return;
+      await ensureClientSitesTab(sheetId);
+      const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_SITES_SHEET_NAME + "'!A:C", { headers: { Authorization: "Bearer " + token } });
+      if (!res.ok) { dbg("❌ Client sites read failed: " + res.status, "error"); return; }
+      const data = await res.json();
+      const rows = data.values || [];
+      const sites = {};
+      rows.forEach((r, i) => {
+        if (i === 0 || !r[0]) return; // header / blank key
+        sites[r[0]] = { name: r[1] || "", website: r[2] || "", _sheetRow: i + 1 };
+      });
+      setClientWebsites(sites);
+      try { localStorage.setItem("techportal_clientWebsites", JSON.stringify(sites)); } catch {}
+      dbg("🌐 Loaded " + Object.keys(sites).length + " client website(s)");
+    } catch (e) {
+      dbg("❌ loadClientWebsites error: " + e.message, "error");
+    }
+  };
+
+  const saveClientWebsite = async (clientKey, clientName, website) => {
+    const token = accessTokenRef.current;
+    if (!token || !clientKey) return;
+    try {
+      const sheetId = await getOrCreateLogSheet();
+      if (!sheetId) return;
+      const row = [clientKey, clientName, website];
+      let sheetRow = clientWebsites[clientKey]?._sheetRow;
+      if (!sheetRow) {
+        // Not yet known this session (new client, or added earlier this
+        // session but not reloaded) — search by key so a second edit before
+        // the next load doesn't append a duplicate row.
+        const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_SITES_SHEET_NAME + "'!A:C", { headers: { Authorization: "Bearer " + token } });
+        const data = await res.json();
+        const idx = (data.values || []).findIndex(r => r[0] === clientKey);
+        if (idx !== -1) sheetRow = idx + 1;
+      }
+      if (sheetRow) {
+        await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_SITES_SHEET_NAME + "'!A" + sheetRow + ":C" + sheetRow + "?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [row] }) });
+      } else {
+        await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_SITES_SHEET_NAME + "'!A:C:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [row] }) });
+      }
+      setClientWebsites(prev => {
+        const next = { ...prev, [clientKey]: { name: clientName, website, _sheetRow: sheetRow } };
+        try { localStorage.setItem("techportal_clientWebsites", JSON.stringify(next)); } catch {}
+        return next;
+      });
+      dbg("🌐 Saved website for " + clientName + ": " + website);
+    } catch (e) {
+      dbg("❌ saveClientWebsite failed for " + clientName + ": " + e.message, "error");
     }
   };
 
@@ -2278,6 +2366,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               onInvoice: () => handleInvoice({ ...job, id: nid }),
               onMissed: () => handleMissed(nid, job.title, job.location, job.calendarId, job.id),
               onTogglePaid: () => handleTogglePaid(nid, job.title),
+              website: clientWebsites[clientKeyFor(job.title)]?.website || "",
+              onSaveWebsite: (website) => saveClientWebsite(clientKeyFor(job.title), job.title.replace(/^(⚠️ MISSED - )+/, "").trim(), website),
             });
           })
         )

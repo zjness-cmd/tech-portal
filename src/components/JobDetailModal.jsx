@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from "react";
 export default function JobDetailModal({
   job, accessToken, checkedIn, checkedOut, completed, onClose, onNotesSaved, logSheetId,
   onUndo, onInvoice, invoiceUrl, paymentStatus, onTogglePaid,
+  website, onSaveWebsite,
 }) {
   const [notes, setNotes] = useState("");
   const [photos, setPhotos] = useState([]);
@@ -11,6 +12,8 @@ export default function JobDetailModal({
   const [uploading, setUploading] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+  const [websiteInput, setWebsiteInput] = useState(website || "");
+  const [websiteSaved, setWebsiteSaved] = useState(false);
   const fileInputRef = useRef(null);
 
   // Load existing notes and photos when modal opens
@@ -123,6 +126,13 @@ export default function JobDetailModal({
     setSaving(false);
   };
 
+  const handleSaveWebsite = () => {
+    if (!onSaveWebsite) return;
+    onSaveWebsite(websiteInput.trim());
+    setWebsiteSaved(true);
+    setTimeout(() => setWebsiteSaved(false), 2000);
+  };
+
   return React.createElement("div", {
     style: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 3000 },
     onClick: onClose,
@@ -178,6 +188,26 @@ export default function JobDetailModal({
                       onClick: onInvoice,
                       style: { fontSize: 13, padding: "8px 12px", borderRadius: 10, background: "#F0F4FF", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 500 },
                     }, "💵 Invoice"))
+              )
+            ),
+
+            // Website — used to pull the client's logo onto their job cards
+            // (via a domain-keyed logo lookup). Saved once per client, keyed
+            // by title, so it carries over to every future visit.
+            onSaveWebsite && React.createElement("div", { style: { marginBottom: 16 } },
+              React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 } }, "🌐 Website"),
+              React.createElement("div", { style: { display: "flex", gap: 8 } },
+                React.createElement("input", {
+                  type: "text",
+                  value: websiteInput,
+                  onChange: e => setWebsiteInput(e.target.value),
+                  placeholder: "e.g. ozasbarandgrill.com",
+                  style: { flex: 1, padding: "10px 12px", fontSize: 14, border: "1px solid #ddd", borderRadius: 10, boxSizing: "border-box", color: "#1a1a1a" },
+                }),
+                React.createElement("button", {
+                  onClick: handleSaveWebsite,
+                  style: { padding: "10px 16px", borderRadius: 10, background: websiteSaved ? "#27500A" : "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontSize: 14 },
+                }, websiteSaved ? "✅" : "Save")
               )
             ),
 

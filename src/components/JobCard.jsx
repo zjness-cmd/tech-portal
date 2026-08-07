@@ -22,6 +22,26 @@ function stripHtml(str) {
     .trim();
 }
 
+// Accepts a bare domain, a full URL, or a URL with a path — normalizes down
+// to the bare hostname the logo API expects.
+function normalizeDomain(website) {
+  if (!website) return null;
+  let s = website.trim();
+  if (!s) return null;
+  if (!/^https?:\/\//i.test(s)) s = "https://" + s;
+  try {
+    return new URL(s).hostname.replace(/^www\./, "");
+  } catch {
+    return null;
+  }
+}
+
+function getLogoUrl(website) {
+  const domain = normalizeDomain(website);
+  // Clearbit's public logo API — free, no key required, keyed by domain.
+  return domain ? "https://logo.clearbit.com/" + domain + "?size=128" : null;
+}
+
 function getStreetViewUrl(location) {
   if (!location || !MAPS_API_KEY) return null;
   return "https://maps.googleapis.com/maps/api/streetview?" + new URLSearchParams({
@@ -55,11 +75,12 @@ export default function JobCard({
   job, location, status, checkedIn, checkedOut, completed, invoiceUrl,
   onCheckIn, onCheckOut, onComplete, onNavigate, onUndo, onInvoice, onMissed,
   isNearby, accessToken, onTimeUpdated, onNotesSaved, logSheetId,
-  paymentStatus, onTogglePaid,
+  paymentStatus, onTogglePaid, website, onSaveWebsite,
 }) {
   const [imgFailed, setImgFailed] = useState(false);
   const [imgChecked, setImgChecked] = useState(false);
   const [imgExists, setImgExists] = useState(false);
+  const [logoFailed, setLogoFailed] = useState(false);
   const [showCompleteChoice, setShowCompleteChoice] = useState(false);
   const [showTimeEdit, setShowTimeEdit] = useState(false);
   const [newTime, setNewTime] = useState("");
@@ -91,6 +112,10 @@ export default function JobCard({
 
   const streetViewUrl = getStreetViewUrl(job.location);
   const showImage = streetViewUrl && !imgFailed && imgChecked && imgExists;
+  const logoUrl = getLogoUrl(website);
+  const showLogo = logoUrl && !logoFailed;
+
+  React.useEffect(() => { setLogoFailed(false); }, [website]);
 
   const showMissed = !checkedIn && !completed && !!onMissed;
   const showCheckIn = !checkedIn && !completed;
@@ -158,6 +183,7 @@ export default function JobCard({
         onNotesSaved,
         logSheetId,
         onUndo, onInvoice, invoiceUrl, paymentStatus, onTogglePaid,
+        website, onSaveWebsite,
       }),
 
       // ── Time edit modal ─────────────────────────────────────────────────
@@ -201,12 +227,19 @@ export default function JobCard({
 
       // ── Title + location ────────────────────────────────────────────────
       React.createElement("div", {
-        style: { ...s.cardTitle, cursor: "pointer" },
+        style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 4, cursor: "pointer" },
         onClick: () => setShowDetail(true),
       },
-        job.title,
-        job.notes && React.createElement("span", { style: { fontSize: 11, marginLeft: 6, color: "#185FA5" } }, "📝"),
-        job.photos?.length > 0 && React.createElement("span", { style: { fontSize: 11, marginLeft: 4, color: "#185FA5" } }, "📷"),
+        showLogo && React.createElement("img", {
+          src: logoUrl, alt: "",
+          style: { width: 26, height: 26, borderRadius: 6, objectFit: "contain", background: "#fff", border: "0.5px solid #eee", flexShrink: 0 },
+          onError: () => setLogoFailed(true),
+        }),
+        React.createElement("div", { style: { ...s.cardTitle, marginBottom: 0 } },
+          job.title,
+          job.notes && React.createElement("span", { style: { fontSize: 11, marginLeft: 6, color: "#185FA5" } }, "📝"),
+          job.photos?.length > 0 && React.createElement("span", { style: { fontSize: 11, marginLeft: 4, color: "#185FA5" } }, "📷"),
+        )
       ),
       job.location && React.createElement("div", { style: s.cardMeta }, "📍 " + job.location),
 
