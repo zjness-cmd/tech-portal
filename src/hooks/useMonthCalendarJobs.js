@@ -83,7 +83,11 @@ export function useMonthCalendarJobs(accessToken, monthDate) {
 
   useEffect(() => { fetchMonth(); }, [fetchMonth]);
 
-  return { eventsByDay, loading, error, refresh: fetchMonth };
+  // setEventsByDay is exposed directly so the drag-and-drop reschedule in
+  // CalendarMonthView can optimistically move a job between days without
+  // waiting on a full refetch — it's reconciled with the server's actual
+  // state on the next natural refresh (month change, pull-to-refresh, etc).
+  return { eventsByDay, setEventsByDay, loading, error, refresh: fetchMonth };
 }
 
 // All-day events already come back from Google as a plain YYYY-MM-DD date
