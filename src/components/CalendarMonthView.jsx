@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useCallback } from "react";
+import React, { useState, useMemo, useRef, useCallback, useEffect } from "react";
 import { useMonthCalendarJobs } from "../hooks/useMonthCalendarJobs";
 import { shiftCalendarEventByDays } from "../lib/calendarEvents";
 
@@ -57,6 +57,19 @@ export default function CalendarMonthView({ accessToken, initialDate, onSelectDa
   const [toast, setToast] = useState(null); // { message, onUndo }
   const dragRef = useRef(null); // in-flight drag/gesture info, doesn't need to trigger re-renders
   const toastTimerRef = useRef(null);
+
+  // This is a full-screen overlay on top of the day view (same pattern as
+  // the Unpaid Accounts page), but the day view underneath stays mounted
+  // and is often taller than the viewport — without this, the page behind
+  // scrolls along with its own scrollbar at the same time as this overlay's,
+  // showing two scrollbars side by side. Locking body scroll while open
+  // (and restoring whatever it was on close) fixes that the same way a
+  // modal would.
+  useEffect(() => {
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prevOverflow; };
+  }, []);
 
   const today = new Date();
   const todayKey = toKey(today);
@@ -178,6 +191,14 @@ export default function CalendarMonthView({ accessToken, initialDate, onSelectDa
 
   return (
     <div style={styles.overlay}>
+      {/* Inline styles can't express :hover, and this app has no separate
+          CSS file to add a rule to — a small scoped <style> tag is the
+          least-invasive way to get a hover effect on job chips (mouse/
+          trackpad only; touch has no hover state, which is expected). */}
+      <style>{`
+        .tp-job-chip { transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease; }
+        .tp-job-chip:hover { transform: translateY(-1px) scale(1.04); box-shadow: 0 3px 10px rgba(0,0,0,0.18); filter: brightness(0.96); }
+      `}</style>
       <div style={styles.header}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <button style={styles.backBtn} onClick={onClose} aria-label="Close month view">←</button>
@@ -236,6 +257,7 @@ export default function CalendarMonthView({ accessToken, initialDate, onSelectDa
                         return (
                           <div
                             key={job.id}
+                            className="tp-job-chip"
                             style={{ ...styles.chip, background: c.bg, color: c.color, ...(isBeingDragged ? styles.chipDragging : {}) }}
                             title={job.title}
                             onPointerDown={(e) => handleChipPointerDown(e, job, key)}
