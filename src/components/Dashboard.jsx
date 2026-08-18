@@ -5,6 +5,7 @@ import JobCard from "./JobCard";
 import RescheduleModal from "./RescheduleModal";
 import DriveMode from "./DriveMode";
 import EtsyStats from "./EtsyStats";
+import CalendarMonthView from "./CalendarMonthView";
 
 const HOME = { lat: 45.292159, lng: -93.683355 };
 const LOG_SHEET_NAME = "TechPortal Job Log 2026";
@@ -21,7 +22,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.19.2";
+const APP_VERSION = "1.20.0";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -168,6 +169,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [showDebug, setShowDebug] = useState(false);
   const [driveMode, setDriveMode] = useState(false);
   const [showEtsy, setShowEtsy] = useState(false);
+  const [showMonthView, setShowMonthView] = useState(false);
   const [showUnpaidPage, setShowUnpaidPage] = useState(false);
   // Two-step "From job" picker: null when closed, {step:"pick"} showing a
   // tappable list, {step:"amount", event} showing the amount entry for
@@ -2071,6 +2073,12 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     React.createElement("div", { style: styles.page },
       invoiceJob && React.createElement(InvoiceModal, { job: invoiceJob, accessToken, onClose: handleInvoiceClose, onInvoiceCreated: handleInvoiceCreated, onPaymentStatusSaved: handlePaymentStatusSaved }),
       showEtsy && React.createElement(EtsyStats, { onClose: () => setShowEtsy(false) }),
+      showMonthView && React.createElement(CalendarMonthView, {
+        accessToken,
+        initialDate: selectedDate,
+        onSelectDay: (d) => { setSelectedDate(d); setFilter("All"); setShowMonthView(false); },
+        onClose: () => setShowMonthView(false),
+      }),
       showUnpaidPage && React.createElement("div", { style: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "#fff", zIndex: 500, overflowY: "auto" } },
         React.createElement("div", { style: styles.topbar },
           React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
@@ -2274,7 +2282,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         )
       ),
       React.createElement("div", { style: styles.monthBar },
-        React.createElement("div", null, React.createElement("div", { style: styles.monthText }, monthName), React.createElement("div", { style: styles.monthSub }, monthlyCount !== null ? monthlyCount + " total jobs" : "Loading...")),
+        React.createElement("div", { style: { cursor: "pointer" }, onClick: () => setShowMonthView(true), title: "Open month calendar" }, React.createElement("div", { style: styles.monthText }, "📅 " + monthName + "  ›"), React.createElement("div", { style: styles.monthSub }, monthlyCount !== null ? monthlyCount + " total jobs" : "Loading...")),
         React.createElement("div", { style: styles.monthRight },
           React.createElement("button", { style: styles.monthStatBtn, onClick: () => setModalType("completed") }, React.createElement("div", { style: styles.monthStatVal }, totalCompleted), React.createElement("div", { style: styles.monthStatLabel }, "completed")),
           React.createElement("div", { style: styles.monthDivider }),
