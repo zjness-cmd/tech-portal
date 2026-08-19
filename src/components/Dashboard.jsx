@@ -22,7 +22,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.20.0";
+const APP_VERSION = "1.21.0";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -181,8 +181,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   // standalone PWAs (some Android builds silently no-op it instead of
   // showing a dialog, leaving the toggle stuck on "unpaid" with no way to
   // enter an amount). null when closed, else {nid, cleanTitle}.
+  // payAmountPrompt.kind distinguishes "paid" (asks amount received + how —
+  // cash/check) from "unpaid" (asks amount owed, no method — nothing's
+  // been collected yet to have a method).
   const [payAmountPrompt, setPayAmountPrompt] = useState(null);
   const [payAmountInput, setPayAmountInput] = useState("");
+  const [payMethodInput, setPayMethodInput] = useState(null); // "cash" | "check" | null
+  const [paymentMethod, setPaymentMethod] = useState({}); // { [nid]: "cash" | "check" }
   // Accounts receivable — persists across days (not scoped to selectedDate
   // like mileage/jobValues), so it lives in its own always-loaded key.
   const [unpaidAccounts, setUnpaidAccounts] = useState(() => {
@@ -1088,7 +1093,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       if (rows.length <= 1 && !isRetry && localStorage.getItem("techportal_logSheetId")) {
         localStorage.removeItem("techportal_logSheetId"); setLogSheetId(null); setStatusLoading(false); loadingStatusesRef.current = false; loadJobStatuses(true); return;
       }
-      const newCI = {}; const newCO = {}; const newComp = {}; const newInv = {}; const newValues = {}; const newPaymentStatus = {};
+      const newCI = {}; const newCO = {}; const newComp = {}; const newInv = {}; const newValues = {}; const newPaymentStatus = {}; const newPaymentMethod = {};
       let loadedStarted = false; let loadedFinished = false; let loadedStatus = "";
       let lastMileageRow = null; let lastGpsRow = null;
       todayRows.forEach(row => { if (row[1] === "__MILEAGE_LOG__") lastMileageRow = row; if (row[1] === "__GPS_TRACK__") lastGpsRow = row; });
@@ -1122,12 +1127,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         if (jobId === "__DAY_STARTED__") { loadedStarted = true; loadedStatus = "Day started at " + extra; }
         if (jobId === "__DAY_FINISHED__") { if (status !== "unfinished") { loadedStarted = true; loadedFinished = true; loadedStatus = extra; } }
         if (jobId && !jobId.startsWith("__")) {
-          const baseId = normalizeId(jobId.replace(/__ci$/, "").replace(/__co$/, "").replace(/__done$/, "").replace(/__invoice$/, "").replace(/__value$/, "").replace(/__paid$/, ""));
+          const baseId = normalizeId(jobId.replace(/__ci$/, "").replace(/__co$/, "").replace(/__done$/, "").replace(/__invoice$/, "").replace(/__value$/, "").replace(/__paid$/, "").replace(/__method$/, ""));
           if (status === "checkedIn") newCI[baseId] = extra || "—";
           if (status === "checkedOut") newCO[baseId] = extra || "—";
           if (status === "completed") { newComp[baseId] = true; newCI[baseId] = newCI[baseId] || "—"; }
           if (status === "jobValue") { const v = parseFloat(extra); if (!isNaN(v)) newValues[baseId] = v; }
           if (status === "paid" || status === "unpaid") newPaymentStatus[baseId] = status;
+          if (status === "cash" || status === "check") newPaymentMethod[baseId] = status;
           // "missed" is its own status value (written by handleMissed) distinct
           // from "completed" — it needs to count as done for job-status
           // purposes too, or the job silently reverts to "Scheduled" on any
@@ -1140,7 +1146,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
             }
           }
           if (status === "invoiced") newInv[baseId] = extra || "";
-          if (status === "undone") { delete newCI[baseId]; delete newCO[baseId]; delete newComp[baseId]; delete newPaymentStatus[baseId]; }
+          if (status === "undone") { delete newCI[baseId]; delete newCO[baseId]; delete newComp[baseId]; delete newPaymentStatus[baseId]; delete newPaymentMethod[baseId]; }
         }
       });
       // ── Stale-read guard: check-in / check-out / completed ───────────────
@@ -1169,6 +1175,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         else if (key.endsWith("__done")) { const id = normalizeId(key.slice(0, -6)); if (entry.status === "completed" || entry.status === "missed") { newComp[id] = true; reconciledCount++; } if (entry.status === "undone") delete newComp[id]; }
         else if (key.endsWith("__value")) { const id = normalizeId(key.slice(0, -7)); const v = parseFloat(entry.extra); if (entry.status === "jobValue" && !isNaN(v)) { newValues[id] = v; reconciledCount++; } }
         else if (key.endsWith("__paid")) { const id = normalizeId(key.slice(0, -6)); if (entry.status === "paid" || entry.status === "unpaid") { newPaymentStatus[id] = entry.status; reconciledCount++; } if (entry.status === "undone") delete newPaymentStatus[id]; }
+        else if (key.endsWith("__method")) { const id = normalizeId(key.slice(0, -8)); if (entry.status === "cash" || entry.status === "check") { newPaymentMethod[id] = entry.status; reconciledCount++; } if (entry.status === "undone") delete newPaymentMethod[id]; }
       });
       if (reconciledCount > 0) dbg("♻️ Reconciled " + reconciledCount + " in-flight/recent pending write(s) over sheet read", "warn");
       if (missedFromSheet.length > 0) {
@@ -1179,7 +1186,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           dbg("⚠️ Rebuilt " + missedFromSheet.length + " missed-job entry(ies) from sheet data", "warn");
         } catch {}
       }
-      setCheckedIn(newCI); setCheckedOut(newCO); setCompleted(newComp); setInvoicedJobs(newInv); setJobValues(newValues); setPaymentStatus(newPaymentStatus);
+      setCheckedIn(newCI); setCheckedOut(newCO); setCompleted(newComp); setInvoicedJobs(newInv); setJobValues(newValues); setPaymentStatus(newPaymentStatus); setPaymentMethod(newPaymentMethod);
       try { const k = "techportal_jobValues_" + selectedDate.toDateString(); localStorage.setItem(k, JSON.stringify(newValues)); } catch {}
       try { const ck = JOB_STATUS_CACHE_KEY + selectedDate.toDateString(); localStorage.setItem(ck, JSON.stringify({ checkedIn: newCI, checkedOut: newCO, completed: newComp, invoiced: newInv })); } catch {}
       if (loadedStarted) { setDayStarted(true); if (!lastPositionRef.current && locationRef.current) setLastPos({ lat: locationRef.current.lat, lng: locationRef.current.lng }); try { const sp = localStorage.getItem("techportal_startPos"); if (sp) startPosRef.current = JSON.parse(sp); } catch {} }
@@ -1741,7 +1748,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       saveMissedJobs(missedJobs.filter(m => m.jobId !== jobId));
     }
     updateCalendarEvent(job, { checkIn: checkedIn[jobId], checkOut: checkedOut[jobId], completed: true, invoiceUrl: invoicedJobs[jobId] });
-    if (paymentChoice === "paid") markPaidStatus(nid);
+    if (paymentChoice === "paid") openPaidPrompt(nid, cleanTitle);
     else markUnpaidStatus(nid, cleanTitle);
   };
 
@@ -1750,11 +1757,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     setCheckedIn((prev) => { const n = { ...prev }; delete n[jobId]; return n; });
     setCheckedOut((prev) => { const n = { ...prev }; delete n[jobId]; return n; });
     setPaymentStatus((prev) => { const n = { ...prev }; delete n[normalizeId(jobId)]; return n; });
+    setPaymentMethod((prev) => { const n = { ...prev }; delete n[normalizeId(jobId)]; return n; });
     saveMileage((prev) => prev.filter((m) => m.jobId !== jobId));
     setPending(jobId + "__ci", { status: "undone", extra: "" });
     setPending(jobId + "__co", { status: "undone", extra: "" });
     setPending(jobId + "__done", { status: "undone", extra: "" });
     setPending(jobId + "__paid", { status: "undone", extra: "" });
+    setPending(jobId + "__method", { status: "undone", extra: "" });
     delete checkInLockRef.current[jobId];
     delete cascadedTodayRef.current[normalizeId(jobId)];
     delete paymentLinkRef.current[normalizeId(jobId)];
@@ -1810,11 +1819,33 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     addAccount(amount);
   };
 
-  // Shared by the job-card Paid/Unpaid toggle and the Paid/Awaiting Payment
-  // choice shown right after marking a job complete.
-  const markPaidStatus = (nid) => {
+  // Opens the amount + how-they-paid (cash/check) prompt — shared by the
+  // job-card Paid/Unpaid toggle and the choice shown right after marking a
+  // job complete. Prefills the amount from Today's Earnings if one's
+  // already set, but always asks for the payment method since that's
+  // never been captured yet even if a $ value was.
+  const openPaidPrompt = (nid, cleanTitle) => {
+    const existingVal = jobValues[nid];
+    setPayAmountPrompt({ nid, cleanTitle, kind: "paid" });
+    setPayAmountInput(existingVal != null && !isNaN(existingVal) ? String(existingVal) : "");
+    setPayMethodInput(null);
+  };
+
+  // Actually commits a "paid" job: marks it paid, records how (cash/check),
+  // adds the amount into Today's Earnings, and — if this job had an open
+  // Unpaid Accounts entry from an earlier "awaiting payment" — closes that
+  // entry out so paid/unpaid never leaves duplicate or orphaned AR rows.
+  const markPaidStatusWithDetails = (nid, amount, method) => {
     setPaymentStatus(prev => ({ ...prev, [nid]: "paid" }));
     setPending(nid + "__paid", { status: "paid", extra: "" });
+    setPaymentMethod(prev => ({ ...prev, [nid]: method }));
+    setPending(nid + "__method", { status: method, extra: "" });
+    setJobValues(prev => {
+      const next = { ...prev, [nid]: amount };
+      try { localStorage.setItem("techportal_jobValues_" + selectedDate.toDateString(), JSON.stringify(next)); } catch {}
+      return next;
+    });
+    setPending(nid + "__value", { status: "jobValue", extra: String(amount) });
     flushStatusSaves();
     const linkedKey = paymentLinkRef.current[nid];
     if (linkedKey) {
@@ -1843,21 +1874,20 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       addUnpaidAccountForJob(nid, cleanTitle, existingVal);
       return;
     }
-    setPayAmountPrompt({ nid, cleanTitle });
+    setPayAmountPrompt({ nid, cleanTitle, kind: "unpaid" });
     setPayAmountInput("");
   };
 
   // Quick Paid/Unpaid toggle right on the job card — separate from the full
   // invoice flow, for jobs you're tracking payment on without generating a
   // formal invoice. Toggling to "unpaid" creates an Unpaid Accounts entry;
-  // toggling back to "paid" closes out that specific entry via
-  // paymentLinkRef, so going back and forth doesn't leave duplicate or
-  // orphaned rows.
+  // toggling to "paid" opens the same amount+method prompt the complete
+  // flow uses, so however you get to "paid" it's captured the same way.
   const handleTogglePaid = (jobId, jobTitle) => {
     const nid = normalizeId(jobId);
     const current = paymentStatus[nid];
     const cleanTitle = (jobTitle || "This job").replace(/^(⚠️ MISSED - )+/, "");
-    if (current === "unpaid") { markPaidStatus(nid); return; }
+    if (current === "unpaid") { openPaidPrompt(nid, cleanTitle); return; }
     markUnpaidStatus(nid, cleanTitle);
   };
 
@@ -1892,7 +1922,17 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const handleConfirmPayAmount = () => {
     const amount = parseFloat(payAmountInput.trim());
     if (isNaN(amount) || amount < 0) { alert("Enter a valid dollar amount."); return; }
-    const { nid, cleanTitle } = payAmountPrompt;
+    const { nid, cleanTitle, kind } = payAmountPrompt;
+
+    if (kind === "paid") {
+      if (!payMethodInput) { alert("Select Cash or Check."); return; }
+      markPaidStatusWithDetails(nid, amount, payMethodInput);
+      setPayAmountPrompt(null);
+      setPayAmountInput("");
+      setPayMethodInput(null);
+      return;
+    }
+
     if (amount === 0) {
       // Nothing owed — leave it as paid, no Unpaid Accounts entry needed.
       setPayAmountPrompt(null);
@@ -2214,20 +2254,33 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               )
         )
       ),
-      payAmountPrompt && React.createElement("div", { style: styles.overlay, onClick: () => { setPayAmountPrompt(null); setPayAmountInput(""); } },
+      payAmountPrompt && React.createElement("div", { style: styles.overlay, onClick: () => { setPayAmountPrompt(null); setPayAmountInput(""); setPayMethodInput(null); } },
         React.createElement("div", { style: styles.modalBox, onClick: e => e.stopPropagation() },
           React.createElement("div", { style: styles.modalHeader },
-            React.createElement("div", { style: styles.modalTitle }, "Amount owed for " + payAmountPrompt.cleanTitle),
-            React.createElement("button", { style: styles.modalClose, onClick: () => { setPayAmountPrompt(null); setPayAmountInput(""); } }, "×")
+            React.createElement("div", { style: styles.modalTitle }, (payAmountPrompt.kind === "paid" ? "Payment for " : "Amount owed for ") + payAmountPrompt.cleanTitle),
+            React.createElement("button", { style: styles.modalClose, onClick: () => { setPayAmountPrompt(null); setPayAmountInput(""); setPayMethodInput(null); } }, "×")
           ),
           React.createElement("div", { style: { padding: "1.25rem" } },
-            React.createElement("label", { style: { fontSize: 13, color: "#666", display: "block", marginBottom: 6 } }, "Amount owed ($) — enter 0 if already paid"),
+            React.createElement("label", { style: { fontSize: 13, color: "#666", display: "block", marginBottom: 6 } }, payAmountPrompt.kind === "paid" ? "Amount received ($)" : "Amount owed ($) — enter 0 if already paid"),
             React.createElement("input", {
               type: "number", inputMode: "decimal", autoFocus: true, value: payAmountInput,
               onChange: e => setPayAmountInput(e.target.value),
-              onKeyDown: e => { if (e.key === "Enter") handleConfirmPayAmount(); },
+              onKeyDown: e => { if (e.key === "Enter" && (payAmountPrompt.kind !== "paid" || payMethodInput)) handleConfirmPayAmount(); },
               style: { width: "100%", padding: "10px 12px", fontSize: 16, borderRadius: 8, border: "1px solid #ccc", boxSizing: "border-box", marginBottom: 14 },
             }),
+            payAmountPrompt.kind === "paid" && React.createElement("div", { style: { marginBottom: 14 } },
+              React.createElement("label", { style: { fontSize: 13, color: "#666", display: "block", marginBottom: 6 } }, "How'd they pay?"),
+              React.createElement("div", { style: { display: "flex", gap: 8 } },
+                React.createElement("button", {
+                  onClick: () => setPayMethodInput("cash"),
+                  style: { flex: 1, padding: "10px", borderRadius: 8, border: payMethodInput === "cash" ? "2px solid #27500A" : "1px solid #ccc", background: payMethodInput === "cash" ? "#EAF3DE" : "#fff", color: payMethodInput === "cash" ? "#27500A" : "#444", cursor: "pointer", fontWeight: 600, fontSize: 14 },
+                }, "💵 Cash"),
+                React.createElement("button", {
+                  onClick: () => setPayMethodInput("check"),
+                  style: { flex: 1, padding: "10px", borderRadius: 8, border: payMethodInput === "check" ? "2px solid #0C447C" : "1px solid #ccc", background: payMethodInput === "check" ? "#E6F1FB" : "#fff", color: payMethodInput === "check" ? "#0C447C" : "#444", cursor: "pointer", fontWeight: 600, fontSize: 14 },
+                }, "📝 Check")
+              )
+            ),
             React.createElement("button", { onClick: handleConfirmPayAmount, style: { width: "100%", padding: "10px", borderRadius: 8, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 } }, "Save")
           )
         )
@@ -2352,9 +2405,22 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           : jobs.map((job) => {
               const nid = normalizeId(job.id);
               const val = jobValues[nid];
-              return React.createElement("div", { key: job.id, style: { ...styles.mileageRow, cursor: "pointer" }, onClick: () => handleSetJobValue(nid, job.title) },
-                React.createElement("span", null, job.title),
-                React.createElement("span", { style: val != null ? styles.mileageVal : { color: "#bbb", fontStyle: "italic" } }, val != null ? "$" + val.toFixed(2) : "+ add $")
+              const pStatus = paymentStatus[nid];
+              const method = paymentMethod[nid];
+              // Paid jobs turn green, awaiting-payment jobs turn red, so
+              // payment status reads at a glance without opening each job.
+              const rowTint = pStatus === "paid" ? { background: "#EAF3DE" } : pStatus === "unpaid" ? { background: "#FBE1DE" } : {};
+              const textColor = pStatus === "paid" ? "#27500A" : pStatus === "unpaid" ? "#B23A24" : "#1a1a1a";
+              const valueLabel = val != null
+                ? "$" + val.toFixed(2) + (pStatus === "paid" && method ? " · " + (method === "cash" ? "Cash" : "Check") : "")
+                : "+ add $";
+              return React.createElement("div", {
+                key: job.id,
+                style: { ...styles.mileageRow, cursor: "pointer", borderRadius: 6, padding: "4px 6px", margin: "1px 0", ...rowTint },
+                onClick: () => handleSetJobValue(nid, job.title),
+              },
+                React.createElement("span", { style: { color: textColor } }, job.title),
+                React.createElement("span", { style: val != null ? { ...styles.mileageVal, color: textColor } : { color: "#bbb", fontStyle: "italic" } }, valueLabel)
               );
             }),
         React.createElement("div", { style: styles.mileageTotal },
@@ -2398,6 +2464,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               checkedIn: checkedIn[nid], checkedOut: checkedOut[nid], completed: completed[nid],
               invoiceUrl: invoicedJobs[nid], isNearby,
               paymentStatus: paymentStatus[nid],
+              paymentMethod: paymentMethod[nid],
               accessToken: accessTokenRef.current,
               logSheetId,
               onTimeUpdated: refresh,

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 
 export default function JobDetailModal({
   job, accessToken, checkedIn, checkedOut, completed, onClose, onNotesSaved, logSheetId,
-  onUndo, onInvoice, invoiceUrl, paymentStatus, onTogglePaid,
+  onUndo, onInvoice, invoiceUrl, paymentStatus, paymentMethod, onTogglePaid,
 }) {
   const [notes, setNotes] = useState("");
   const [photos, setPhotos] = useState([]);
@@ -168,7 +168,7 @@ export default function JobDetailModal({
                     background: paymentStatus === "paid" ? "#EAF3DE" : "#FAEEDA",
                     color: paymentStatus === "paid" ? "#27500A" : "#633806",
                   },
-                }, paymentStatus === "paid" ? "💳 Paid — tap to mark unpaid" : "⏳ Awaiting Payment — tap to mark paid"),
+                }, paymentStatus === "paid" ? "💳 Paid" + (paymentMethod ? " (" + (paymentMethod === "cash" ? "Cash" : "Check") + ")" : "") + " — tap to mark unpaid" : "⏳ Awaiting Payment — tap to mark paid"),
                 completed && (invoiceUrl
                   ? React.createElement("a", {
                       href: invoiceUrl, target: "_blank", rel: "noreferrer",

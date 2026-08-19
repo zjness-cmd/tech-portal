@@ -77,7 +77,7 @@ export default function JobCard({
   job, location, status, checkedIn, checkedOut, completed, invoiceUrl,
   onCheckIn, onCheckOut, onComplete, onNavigate, onUndo, onInvoice, onMissed,
   isNearby, accessToken, onTimeUpdated, onNotesSaved, logSheetId,
-  paymentStatus, onTogglePaid, website,
+  paymentStatus, paymentMethod, onTogglePaid, website,
 }) {
   const [imgFailed, setImgFailed] = useState(false);
   const [imgChecked, setImgChecked] = useState(false);
@@ -184,7 +184,7 @@ export default function JobCard({
         onClose: () => setShowDetail(false),
         onNotesSaved,
         logSheetId,
-        onUndo, onInvoice, invoiceUrl, paymentStatus, onTogglePaid,
+        onUndo, onInvoice, invoiceUrl, paymentStatus, paymentMethod, onTogglePaid,
       }),
 
       // ── Time edit modal ─────────────────────────────────────────────────
@@ -302,7 +302,7 @@ export default function JobCard({
         // job detail view now — tap the card to reach it — so this row
         // stays to one action per state instead of accumulating buttons.
         completed &&
-          React.createElement("span", { style: s.checkedInLabel }, "✅ Completed · " + (paymentStatus === "paid" ? "Paid" : "Awaiting Payment"))
+          React.createElement("span", { style: s.checkedInLabel }, "✅ Completed · " + (paymentStatus === "paid" ? "Paid" + (paymentMethod ? " (" + (paymentMethod === "cash" ? "Cash" : "Check") + ")" : "") : "Awaiting Payment"))
       )
     )
   );
