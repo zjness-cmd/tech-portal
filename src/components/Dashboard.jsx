@@ -22,7 +22,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.21.0";
+const APP_VERSION = "1.21.1";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -1588,7 +1588,30 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       dbg("⏭️ Skipping cascade for " + job.title + " — already rescheduled today", "warn");
       return;
     }
-    const scheduledStart = new Date(job.startRaw);
+    // Read the calendar's CURRENT truth for this job before computing the
+    // delta — job.startRaw is local React state and can be stale if an
+    // earlier job's cascade already shifted this same event moments ago
+    // and the UI hasn't refreshed yet. Computing the delta against a
+    // stale (pre-shift) time would then get applied on top of the
+    // already-shifted live time by shiftCalendarEventTime (which always
+    // refetches live and adds deltaMs to that), silently double-shifting
+    // the event. This is exactly what caused Angenos to end up at 8:16 AM
+    // on the calendar (11:08 AM check-in, minus the same 172-minute delta
+    // applied a second time) instead of the correct 11:08 AM.
+    let scheduledStart = new Date(job.startRaw);
+    try {
+      const token = accessTokenRef.current;
+      if (token && job.calendarId) {
+        const liveRes = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(job.calendarId) + "/events/" + job.id, { headers: { Authorization: "Bearer " + token } });
+        if (liveRes.ok) {
+          const live = await liveRes.json();
+          if (live.start?.dateTime) scheduledStart = new Date(live.start.dateTime);
+        }
+      }
+    } catch (e) {
+      // Fall back to local job.startRaw below if the live fetch fails —
+      // better to cascade off a possibly-stale time than not at all.
+    }
     if (isNaN(scheduledStart)) return;
     const deltaMs = actualTime.getTime() - scheduledStart.getTime();
     if (Math.abs(deltaMs) < CASCADE_THRESHOLD_MS) return;

@@ -3,9 +3,9 @@ import { useMonthCalendarJobs } from "../hooks/useMonthCalendarJobs";
 import { shiftCalendarEventByDays } from "../lib/calendarEvents";
 
 const COLORS = {
-  scheduled: { bg: "#E6F1FB", color: "#0C447C" },
-  done: { bg: "#EAF3DE", color: "#27500A" },
-  missed: { bg: "#FBE1DE", color: "#B23A24" },
+  scheduled: { bg: "linear-gradient(135deg, #4FA8F0, #1868C4)", color: "#fff", shadow: "rgba(24,104,196,0.4)" },
+  done: { bg: "linear-gradient(135deg, #7ED957, #2E9E3F)", color: "#fff", shadow: "rgba(46,158,63,0.4)" },
+  missed: { bg: "linear-gradient(135deg, #FF7A6B, #E13B2B)", color: "#fff", shadow: "rgba(225,59,43,0.4)" },
 };
 
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -196,24 +196,30 @@ export default function CalendarMonthView({ accessToken, initialDate, onSelectDa
           least-invasive way to get a hover effect on job chips (mouse/
           trackpad only; touch has no hover state, which is expected). */}
       <style>{`
-        .tp-job-chip { transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease; }
-        .tp-job-chip:hover { transform: translateY(-1px) scale(1.04); box-shadow: 0 3px 10px rgba(0,0,0,0.18); filter: brightness(0.96); }
+        .tp-job-chip { transition: transform 0.14s ease, box-shadow 0.14s ease, filter 0.14s ease; }
+        .tp-job-chip:hover { transform: translateY(-2px) scale(1.05); filter: brightness(1.1); }
+        .tp-icon-btn { transition: transform 0.12s ease, background 0.12s ease; }
+        .tp-icon-btn:hover { transform: scale(1.12); background: rgba(255,255,255,0.15); }
+        .tp-nav-btn { transition: transform 0.12s ease, background 0.12s ease; }
+        .tp-nav-btn:hover { transform: scale(1.15); background: rgba(255,255,255,0.28); }
+        .tp-today-btn:hover { color: #fff; }
+        .tp-day-cell { transition: background 0.12s ease, box-shadow 0.12s ease; }
       `}</style>
       <div style={styles.header}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <button style={styles.backBtn} onClick={onClose} aria-label="Close month view">←</button>
+          <button className="tp-icon-btn" style={styles.backBtn} onClick={onClose} aria-label="Close month view">←</button>
           <div style={styles.headerTitle}>📅 Job Calendar</div>
         </div>
-        <button style={styles.refreshBtn} onClick={refresh} title="Refresh">↻</button>
+        <button className="tp-icon-btn" style={styles.refreshBtn} onClick={refresh} title="Refresh">↻</button>
       </div>
 
       <div style={styles.monthNav}>
-        <button style={styles.navBtn} onClick={goPrevMonth} aria-label="Previous month">‹</button>
+        <button className="tp-nav-btn" style={styles.navBtn} onClick={goPrevMonth} aria-label="Previous month">‹</button>
         <div style={styles.monthNavCenter}>
           <div style={styles.monthNavLabel}>{monthLabel}</div>
-          <button style={styles.todayBtn} onClick={goToday}>Today</button>
+          <button className="tp-today-btn" style={styles.todayBtn} onClick={goToday}>Today</button>
         </div>
-        <button style={styles.navBtn} onClick={goNextMonth} aria-label="Next month">›</button>
+        <button className="tp-nav-btn" style={styles.navBtn} onClick={goNextMonth} aria-label="Next month">›</button>
       </div>
 
       <div style={styles.hint}>Tap a job to open it · press &amp; drag to reschedule to another day</div>
@@ -240,6 +246,7 @@ export default function CalendarMonthView({ accessToken, initialDate, onSelectDa
                   <div
                     key={key}
                     data-daykey={key}
+                    className="tp-day-cell"
                     style={{
                       ...styles.dayCell,
                       ...(inMonth ? {} : styles.dayCellOutside),
@@ -258,7 +265,7 @@ export default function CalendarMonthView({ accessToken, initialDate, onSelectDa
                           <div
                             key={job.id}
                             className="tp-job-chip"
-                            style={{ ...styles.chip, background: c.bg, color: c.color, ...(isBeingDragged ? styles.chipDragging : {}) }}
+                            style={{ ...styles.chip, background: c.bg, color: c.color, boxShadow: "0 2px 6px " + c.shadow, ...(isBeingDragged ? styles.chipDragging : {}) }}
                             title={job.title}
                             onPointerDown={(e) => handleChipPointerDown(e, job, key)}
                             onPointerMove={handleChipPointerMove}
@@ -299,14 +306,14 @@ export default function CalendarMonthView({ accessToken, initialDate, onSelectDa
 
 const styles = {
   overlay: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "#fff", zIndex: 600, overflowY: "auto", fontFamily: "system-ui, sans-serif" },
-  header: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "1rem 1.5rem", borderBottom: "0.5px solid #e0e0e0", position: "sticky", top: 0, background: "#fff", zIndex: 2 },
-  backBtn: { fontSize: 18, background: "none", border: "none", cursor: "pointer", color: "#1a1a1a", padding: "4px 6px" },
-  headerTitle: { fontSize: 15, fontWeight: 600, color: "#1a1a1a" },
-  refreshBtn: { fontSize: 18, background: "none", border: "none", cursor: "pointer", color: "#555", padding: "4px 8px" },
-  monthNav: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0.75rem 1.5rem", background: "#185FA5" },
-  navBtn: { fontSize: 18, padding: "4px 14px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", cursor: "pointer", fontWeight: 700 },
+  header: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "1rem 1.5rem", position: "sticky", top: 0, background: "linear-gradient(135deg, #0F2A4A, #1B4F8C)", zIndex: 2, boxShadow: "0 2px 10px rgba(15,42,74,0.25)" },
+  backBtn: { fontSize: 18, background: "none", border: "none", cursor: "pointer", color: "#fff", padding: "4px 6px", borderRadius: 6 },
+  headerTitle: { fontSize: 15, fontWeight: 700, color: "#fff", letterSpacing: "0.01em" },
+  refreshBtn: { fontSize: 18, background: "none", border: "none", cursor: "pointer", color: "#cfe3f7", padding: "4px 8px", borderRadius: 6 },
+  monthNav: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0.85rem 1.5rem", background: "linear-gradient(120deg, #145DA0 0%, #6A3DE8 100%)", boxShadow: "0 3px 12px rgba(90,50,200,0.25)" },
+  navBtn: { fontSize: 18, padding: "4px 14px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.18)", color: "#fff", cursor: "pointer", fontWeight: 700 },
   monthNavCenter: { textAlign: "center" },
-  monthNavLabel: { fontSize: 15, fontWeight: 700, color: "#fff" },
+  monthNavLabel: { fontSize: 16, fontWeight: 800, color: "#fff", letterSpacing: "0.01em" },
   todayBtn: { fontSize: 11, color: "rgba(255,255,255,0.85)", background: "none", border: "none", cursor: "pointer", marginTop: 2, textDecoration: "underline" },
   hint: { fontSize: 11, color: "#999", textAlign: "center", padding: "6px 1rem", background: "#f5f5f3", borderBottom: "0.5px solid #eee" },
   message: { fontSize: 14, color: "#888", padding: "2rem 0", textAlign: "center" },
@@ -314,16 +321,16 @@ const styles = {
   weekdayRow: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", borderBottom: "0.5px solid #e0e0e0", background: "#f5f5f3" },
   weekdayCell: { fontSize: 11, fontWeight: 700, color: "#888", textAlign: "center", padding: "6px 2px", textTransform: "uppercase", letterSpacing: "0.03em" },
   weekRow: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", borderBottom: "0.5px solid #eee" },
-  dayCell: { minHeight: 64, padding: "4px 3px 6px", borderRight: "0.5px solid #eee", cursor: "pointer", display: "flex", flexDirection: "column", gap: 3, boxSizing: "border-box", transition: "background 0.1s" },
+  dayCell: { minHeight: 64, padding: "4px 3px 6px", borderRight: "0.5px solid #eee", cursor: "pointer", display: "flex", flexDirection: "column", gap: 3, boxSizing: "border-box" },
   dayCellOutside: { background: "#fafafa", opacity: 0.45 },
-  dayCellDropTarget: { background: "#E6F1FB", boxShadow: "inset 0 0 0 2px #185FA5" },
-  dayNumber: { fontSize: 12, fontWeight: 600, color: "#444", width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "50%" },
-  dayNumberToday: { background: "#185FA5", color: "#fff" },
+  dayCellDropTarget: { background: "linear-gradient(135deg, #E6F1FB, #EFE7FB)", boxShadow: "inset 0 0 0 2px #6A3DE8" },
+  dayNumber: { fontSize: 12, fontWeight: 700, color: "#444", width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "50%" },
+  dayNumberToday: { background: "linear-gradient(135deg, #FF7A59, #FF3D71)", color: "#fff", boxShadow: "0 2px 8px rgba(255,61,113,0.5)" },
   jobChips: { display: "flex", flexDirection: "column", gap: 2 },
-  chip: { fontSize: 10, lineHeight: 1.25, padding: "3px 4px", borderRadius: 4, overflowWrap: "anywhere", cursor: "grab", touchAction: "none", userSelect: "none", WebkitTouchCallout: "none" },
+  chip: { fontSize: 10, lineHeight: 1.25, padding: "3px 5px", borderRadius: 6, overflowWrap: "anywhere", cursor: "grab", touchAction: "none", userSelect: "none", WebkitTouchCallout: "none", fontWeight: 700 },
   chipDragging: { opacity: 0.35 },
-  ghost: { position: "fixed", zIndex: 700, transform: "translate(-50%, -140%)", background: "#185FA5", color: "#fff", fontSize: 11, fontWeight: 600, padding: "6px 10px", borderRadius: 8, boxShadow: "0 6px 20px rgba(0,0,0,0.3)", pointerEvents: "none", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  toast: { position: "fixed", left: "50%", bottom: 24, transform: "translateX(-50%)", background: "#1a1a2e", color: "#fff", fontSize: 13, padding: "10px 14px", borderRadius: 10, boxShadow: "0 6px 20px rgba(0,0,0,0.3)", display: "flex", alignItems: "center", gap: 12, zIndex: 700, maxWidth: "90vw" },
+  ghost: { position: "fixed", zIndex: 700, transform: "translate(-50%, -140%)", background: "linear-gradient(135deg, #185FA5, #6A3DE8)", color: "#fff", fontSize: 11, fontWeight: 700, padding: "6px 10px", borderRadius: 8, boxShadow: "0 6px 20px rgba(60,30,140,0.4)", pointerEvents: "none", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  toast: { position: "fixed", left: "50%", bottom: 24, transform: "translateX(-50%)", background: "linear-gradient(135deg, #1a1a2e, #2b1a4e)", color: "#fff", fontSize: 13, padding: "10px 14px", borderRadius: 10, boxShadow: "0 6px 20px rgba(0,0,0,0.35)", display: "flex", alignItems: "center", gap: 12, zIndex: 700, maxWidth: "90vw" },
   toastText: { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
-  toastUndo: { background: "none", border: "none", color: "#7dd3fc", fontWeight: 700, fontSize: 13, cursor: "pointer", flexShrink: 0 },
+  toastUndo: { background: "none", border: "none", color: "#a78bfa", fontWeight: 700, fontSize: 13, cursor: "pointer", flexShrink: 0 },
 };
