@@ -22,7 +22,13 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.21.1";
+const APP_VERSION = "1.22.0";
+
+// Used to build the mailto: invoice sent from Unpaid Accounts — matches the
+// info already used in InvoiceModal.jsx's Sheets invoice path, so both
+// invoicing flows show the same business details.
+const INVOICE_BUSINESS = { name: "Ness Draft Beer Service", addr1: "PO Box 222", addr2: "Albertville, MN 55301", phone: "612-293-9459" };
+const INVOICE_SQUARE_PAY_URL = "https://checkout.square.site/merchant/ML3V5FZFEF5B8/checkout/R6IKWK56UNMU6GSPBHVPLIBY";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -188,6 +194,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [payAmountInput, setPayAmountInput] = useState("");
   const [payMethodInput, setPayMethodInput] = useState(null); // "cash" | "check" | null
   const [paymentMethod, setPaymentMethod] = useState({}); // { [nid]: "cash" | "check" }
+  // "Send Invoice" prompt from the Unpaid Accounts page — asks for the
+  // customer's email (not otherwise captured anywhere for an AR entry),
+  // then opens a pre-filled mailto: so the phone/computer's own mail app
+  // sends it — no email-sending backend needed. null when closed, else
+  // {key}. The email itself is remembered on the account for next time.
+  const [invoiceEmailPrompt, setInvoiceEmailPrompt] = useState(null);
+  const [invoiceEmailInput, setInvoiceEmailInput] = useState("");
   // Accounts receivable — persists across days (not scoped to selectedDate
   // like mileage/jobValues), so it lives in its own always-loaded key.
   const [unpaidAccounts, setUnpaidAccounts] = useState(() => {
@@ -949,6 +962,84 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     });
     saveARAccountRow(updated, true);
     dbg("💳 Updated unpaid account: " + account.name + " → $" + amount);
+  };
+
+  // Deterministic per account — same invoice number every time you reopen
+  // the Send Invoice prompt (e.g. to resend), derived from the account's
+  // own id (already unique) rather than today's date, so it doesn't shift
+  // if you resend on a different day than you first created the entry.
+  const invoiceNumberFor = (account) => {
+    if (account.invoiceNumber) return account.invoiceNumber;
+    const digits = String(account.id || account._key || "").replace(/\D/g, "");
+    return "INV-" + (digits.slice(-8) || Date.now().toString().slice(-8));
+  };
+
+  const handleOpenInvoicePrompt = (key) => {
+    const account = unpaidAccounts.find(a => a._key === key);
+    if (!account) return;
+    if (!account.invoiceNumber) {
+      const updated = { ...account, invoiceNumber: invoiceNumberFor(account) };
+      setUnpaidAccounts(prev => {
+        const next = prev.map(a => a._key === key ? updated : a);
+        try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
+        return next;
+      });
+    }
+    setInvoiceEmailInput(account.email || "");
+    setInvoiceEmailPrompt({ key });
+  };
+
+  // Builds a pre-filled mailto: link and hands it to the phone/computer's
+  // own mail app to actually send — no email-sending backend required.
+  // Includes the invoice # in both the Square payment line and the check
+  // memo instructions so a payment can be matched back to this invoice
+  // either way.
+  const handleSendInvoice = () => {
+    if (!invoiceEmailPrompt) return;
+    const email = invoiceEmailInput.trim();
+    if (!email || !email.includes("@")) { alert("Enter a valid email address."); return; }
+    const key = invoiceEmailPrompt.key;
+    const account = unpaidAccounts.find(a => a._key === key);
+    if (!account) { setInvoiceEmailPrompt(null); return; }
+    const invoiceNumber = account.invoiceNumber || invoiceNumberFor(account);
+    const updated = { ...account, email, invoiceNumber };
+    setUnpaidAccounts(prev => {
+      const next = prev.map(a => a._key === key ? updated : a);
+      try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
+      return next;
+    });
+    saveARAccountRow(updated, true);
+
+    const amountStr = "$" + account.amount.toFixed(2);
+    const subject = "Invoice " + invoiceNumber + " from " + INVOICE_BUSINESS.name;
+    const body = [
+      "Hi " + account.name + ",",
+      "",
+      "Here's your invoice for beer line cleaning service.",
+      "",
+      "Invoice #: " + invoiceNumber,
+      "Amount due: " + amountStr,
+      "",
+      "Pay online by card:",
+      INVOICE_SQUARE_PAY_URL,
+      "(enter invoice #" + invoiceNumber + " when prompted so it's matched to this invoice)",
+      "",
+      "Or mail a check to:",
+      INVOICE_BUSINESS.name,
+      INVOICE_BUSINESS.addr1,
+      INVOICE_BUSINESS.addr2,
+      "(please write invoice #" + invoiceNumber + " on the memo line)",
+      "",
+      "Thanks for your business!",
+      INVOICE_BUSINESS.name,
+      INVOICE_BUSINESS.phone,
+    ].join("\n");
+
+    const mailto = "mailto:" + encodeURIComponent(email) + "?subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
+    window.location.href = mailto;
+    dbg("✉️ Invoice mailto opened for " + account.name + " — " + invoiceNumber);
+    setInvoiceEmailPrompt(null);
+    setInvoiceEmailInput("");
   };
 
   const handleMarkPaid = (key) => {
@@ -2165,6 +2256,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
                   ),
                   React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
                     React.createElement("span", { style: styles.mileageVal }, "$" + a.amount.toFixed(2)),
+                    React.createElement("button", { onClick: (e) => { e.stopPropagation(); handleOpenInvoicePrompt(key); }, style: { fontSize: 11, padding: "3px 8px", borderRadius: 6, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontWeight: 500 }, title: "Email an invoice" }, "✉️ Invoice"),
                     React.createElement("button", { onClick: (e) => { e.stopPropagation(); handleMarkPaid(key); }, style: { fontSize: 11, padding: "3px 8px", borderRadius: 6, background: "#27500A", color: "#fff", border: "none", cursor: "pointer", fontWeight: 500 }, title: "Mark as paid" }, "✓ Paid"),
                     React.createElement("button", { onClick: (e) => { e.stopPropagation(); handleDeleteUnpaidAccount(key); }, style: { fontSize: 14, color: "#c0392b", background: "none", border: "none", cursor: "pointer", padding: "2px 6px", fontWeight: 700, lineHeight: 1 }, title: "Delete this entry (not the same as paid)" }, "✕")
                   )
@@ -2305,6 +2397,25 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               )
             ),
             React.createElement("button", { onClick: handleConfirmPayAmount, style: { width: "100%", padding: "10px", borderRadius: 8, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 } }, "Save")
+          )
+        )
+      ),
+      invoiceEmailPrompt && React.createElement("div", { style: styles.overlay, onClick: () => { setInvoiceEmailPrompt(null); setInvoiceEmailInput(""); } },
+        React.createElement("div", { style: styles.modalBox, onClick: e => e.stopPropagation() },
+          React.createElement("div", { style: styles.modalHeader },
+            React.createElement("div", { style: styles.modalTitle }, "Send Invoice"),
+            React.createElement("button", { style: styles.modalClose, onClick: () => { setInvoiceEmailPrompt(null); setInvoiceEmailInput(""); } }, "×")
+          ),
+          React.createElement("div", { style: { padding: "1.25rem" } },
+            React.createElement("label", { style: { fontSize: 13, color: "#666", display: "block", marginBottom: 6 } }, "Customer's email"),
+            React.createElement("input", {
+              type: "email", inputMode: "email", autoFocus: true, placeholder: "customer@example.com", value: invoiceEmailInput,
+              onChange: e => setInvoiceEmailInput(e.target.value),
+              onKeyDown: e => { if (e.key === "Enter") handleSendInvoice(); },
+              style: { width: "100%", padding: "10px 12px", fontSize: 16, borderRadius: 8, border: "1px solid #ccc", boxSizing: "border-box", marginBottom: 10 },
+            }),
+            React.createElement("div", { style: { fontSize: 12, color: "#888", marginBottom: 14, lineHeight: 1.4 } }, "Opens your email app with the invoice, the Square pay-online link, and check-by-mail instructions already filled in — review and hit send."),
+            React.createElement("button", { onClick: handleSendInvoice, style: { width: "100%", padding: "10px", borderRadius: 8, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 } }, "✉️ Open Email to Send")
           )
         )
       ),
