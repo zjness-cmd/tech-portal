@@ -24,6 +24,24 @@ function keyToDate(key) {
   return new Date(y, m - 1, d);
 }
 
+// Strips the "MISSED - " prefix and normalizes case/whitespace so a
+// dragged missed job can be compared against a "clean" counterpart already
+// on the target day.
+function titleKeyFor(title) {
+  return (title || "").replace(/^(⚠️ MISSED - )+/i, "").trim().toLowerCase();
+}
+
+// Real-world duplicates rarely match byte-for-byte — e.g. a stale "Ozas"
+// entry vs. the client's regular "Oza" job. A substring check (either
+// direction, 3+ chars to avoid false positives on very short names) catches
+// that without needing an exact title match.
+function titlesLikelyMatch(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.length < 3 || b.length < 3) return false;
+  return a.includes(b) || b.includes(a);
+}
+
 function daysBetweenKeys(fromKey, toKeyStr) {
   const a = keyToDate(fromKey);
   const b = keyToDate(toKeyStr);
@@ -174,6 +192,18 @@ export default function CalendarMonthView({ accessToken, initialDate, onSelectDa
       // A plain tap — behave exactly like tapping the day cell.
       onSelectDay(keyToDate(drag.fromKey));
     } else if (dropTargetKey && dropTargetKey !== drag.fromKey) {
+      // Dragging a stale/missed job onto a day that already has its own
+      // separate job for the same client doesn't merge them — it's two
+      // real, distinct calendar events, and now both sit on the same day.
+      // That's easy to mistake for "the app duplicated it" when it
+      // actually just surfaced a second pre-existing entry. Warn before
+      // committing so it's a deliberate choice, not a surprise.
+      const existing = (eventsByDay[dropTargetKey] || []).find(j => titlesLikelyMatch(titleKeyFor(j.title), titleKeyFor(drag.job.title)));
+      if (existing) {
+        const targetLabel = keyToDate(dropTargetKey).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+        const proceed = window.confirm(targetLabel + " already has a job for “" + existing.title.replace(/^(⚠️ MISSED - )+/i, "") + "” — move this one there too? They'll both show up on that day.");
+        if (!proceed) { setGhost(null); setDropTargetKey(null); setDraggingJobId(null); return; }
+      }
       commitMove(drag.job, drag.fromKey, dropTargetKey);
     }
     setGhost(null);

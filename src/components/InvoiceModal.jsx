@@ -39,11 +39,17 @@ export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreat
     fetch("/api/invoice").then((r) => r.json()).then((d) => {
       setSquareToken(d.squareToken || "");
       setSquareLocation(d.squareLocation || "");
-    }).catch(() => {});
+      // Surfaces the real reason customer search comes back empty when
+      // /api/invoice hasn't been given a token yet, instead of just
+      // silently returning zero results and looking like the customer
+      // doesn't exist in Square.
+      if (d.configured === false) setError("Square isn't connected yet — ask your admin to set SQUARE_ACCESS_TOKEN and SQUARE_LOCATION_ID.");
+    }).catch(() => setError("Couldn't reach /api/invoice — Square customer search won't work."));
   }, []);
 
   const searchSquareCustomers = async (query) => {
     if (!query || query.length < 2) return;
+    if (!squareToken) { setError("Square isn't connected yet — ask your admin to set SQUARE_ACCESS_TOKEN and SQUARE_LOCATION_ID."); return; }
     setSearching(true);
     try {
       const res = await fetch("https://connect.squareup.com/v2/customers?limit=100", {
