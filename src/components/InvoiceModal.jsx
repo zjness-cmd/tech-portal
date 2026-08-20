@@ -342,7 +342,11 @@ export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreat
 }
 
 const styles = {
-  overlay: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: "1rem" },
+  // Invoice is opened from the ✉️ Invoice button inside JobDetailModal,
+  // which stays mounted underneath (zIndex 3000) rather than closing
+  // itself first — so this has to sit above that or it renders hidden
+  // behind it, which is what was happening at zIndex 1000.
+  overlay: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 3500, padding: "1rem" },
   modal: { background: "#fff", borderRadius: 16, width: "100%", maxWidth: 440, maxHeight: "90vh", overflowY: "auto" },
   modalHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "1rem 1.25rem", borderBottom: "0.5px solid #e0e0e0" },
   modalTitle: { fontSize: 16, fontWeight: 600, color: "#1a1a1a" },
