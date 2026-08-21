@@ -22,7 +22,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.22.4";
+const APP_VERSION = "1.22.5";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -1252,6 +1252,30 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           if (status === "undone") { delete newCI[baseId]; delete newCO[baseId]; delete newComp[baseId]; delete newPaymentStatus[baseId]; delete newPaymentMethod[baseId]; }
         }
       });
+      // ── Stale-read guard: day started/finished ──────────────────────────
+      // Same class of bug as the mileage/gps guards above, but this one was
+      // missing entirely: __DAY_STARTED__ / __DAY_FINISHED__ are "__"-
+      // prefixed keys, so the generic pending-write reconcile loop below
+      // (which only walks non-"__" per-job keys) never covers them. If
+      // Start Day was tapped but that write hadn't been confirmed to the
+      // sheet yet — spotty field cell signal, the app getting reloaded or
+      // relaunched mid-shift — this read would come back with no
+      // __DAY_STARTED__ row, and dayStarted would silently flip back to
+      // false with nothing to restore it. That not only shows the "Start
+      // Day" button again mid-shift, it also kills mileage-leg logging and
+      // GPS-breadcrumb collection for the rest of the day (both gated on
+      // dayStarted), even though check-ins/check-outs keep working fine —
+      // those are separate keys already covered by the reconcile loop.
+      const dayStartedPending = pendingStatusRef.current["__DAY_STARTED__"] || recentlyConfirmedRef.current["__DAY_STARTED__"]?.entry;
+      const dayFinishedPending = pendingStatusRef.current["__DAY_FINISHED__"] || recentlyConfirmedRef.current["__DAY_FINISHED__"]?.entry;
+      if (dayStartedPending && dayStartedPending.status === "started") {
+        loadedStarted = true;
+        if (!loadedStatus) loadedStatus = "Day started at " + (dayStartedPending.extra || "");
+      }
+      if (dayFinishedPending) {
+        if (dayFinishedPending.status !== "unfinished") { loadedStarted = true; loadedFinished = true; loadedStatus = dayFinishedPending.extra || loadedStatus; }
+        else loadedFinished = false; // in-flight "resume day" shouldn't get overridden back to finished
+      }
       // ── Stale-read guard: check-in / check-out / completed ───────────────
       // Anything still sitting in pendingStatusRef hasn't been confirmed
       // written to the sheet yet, which means it's more recent than
