@@ -21,8 +21,6 @@ export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreat
   const [sheetUrl, setSheetUrl] = useState(null);
   const [newSheetId, setNewSheetId] = useState(null);
   const [error, setError] = useState(null);
-  const [squareToken, setSquareToken] = useState("");
-  const [squareLocation, setSquareLocation] = useState("");
   const [paymentStatus, setPaymentStatus] = useState(null);
   const [savingStatus, setSavingStatus] = useState(false);
   const [statusSaved, setStatusSaved] = useState(false);
@@ -35,32 +33,25 @@ export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreat
   const description = monthName + " Beer line cleaning";
   const quantityStr = taps + " taps @ $" + pricePerTap + "/tap";
 
-  useEffect(() => {
-    fetch("/api/invoice").then((r) => r.json()).then((d) => {
-      setSquareToken(d.squareToken || "");
-      setSquareLocation(d.squareLocation || "");
-      // Surfaces the real reason customer search comes back empty when
-      // /api/invoice hasn't been given a token yet, instead of just
-      // silently returning zero results and looking like the customer
-      // doesn't exist in Square.
-      if (d.configured === false) setError("Square isn't connected yet — ask your admin to set SQUARE_ACCESS_TOKEN and SQUARE_LOCATION_ID.");
-    }).catch(() => setError("Couldn't reach /api/invoice — Square customer search won't work."));
-  }, []);
-
+  // Both Square calls below go through api/square-customers.js and
+  // api/square-send-invoice.js rather than connect.squareup.com directly.
+  // Square's Connect REST API doesn't send CORS headers for browser
+  // origins, so a direct client-side fetch (the old design here, via
+  // api/invoice.js handing back a raw token) is always blocked by the
+  // browser regardless of how correct the token is — that's why searches
+  // always failed with "Could not search Square customers." Proxying
+  // server-to-server through Vercel's own serverless functions has no
+  // CORS issue, and as a bonus the Square token itself never has to reach
+  // the browser anymore.
   const searchSquareCustomers = async (query) => {
     if (!query || query.length < 2) return;
-    if (!squareToken) { setError("Square isn't connected yet — ask your admin to set SQUARE_ACCESS_TOKEN and SQUARE_LOCATION_ID."); return; }
     setSearching(true);
+    setError(null);
     try {
-      const res = await fetch("https://connect.squareup.com/v2/customers?limit=100", {
-        headers: { "Authorization": "Bearer " + squareToken }
-      });
+      const res = await fetch("/api/square-customers?q=" + encodeURIComponent(query));
       const data = await res.json();
-      const filtered = (data.customers || []).filter((c) => {
-        const name = ((c.given_name || "") + " " + (c.family_name || "") + " " + (c.company_name || "")).toLowerCase();
-        return name.includes(query.toLowerCase());
-      });
-      setSearchResults(filtered.slice(0, 5));
+      if (data.error) { setError(data.error); setSearchResults([]); }
+      else setSearchResults((data.customers || []).slice(0, 5));
     } catch (e) { setError("Could not search Square customers."); }
     setSearching(false);
   };
@@ -70,48 +61,23 @@ export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreat
     setSending(true);
     setError(null);
     try {
-      const orderRes = await fetch("https://connect.squareup.com/v2/orders", {
+      const res = await fetch("/api/square-send-invoice", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + squareToken },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          order: {
-            location_id: squareLocation,
-            customer_id: selectedCustomer.id,
-            line_items: [{ name: description, quantity: "1", base_price_money: { amount: Math.round(parseFloat(total) * 100), currency: "USD" } }]
-          },
-          idempotency_key: Date.now().toString()
-        })
+          customerId: selectedCustomer.id,
+          description,
+          amount: parseFloat(total),
+          title: "Beer Line Cleaning",
+          jobTitle: job.title,
+          invoiceNumber: "INV-" + invoiceNumber,
+        }),
       });
-      const orderData = await orderRes.json();
-      if (!orderData.order) throw new Error("Failed to create order");
-      const invoiceRes = await fetch("https://connect.squareup.com/v2/invoices", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + squareToken },
-        body: JSON.stringify({
-          invoice: {
-            location_id: squareLocation,
-            order_id: orderData.order.id,
-            primary_recipient: { customer_id: selectedCustomer.id },
-            payment_requests: [{ request_type: "BALANCE", due_date: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split("T")[0] }],
-            delivery_method: "EMAIL",
-            invoice_number: "INV-" + invoiceNumber,
-            title: "Beer Line Cleaning",
-            description: description + " - " + job.title
-          },
-          idempotency_key: "inv-" + Date.now().toString()
-        })
-      });
-      const invoiceData = await invoiceRes.json();
-      if (!invoiceData.invoice) throw new Error("Failed to create invoice");
-      await fetch("https://connect.squareup.com/v2/invoices/" + invoiceData.invoice.id + "/publish", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + squareToken },
-        body: JSON.stringify({ version: invoiceData.invoice.version, idempotency_key: "pub-" + Date.now().toString() })
-      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
 
       // Notify Dashboard so the View Invoice button lights up
-      // Square invoices have a public_url after publishing; fall back to dashboard
-      const invoiceUrl = invoiceData.invoice.public_url || "https://squareup.com/dashboard/invoices";
+      const invoiceUrl = data.publicUrl || "https://squareup.com/dashboard/invoices";
       if (onInvoiceCreated) onInvoiceCreated(job.id, invoiceUrl);
 
       setDone("Square invoice sent to " + (selectedCustomer.email_address || selectedCustomer.company_name || "customer") + "!");
