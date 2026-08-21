@@ -298,11 +298,15 @@ export default function JobCard({
             React.createElement("button", { style: { ...s.undoBtn, fontSize: 11 }, onClick: () => setShowCompleteChoice(false) }, "Cancel")
           ),
 
-        // Everything else (Undo, Paid/Unpaid toggle, Invoice) lives in the
-        // job detail view now — tap the card to reach it — so this row
-        // stays to one action per state instead of accumulating buttons.
+        // Undo and Invoice still live in the job detail view (tap the card
+        // to reach them), but the paid/unpaid label itself is tappable
+        // right from the card now, so marking a job paid doesn't require
+        // opening the detail view first.
         completed &&
-          React.createElement("span", { style: s.checkedInLabel }, "✅ Completed · " + (paymentStatus === "paid" ? "Paid" + (paymentMethod ? " (" + (paymentMethod === "cash" ? "Cash" : "Check") + ")" : "") : "Awaiting Payment"))
+          React.createElement("button", {
+            style: { ...s.checkedInLabel, border: "none", background: "transparent", cursor: "pointer", font: "inherit", textAlign: "left" },
+            onClick: (e) => { e.stopPropagation(); onTogglePaid && onTogglePaid(); },
+          }, "✅ Completed · " + (paymentStatus === "paid" ? "Paid" + (paymentMethod ? " (" + (paymentMethod === "cash" ? "Cash" : paymentMethod === "check" ? "Check" : "CC") + ")" : "") : "Awaiting Payment"))
       )
     )
   );

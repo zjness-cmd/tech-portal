@@ -168,7 +168,7 @@ export default function JobDetailModal({
                     background: paymentStatus === "paid" ? "#EAF3DE" : "#FAEEDA",
                     color: paymentStatus === "paid" ? "#27500A" : "#633806",
                   },
-                }, paymentStatus === "paid" ? "💳 Paid" + (paymentMethod ? " (" + (paymentMethod === "cash" ? "Cash" : "Check") + ")" : "") + " — tap to mark unpaid" : "⏳ Awaiting Payment — tap to mark paid"),
+                }, paymentStatus === "paid" ? "💳 Paid" + (paymentMethod ? " (" + (paymentMethod === "cash" ? "Cash" : paymentMethod === "check" ? "Check" : "CC") + ")" : "") + " — tap to mark unpaid" : "⏳ Awaiting Payment — tap to mark paid"),
                 completed && (invoiceUrl
                   ? React.createElement("a", {
                       href: invoiceUrl, target: "_blank", rel: "noreferrer",

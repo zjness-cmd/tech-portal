@@ -22,7 +22,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.22.1";
+const APP_VERSION = "1.22.4";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -1865,17 +1865,44 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     const job = jobs.find(j => normalizeId(j.id) === jobId);
     const cleanTitle = (job?.title || "").replace(/^(⚠️ MISSED - )+/, "");
     if (job && job.title !== cleanTitle) {
-      const token = accessTokenRef.current;
-      fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(job.calendarId) + "/events/" + job.id, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-        body: JSON.stringify({ summary: cleanTitle }),
-      }).then(() => refresh()).catch(() => {});
+      unmissCalendarEvent(job, cleanTitle);
       saveMissedJobs(missedJobs.filter(m => m.jobId !== jobId));
     }
     updateCalendarEvent(job, { checkIn: checkedIn[jobId], checkOut: checkedOut[jobId], completed: true, invoiceUrl: invoicedJobs[jobId] });
     if (paymentChoice === "paid") openPaidPrompt(nid, cleanTitle);
     else markUnpaidStatus(nid, cleanTitle);
+  };
+
+  // Strips the "⚠️ MISSED - " prefix back off a calendar event's title
+  // once a previously-missed job actually gets completed. This used to be
+  // a bare one-shot fetch with no retry and no error logging — a single
+  // transient failure (a network blip, a token near expiry) left the
+  // calendar event's title permanently stuck with the MISSED prefix, with
+  // no visibility that anything had gone wrong: the job would show
+  // completed and paid everywhere in the app, but every view that reads
+  // the calendar's own title (month view, Today's Earnings) would keep
+  // showing it as missed forever. Retries with backoff, same pattern as
+  // shiftCalendarEventTime elsewhere in this file, and logs a failure to
+  // the debug log instead of swallowing it silently.
+  const unmissCalendarEvent = async (job, cleanTitle, retryCount = 0) => {
+    const token = accessTokenRef.current;
+    if (!job?.calendarId || !job?.id || !token) return;
+    try {
+      const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(job.calendarId) + "/events/" + job.id, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({ summary: cleanTitle }),
+      });
+      if (!res.ok) throw new Error("Patch failed: " + res.status);
+      dbg("✅ Cleared MISSED prefix: " + cleanTitle);
+      refresh();
+    } catch (e) {
+      if (retryCount < 2) {
+        setTimeout(() => unmissCalendarEvent(job, cleanTitle, retryCount + 1), (retryCount + 1) * 2000);
+      } else {
+        dbg("❌ Could not clear MISSED prefix for " + cleanTitle + ": " + e.message, "error");
+      }
+    }
   };
 
   const handleUndo = (jobId) => {
@@ -2051,7 +2078,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     const { nid, cleanTitle, kind } = payAmountPrompt;
 
     if (kind === "paid") {
-      if (!payMethodInput) { alert("Select Cash or Check."); return; }
+      if (!payMethodInput) { alert("Select Cash, Check, or CC."); return; }
       markPaidStatusWithDetails(nid, amount, payMethodInput);
       setPayAmountPrompt(null);
       setPayAmountInput("");
@@ -2405,7 +2432,11 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
                 React.createElement("button", {
                   onClick: () => setPayMethodInput("check"),
                   style: { flex: 1, padding: "10px", borderRadius: 8, border: payMethodInput === "check" ? "2px solid #0C447C" : "1px solid #ccc", background: payMethodInput === "check" ? "#E6F1FB" : "#fff", color: payMethodInput === "check" ? "#0C447C" : "#444", cursor: "pointer", fontWeight: 600, fontSize: 14 },
-                }, "📝 Check")
+                }, "📝 Check"),
+                React.createElement("button", {
+                  onClick: () => setPayMethodInput("cc"),
+                  style: { flex: 1, padding: "10px", borderRadius: 8, border: payMethodInput === "cc" ? "2px solid #5B2C8D" : "1px solid #ccc", background: payMethodInput === "cc" ? "#F1E9F8" : "#fff", color: payMethodInput === "cc" ? "#5B2C8D" : "#444", cursor: "pointer", fontWeight: 600, fontSize: 14 },
+                }, "💳 CC")
               )
             ),
             React.createElement("button", { onClick: handleConfirmPayAmount, style: { width: "100%", padding: "10px", borderRadius: 8, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 } }, "Save")
@@ -2557,8 +2588,9 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               // payment status reads at a glance without opening each job.
               const rowTint = pStatus === "paid" ? { background: "#EAF3DE" } : pStatus === "unpaid" ? { background: "#FBE1DE" } : {};
               const textColor = pStatus === "paid" ? "#27500A" : pStatus === "unpaid" ? "#B23A24" : "#1a1a1a";
+              const methodLabel = method === "cash" ? "Cash" : method === "check" ? "Check" : method === "cc" ? "CC" : "";
               const valueLabel = val != null
-                ? "$" + val.toFixed(2) + (pStatus === "paid" && method ? " · " + (method === "cash" ? "Cash" : "Check") : "")
+                ? "$" + val.toFixed(2) + (pStatus === "paid" && methodLabel ? " · " + methodLabel : "")
                 : "+ add $";
               return React.createElement("div", {
                 key: job.id,
@@ -2681,7 +2713,14 @@ const styles = {
   todayBtn: { fontSize: 12, color: "#185FA5", background: "none", border: "none", cursor: "pointer", marginTop: 2 },
   jobList: { padding: "0.75rem 1.5rem", display: "flex", flexDirection: "column", gap: 10 },
   message: { fontSize: 14, color: "#888", padding: "2rem 0", textAlign: "center" },
-  overlay: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: "1rem" },
+  // zIndex 4000 — these prompts (pay amount, invoice email, missed, etc.)
+  // can be opened from a button inside JobDetailModal (zIndex 3000) or
+  // InvoiceModal (zIndex 3500) without either one closing first, so this
+  // overlay has to render above both or it ends up stuck peeking out from
+  // behind whichever detail modal is still open (that's what was happening
+  // at zIndex 1000 — tapping "Awaiting Payment" inside the job detail view
+  // opened this prompt underneath it instead of on top).
+  overlay: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 4000, padding: "1rem" },
   modalBox: { background: "#fff", borderRadius: 16, width: "100%", maxWidth: 480, maxHeight: "80vh", display: "flex", flexDirection: "column" },
   modalHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "1rem 1.25rem", borderBottom: "0.5px solid #e0e0e0" },
   modalTitle: { fontSize: 15, fontWeight: 600, color: "#1a1a1a" },
