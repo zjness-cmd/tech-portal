@@ -5,11 +5,13 @@ import JobCard from "./JobCard";
 import RescheduleModal from "./RescheduleModal";
 import DriveMode from "./DriveMode";
 import EtsyStats from "./EtsyStats";
+import CalendarMonthView from "./CalendarMonthView";
 
 const HOME = { lat: 45.292159, lng: -93.683355 };
 const LOG_SHEET_NAME = "TechPortal Job Log 2026";
 const STATUS_SHEET_NAME = "Job Status";
 const AR_SHEET_NAME = "Accounts Receivable";
+const CLIENT_SITES_SHEET_NAME = "Client Websites";
 const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
 const PENDING_SAVES_KEY = "techportal_pendingSaves";
 const GEOFENCE_RADIUS_MILES = 0.12;
@@ -20,7 +22,13 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.16.0";
+const APP_VERSION = "1.22.1";
+
+// Used to build the mailto: invoice sent from Unpaid Accounts — matches the
+// info already used in InvoiceModal.jsx's Sheets invoice path, so both
+// invoicing flows show the same business details.
+const INVOICE_BUSINESS = { name: "Ness Draft Beer Service", addr1: "PO Box 222", addr2: "Albertville, MN 55301", phone: "612-293-9459" };
+const INVOICE_SQUARE_PAY_URL = "https://checkout.square.site/merchant/ML3V5FZFEF5B8/checkout/R6IKWK56UNMU6GSPBHVPLIBY";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -167,16 +175,43 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [showDebug, setShowDebug] = useState(false);
   const [driveMode, setDriveMode] = useState(false);
   const [showEtsy, setShowEtsy] = useState(false);
+  const [showMonthView, setShowMonthView] = useState(false);
   const [showUnpaidPage, setShowUnpaidPage] = useState(false);
   // Two-step "From job" picker: null when closed, {step:"pick"} showing a
   // tappable list, {step:"amount", event} showing the amount entry for
   // whichever job was tapped.
   const [arPicker, setArPicker] = useState(null);
   const [arAmountInput, setArAmountInput] = useState("");
+  // Amount-owed modal for the job-card Paid/Unpaid toggle — an in-app modal
+  // rather than window.prompt(), which is unreliable inside installed/
+  // standalone PWAs (some Android builds silently no-op it instead of
+  // showing a dialog, leaving the toggle stuck on "unpaid" with no way to
+  // enter an amount). null when closed, else {nid, cleanTitle}.
+  // payAmountPrompt.kind distinguishes "paid" (asks amount received + how —
+  // cash/check) from "unpaid" (asks amount owed, no method — nothing's
+  // been collected yet to have a method).
+  const [payAmountPrompt, setPayAmountPrompt] = useState(null);
+  const [payAmountInput, setPayAmountInput] = useState("");
+  const [payMethodInput, setPayMethodInput] = useState(null); // "cash" | "check" | null
+  const [paymentMethod, setPaymentMethod] = useState({}); // { [nid]: "cash" | "check" }
+  // "Send Invoice" prompt from the Unpaid Accounts page — asks for the
+  // customer's email (not otherwise captured anywhere for an AR entry),
+  // then opens a pre-filled mailto: so the phone/computer's own mail app
+  // sends it — no email-sending backend needed. null when closed, else
+  // {key}. The email itself is remembered on the account for next time.
+  const [invoiceEmailPrompt, setInvoiceEmailPrompt] = useState(null);
+  const [invoiceEmailInput, setInvoiceEmailInput] = useState("");
   // Accounts receivable — persists across days (not scoped to selectedDate
   // like mileage/jobValues), so it lives in its own always-loaded key.
   const [unpaidAccounts, setUnpaidAccounts] = useState(() => {
     try { const s = localStorage.getItem("techportal_unpaidAccounts"); return s ? JSON.parse(s) : []; } catch { return []; }
+  });
+  // Client website → logo lookups, keyed by cleaned/lowercased job title so
+  // one entry covers every future visit for the same client rather than
+  // needing to be re-entered per calendar event instance. Persists across
+  // days like unpaidAccounts, for the same reason.
+  const [clientWebsites, setClientWebsites] = useState(() => {
+    try { const s = localStorage.getItem("techportal_clientWebsites"); return s ? JSON.parse(s) : {}; } catch { return {}; }
   });
 
   const startPosRef = useRef((() => { try { const s = localStorage.getItem("techportal_startPos"); return s ? JSON.parse(s) : null; } catch { return null; } })());
@@ -189,6 +224,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const trackIntervalRef = useRef(null);
   const jobCoordsRef = useRef({});
   const arLoadedRef = useRef(false);
+  const clientSitesLoadedRef = useRef(false);
+  const websiteLookupAttemptedRef = useRef({});
   const geofenceDwellRef = useRef({});
   const departureDwellRef = useRef({});
   const checkedInRef = useRef(checkedIn);
@@ -393,7 +430,19 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   selectedDateRef.current = selectedDate;
   const displayDate = selectedDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
   const totalMiles = mileageLog.reduce((sum, m) => sum + m.miles, 0);
-  const gpsTrackedMiles = gpsTrack.length >= 2 ? Math.round(gpsTrack.reduce((sum, pt, i) => i === 0 ? 0 : sum + calcMiles(gpsTrack[i-1][0], gpsTrack[i-1][1], pt[0], pt[1]), 0) * 10) / 10 : null;
+  const gpsTrackedMilesRaw = gpsTrack.length >= 2 ? Math.round(gpsTrack.reduce((sum, pt, i) => i === 0 ? 0 : sum + calcMiles(gpsTrack[i-1][0], gpsTrack[i-1][1], pt[0], pt[1]), 0) * 10) / 10 : null;
+  // GPS tracking can go quiet for stretches of the day — phone locked,
+  // app backgrounded and the OS kills location updates, a permission
+  // hiccup — and when that happens this silently undercounts, sometimes
+  // drastically (seen firsthand: legs summing to 107 mi while this read
+  // 5.7), while still being shown as "Total" directly under a per-leg log
+  // that visibly adds up to something much bigger. Each logged leg is its
+  // own routed driving-distance estimate between two real addresses, so
+  // it stays accurate even when the live GPS trace has gaps — only trust
+  // the GPS figure when it's at least in the same ballpark as those legs;
+  // otherwise fall back to the summed legs instead of showing a number
+  // that visibly contradicts the log right above it.
+  const gpsTrackedMiles = (gpsTrackedMilesRaw !== null && totalMiles > 1 && gpsTrackedMilesRaw < totalMiles * 0.5) ? null : gpsTrackedMilesRaw;
   const displayMiles = gpsTrackedMiles !== null ? gpsTrackedMiles : Math.round(totalMiles * 10) / 10;
 
   // Total revenue: sum of every dollar value entered for today's jobs.
@@ -547,7 +596,20 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     arLoadedRef.current = true;
     loadARAccounts();
   }, [accessToken]);
+  useEffect(() => {
+    if (!accessToken || clientSitesLoadedRef.current) return;
+    clientSitesLoadedRef.current = true;
+    loadClientWebsites();
+  }, [accessToken]);
   useEffect(() => { if (!accessToken || loading) return; loadJobStatuses(); }, [accessToken, selectedDate, loading]);
+  // Gated on `loading` flipping to false rather than on `jobs` itself —
+  // `jobs` is a new array reference every render, which would otherwise
+  // re-fire this on every unrelated state change instead of once per
+  // day's worth of jobs actually loading in.
+  useEffect(() => {
+    if (!accessToken || loading || !clientSitesLoadedRef.current) return;
+    jobs.forEach(job => { if (job.location) autoLookupWebsite(job); });
+  }, [accessToken, loading, selectedDate]);
 
   useEffect(() => {
     if (!jobs.length || !dayStarted || !isToday) return;
@@ -653,6 +715,17 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     }
   };
 
+  const ensureClientSitesTab = async (sheetId) => {
+    const token = accessTokenRef.current;
+    const infoRes = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "?fields=sheets.properties", { headers: { Authorization: "Bearer " + token } });
+    const info = await infoRes.json();
+    const hasTab = (info.sheets || []).find(s => s.properties.title === CLIENT_SITES_SHEET_NAME);
+    if (!hasTab) {
+      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + ":batchUpdate", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ requests: [{ addSheet: { properties: { title: CLIENT_SITES_SHEET_NAME } } }] }) });
+      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_SITES_SHEET_NAME + "'!A1:C1?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [["Client Key", "Client Name", "Website"]] }) });
+    }
+  };
+
   // ── Accounts Receivable ──────────────────────────────────────────────
   // Unlike mileage/jobValues (scoped to selectedDate), unpaid accounts carry
   // over across days until settled — so this loads once per session rather
@@ -720,6 +793,96 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       }
     } catch (e) {
       dbg("❌ AR save failed for " + account.name + ": " + e.message, "error");
+    }
+  };
+
+  // ── Client websites (job-card logos) ────────────────────────────────────
+  // Cleaned/lowercased title, not the raw calendar summary — so the same
+  // client matches across recurring visits even though each visit is a
+  // different calendar event id.
+  const clientKeyFor = (title) => (title || "").replace(/^(⚠️ MISSED - )+/, "").trim().toLowerCase();
+
+  const loadClientWebsites = async () => {
+    const token = accessTokenRef.current;
+    if (!token) return;
+    try {
+      const sheetId = await getOrCreateLogSheet();
+      if (!sheetId) return;
+      await ensureClientSitesTab(sheetId);
+      const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_SITES_SHEET_NAME + "'!A:C", { headers: { Authorization: "Bearer " + token } });
+      if (!res.ok) { dbg("❌ Client sites read failed: " + res.status, "error"); return; }
+      const data = await res.json();
+      const rows = data.values || [];
+      const sites = {};
+      rows.forEach((r, i) => {
+        if (i === 0 || !r[0]) return; // header / blank key
+        sites[r[0]] = { name: r[1] || "", website: r[2] || "", _sheetRow: i + 1 };
+      });
+      setClientWebsites(sites);
+      try { localStorage.setItem("techportal_clientWebsites", JSON.stringify(sites)); } catch {}
+      dbg("🌐 Loaded " + Object.keys(sites).length + " client website(s)");
+    } catch (e) {
+      dbg("❌ loadClientWebsites error: " + e.message, "error");
+    }
+  };
+
+  const saveClientWebsite = async (clientKey, clientName, website) => {
+    const token = accessTokenRef.current;
+    if (!token || !clientKey) return;
+    try {
+      const sheetId = await getOrCreateLogSheet();
+      if (!sheetId) return;
+      const row = [clientKey, clientName, website];
+      let sheetRow = clientWebsites[clientKey]?._sheetRow;
+      if (!sheetRow) {
+        // Not yet known this session (new client, or added earlier this
+        // session but not reloaded) — search by key so a second edit before
+        // the next load doesn't append a duplicate row.
+        const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_SITES_SHEET_NAME + "'!A:C", { headers: { Authorization: "Bearer " + token } });
+        const data = await res.json();
+        const idx = (data.values || []).findIndex(r => r[0] === clientKey);
+        if (idx !== -1) sheetRow = idx + 1;
+      }
+      if (sheetRow) {
+        await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_SITES_SHEET_NAME + "'!A" + sheetRow + ":C" + sheetRow + "?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [row] }) });
+      } else {
+        await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_SITES_SHEET_NAME + "'!A:C:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [row] }) });
+      }
+      setClientWebsites(prev => {
+        const next = { ...prev, [clientKey]: { name: clientName, website, _sheetRow: sheetRow } };
+        try { localStorage.setItem("techportal_clientWebsites", JSON.stringify(next)); } catch {}
+        return next;
+      });
+      dbg("🌐 Saved website for " + clientName + ": " + website);
+    } catch (e) {
+      dbg("❌ saveClientWebsite failed for " + clientName + ": " + e.message, "error");
+    }
+  };
+
+  // Auto-discovers a client's website via api/places.js (Google Places —
+  // business name + address in, website out) instead of requiring it be
+  // typed in by hand. Only runs once per client key: a null/empty result
+  // gets cached the same as a found one (so a client with no website isn't
+  // re-queried every day) UNLESS the lookup itself failed (network error or
+  // a non-OK Places status, e.g. Places API not enabled yet) — those are
+  // deliberately left unsaved so they retry on the next fresh load instead
+  // of permanently caching a bad "no website" answer from a config problem.
+  const autoLookupWebsite = async (job) => {
+    const key = clientKeyFor(job.title);
+    if (!key || !job.location) return;
+    if (clientWebsites[key] !== undefined) return; // already have an answer
+    if (websiteLookupAttemptedRef.current[key]) return; // already tried this session
+    websiteLookupAttemptedRef.current[key] = true;
+    const cleanTitle = job.title.replace(/^(⚠️ MISSED - )+/, "").trim();
+    try {
+      const res = await fetch("/api/places?query=" + encodeURIComponent(cleanTitle + " " + job.location));
+      const data = await res.json();
+      if (!res.ok || data.error) { dbg("❌ Website lookup failed for " + cleanTitle + ": " + (data.error || res.status), "error"); return; }
+      const website = data.website || "";
+      await saveClientWebsite(key, cleanTitle, website);
+      dbg(website ? "🌐 Auto-found website for " + cleanTitle + ": " + website : "🌐 No website found for " + cleanTitle);
+    } catch (e) {
+      dbg("❌ Website auto-lookup error for " + cleanTitle + ": " + e.message, "error");
     }
   };
 
@@ -811,6 +974,84 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     });
     saveARAccountRow(updated, true);
     dbg("💳 Updated unpaid account: " + account.name + " → $" + amount);
+  };
+
+  // Deterministic per account — same invoice number every time you reopen
+  // the Send Invoice prompt (e.g. to resend), derived from the account's
+  // own id (already unique) rather than today's date, so it doesn't shift
+  // if you resend on a different day than you first created the entry.
+  const invoiceNumberFor = (account) => {
+    if (account.invoiceNumber) return account.invoiceNumber;
+    const digits = String(account.id || account._key || "").replace(/\D/g, "");
+    return "INV-" + (digits.slice(-8) || Date.now().toString().slice(-8));
+  };
+
+  const handleOpenInvoicePrompt = (key) => {
+    const account = unpaidAccounts.find(a => a._key === key);
+    if (!account) return;
+    if (!account.invoiceNumber) {
+      const updated = { ...account, invoiceNumber: invoiceNumberFor(account) };
+      setUnpaidAccounts(prev => {
+        const next = prev.map(a => a._key === key ? updated : a);
+        try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
+        return next;
+      });
+    }
+    setInvoiceEmailInput(account.email || "");
+    setInvoiceEmailPrompt({ key });
+  };
+
+  // Builds a pre-filled mailto: link and hands it to the phone/computer's
+  // own mail app to actually send — no email-sending backend required.
+  // Includes the invoice # in both the Square payment line and the check
+  // memo instructions so a payment can be matched back to this invoice
+  // either way.
+  const handleSendInvoice = () => {
+    if (!invoiceEmailPrompt) return;
+    const email = invoiceEmailInput.trim();
+    if (!email || !email.includes("@")) { alert("Enter a valid email address."); return; }
+    const key = invoiceEmailPrompt.key;
+    const account = unpaidAccounts.find(a => a._key === key);
+    if (!account) { setInvoiceEmailPrompt(null); return; }
+    const invoiceNumber = account.invoiceNumber || invoiceNumberFor(account);
+    const updated = { ...account, email, invoiceNumber };
+    setUnpaidAccounts(prev => {
+      const next = prev.map(a => a._key === key ? updated : a);
+      try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
+      return next;
+    });
+    saveARAccountRow(updated, true);
+
+    const amountStr = "$" + account.amount.toFixed(2);
+    const subject = "Invoice " + invoiceNumber + " from " + INVOICE_BUSINESS.name;
+    const body = [
+      "Hi " + account.name + ",",
+      "",
+      "Here's your invoice for beer line cleaning service.",
+      "",
+      "Invoice #: " + invoiceNumber,
+      "Amount due: " + amountStr,
+      "",
+      "Pay online by card:",
+      INVOICE_SQUARE_PAY_URL,
+      "(enter invoice #" + invoiceNumber + " when prompted so it's matched to this invoice)",
+      "",
+      "Or mail a check to:",
+      INVOICE_BUSINESS.name,
+      INVOICE_BUSINESS.addr1,
+      INVOICE_BUSINESS.addr2,
+      "(please write invoice #" + invoiceNumber + " on the memo line)",
+      "",
+      "Thanks for your business!",
+      INVOICE_BUSINESS.name,
+      INVOICE_BUSINESS.phone,
+    ].join("\n");
+
+    const mailto = "mailto:" + encodeURIComponent(email) + "?subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
+    window.location.href = mailto;
+    dbg("✉️ Invoice mailto opened for " + account.name + " — " + invoiceNumber);
+    setInvoiceEmailPrompt(null);
+    setInvoiceEmailInput("");
   };
 
   const handleMarkPaid = (key) => {
@@ -955,7 +1196,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       if (rows.length <= 1 && !isRetry && localStorage.getItem("techportal_logSheetId")) {
         localStorage.removeItem("techportal_logSheetId"); setLogSheetId(null); setStatusLoading(false); loadingStatusesRef.current = false; loadJobStatuses(true); return;
       }
-      const newCI = {}; const newCO = {}; const newComp = {}; const newInv = {}; const newValues = {}; const newPaymentStatus = {};
+      const newCI = {}; const newCO = {}; const newComp = {}; const newInv = {}; const newValues = {}; const newPaymentStatus = {}; const newPaymentMethod = {};
       let loadedStarted = false; let loadedFinished = false; let loadedStatus = "";
       let lastMileageRow = null; let lastGpsRow = null;
       todayRows.forEach(row => { if (row[1] === "__MILEAGE_LOG__") lastMileageRow = row; if (row[1] === "__GPS_TRACK__") lastGpsRow = row; });
@@ -989,12 +1230,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         if (jobId === "__DAY_STARTED__") { loadedStarted = true; loadedStatus = "Day started at " + extra; }
         if (jobId === "__DAY_FINISHED__") { if (status !== "unfinished") { loadedStarted = true; loadedFinished = true; loadedStatus = extra; } }
         if (jobId && !jobId.startsWith("__")) {
-          const baseId = normalizeId(jobId.replace(/__ci$/, "").replace(/__co$/, "").replace(/__done$/, "").replace(/__invoice$/, "").replace(/__value$/, "").replace(/__paid$/, ""));
+          const baseId = normalizeId(jobId.replace(/__ci$/, "").replace(/__co$/, "").replace(/__done$/, "").replace(/__invoice$/, "").replace(/__value$/, "").replace(/__paid$/, "").replace(/__method$/, ""));
           if (status === "checkedIn") newCI[baseId] = extra || "—";
           if (status === "checkedOut") newCO[baseId] = extra || "—";
           if (status === "completed") { newComp[baseId] = true; newCI[baseId] = newCI[baseId] || "—"; }
           if (status === "jobValue") { const v = parseFloat(extra); if (!isNaN(v)) newValues[baseId] = v; }
           if (status === "paid" || status === "unpaid") newPaymentStatus[baseId] = status;
+          if (status === "cash" || status === "check") newPaymentMethod[baseId] = status;
           // "missed" is its own status value (written by handleMissed) distinct
           // from "completed" — it needs to count as done for job-status
           // purposes too, or the job silently reverts to "Scheduled" on any
@@ -1007,7 +1249,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
             }
           }
           if (status === "invoiced") newInv[baseId] = extra || "";
-          if (status === "undone") { delete newCI[baseId]; delete newCO[baseId]; delete newComp[baseId]; delete newPaymentStatus[baseId]; }
+          if (status === "undone") { delete newCI[baseId]; delete newCO[baseId]; delete newComp[baseId]; delete newPaymentStatus[baseId]; delete newPaymentMethod[baseId]; }
         }
       });
       // ── Stale-read guard: check-in / check-out / completed ───────────────
@@ -1036,6 +1278,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         else if (key.endsWith("__done")) { const id = normalizeId(key.slice(0, -6)); if (entry.status === "completed" || entry.status === "missed") { newComp[id] = true; reconciledCount++; } if (entry.status === "undone") delete newComp[id]; }
         else if (key.endsWith("__value")) { const id = normalizeId(key.slice(0, -7)); const v = parseFloat(entry.extra); if (entry.status === "jobValue" && !isNaN(v)) { newValues[id] = v; reconciledCount++; } }
         else if (key.endsWith("__paid")) { const id = normalizeId(key.slice(0, -6)); if (entry.status === "paid" || entry.status === "unpaid") { newPaymentStatus[id] = entry.status; reconciledCount++; } if (entry.status === "undone") delete newPaymentStatus[id]; }
+        else if (key.endsWith("__method")) { const id = normalizeId(key.slice(0, -8)); if (entry.status === "cash" || entry.status === "check") { newPaymentMethod[id] = entry.status; reconciledCount++; } if (entry.status === "undone") delete newPaymentMethod[id]; }
       });
       if (reconciledCount > 0) dbg("♻️ Reconciled " + reconciledCount + " in-flight/recent pending write(s) over sheet read", "warn");
       if (missedFromSheet.length > 0) {
@@ -1046,7 +1289,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           dbg("⚠️ Rebuilt " + missedFromSheet.length + " missed-job entry(ies) from sheet data", "warn");
         } catch {}
       }
-      setCheckedIn(newCI); setCheckedOut(newCO); setCompleted(newComp); setInvoicedJobs(newInv); setJobValues(newValues); setPaymentStatus(newPaymentStatus);
+      setCheckedIn(newCI); setCheckedOut(newCO); setCompleted(newComp); setInvoicedJobs(newInv); setJobValues(newValues); setPaymentStatus(newPaymentStatus); setPaymentMethod(newPaymentMethod);
       try { const k = "techportal_jobValues_" + selectedDate.toDateString(); localStorage.setItem(k, JSON.stringify(newValues)); } catch {}
       try { const ck = JOB_STATUS_CACHE_KEY + selectedDate.toDateString(); localStorage.setItem(ck, JSON.stringify({ checkedIn: newCI, checkedOut: newCO, completed: newComp, invoiced: newInv })); } catch {}
       if (loadedStarted) { setDayStarted(true); if (!lastPositionRef.current && locationRef.current) setLastPos({ lat: locationRef.current.lat, lng: locationRef.current.lng }); try { const sp = localStorage.getItem("techportal_startPos"); if (sp) startPosRef.current = JSON.parse(sp); } catch {} }
@@ -1448,7 +1691,30 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       dbg("⏭️ Skipping cascade for " + job.title + " — already rescheduled today", "warn");
       return;
     }
-    const scheduledStart = new Date(job.startRaw);
+    // Read the calendar's CURRENT truth for this job before computing the
+    // delta — job.startRaw is local React state and can be stale if an
+    // earlier job's cascade already shifted this same event moments ago
+    // and the UI hasn't refreshed yet. Computing the delta against a
+    // stale (pre-shift) time would then get applied on top of the
+    // already-shifted live time by shiftCalendarEventTime (which always
+    // refetches live and adds deltaMs to that), silently double-shifting
+    // the event. This is exactly what caused Angenos to end up at 8:16 AM
+    // on the calendar (11:08 AM check-in, minus the same 172-minute delta
+    // applied a second time) instead of the correct 11:08 AM.
+    let scheduledStart = new Date(job.startRaw);
+    try {
+      const token = accessTokenRef.current;
+      if (token && job.calendarId) {
+        const liveRes = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(job.calendarId) + "/events/" + job.id, { headers: { Authorization: "Bearer " + token } });
+        if (liveRes.ok) {
+          const live = await liveRes.json();
+          if (live.start?.dateTime) scheduledStart = new Date(live.start.dateTime);
+        }
+      }
+    } catch (e) {
+      // Fall back to local job.startRaw below if the live fetch fails —
+      // better to cascade off a possibly-stale time than not at all.
+    }
     if (isNaN(scheduledStart)) return;
     const deltaMs = actualTime.getTime() - scheduledStart.getTime();
     if (Math.abs(deltaMs) < CASCADE_THRESHOLD_MS) return;
@@ -1585,7 +1851,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     updateCalendarEvent(job, { checkIn: checkedInRef.current[jobId], checkOut: time });
   };
 
-  const handleComplete = (jobId) => {
+  // paymentChoice is "paid" or "awaiting", coming from the job card's
+  // Paid/Awaiting Payment picker shown right after tapping Mark complete.
+  // Drive Mode's quick "Done" tap has no such picker, so it calls this with
+  // no paymentChoice — falls through to "awaiting", the same default
+  // completing a job always used before.
+  const handleComplete = (jobId, paymentChoice) => {
+    const nid = normalizeId(jobId);
     dbg("✅ Complete: " + jobId);
     setCompleted((prev) => ({ ...prev, [jobId]: true }));
     setPending(jobId + "__done", { status: "completed", extra: checkedIn[jobId] || "" });
@@ -1602,13 +1874,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       saveMissedJobs(missedJobs.filter(m => m.jobId !== jobId));
     }
     updateCalendarEvent(job, { checkIn: checkedIn[jobId], checkOut: checkedOut[jobId], completed: true, invoiceUrl: invoicedJobs[jobId] });
-    // Every completed job now defaults to "unpaid" immediately — reusing
-    // the exact same toggle logic the job-card button uses (prefilling
-    // from Today's Earnings if already set, otherwise prompting for the
-    // amount right now). You only need to tap something once money
-    // actually comes in, rather than remembering to flag each job as
-    // unpaid yourself.
-    if (job) handleTogglePaid(jobId, job.title);
+    if (paymentChoice === "paid") openPaidPrompt(nid, cleanTitle);
+    else markUnpaidStatus(nid, cleanTitle);
   };
 
   const handleUndo = (jobId) => {
@@ -1616,11 +1883,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     setCheckedIn((prev) => { const n = { ...prev }; delete n[jobId]; return n; });
     setCheckedOut((prev) => { const n = { ...prev }; delete n[jobId]; return n; });
     setPaymentStatus((prev) => { const n = { ...prev }; delete n[normalizeId(jobId)]; return n; });
+    setPaymentMethod((prev) => { const n = { ...prev }; delete n[normalizeId(jobId)]; return n; });
     saveMileage((prev) => prev.filter((m) => m.jobId !== jobId));
     setPending(jobId + "__ci", { status: "undone", extra: "" });
     setPending(jobId + "__co", { status: "undone", extra: "" });
     setPending(jobId + "__done", { status: "undone", extra: "" });
     setPending(jobId + "__paid", { status: "undone", extra: "" });
+    setPending(jobId + "__method", { status: "undone", extra: "" });
     delete checkInLockRef.current[jobId];
     delete cascadedTodayRef.current[normalizeId(jobId)];
     delete paymentLinkRef.current[normalizeId(jobId)];
@@ -1676,78 +1945,132 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     addAccount(amount);
   };
 
+  // Opens the amount + how-they-paid (cash/check) prompt — shared by the
+  // job-card Paid/Unpaid toggle and the choice shown right after marking a
+  // job complete. Prefills the amount from Today's Earnings if one's
+  // already set, but always asks for the payment method since that's
+  // never been captured yet even if a $ value was.
+  const openPaidPrompt = (nid, cleanTitle) => {
+    const existingVal = jobValues[nid];
+    setPayAmountPrompt({ nid, cleanTitle, kind: "paid" });
+    setPayAmountInput(existingVal != null && !isNaN(existingVal) ? String(existingVal) : "");
+    setPayMethodInput(null);
+  };
+
+  // Actually commits a "paid" job: marks it paid, records how (cash/check),
+  // adds the amount into Today's Earnings, and — if this job had an open
+  // Unpaid Accounts entry from an earlier "awaiting payment" — closes that
+  // entry out so paid/unpaid never leaves duplicate or orphaned AR rows.
+  const markPaidStatusWithDetails = (nid, amount, method) => {
+    setPaymentStatus(prev => ({ ...prev, [nid]: "paid" }));
+    setPending(nid + "__paid", { status: "paid", extra: "" });
+    setPaymentMethod(prev => ({ ...prev, [nid]: method }));
+    setPending(nid + "__method", { status: method, extra: "" });
+    setJobValues(prev => {
+      const next = { ...prev, [nid]: amount };
+      try { localStorage.setItem("techportal_jobValues_" + selectedDate.toDateString(), JSON.stringify(next)); } catch {}
+      return next;
+    });
+    setPending(nid + "__value", { status: "jobValue", extra: String(amount) });
+    flushStatusSaves();
+    const linkedKey = paymentLinkRef.current[nid];
+    if (linkedKey) {
+      const acct = unpaidAccounts.find(a => a._key === linkedKey);
+      if (acct) {
+        setUnpaidAccounts(prev => {
+          const next = prev.filter(a => a._key !== linkedKey);
+          try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
+          return next;
+        });
+        saveARAccountRow({ ...acct, paid: true }, true);
+        dbg("💳 Marked paid: " + acct.name);
+      }
+      delete paymentLinkRef.current[nid];
+    }
+  };
+
+  const markUnpaidStatus = (nid, cleanTitle) => {
+    // Prefill from Today's Earnings if a $ value is already set (no need to
+    // ask again); otherwise open the amount modal.
+    const existingVal = jobValues[nid];
+    if (existingVal != null && !isNaN(existingVal) && existingVal > 0) {
+      setPaymentStatus(prev => ({ ...prev, [nid]: "unpaid" }));
+      setPending(nid + "__paid", { status: "unpaid", extra: "" });
+      flushStatusSaves();
+      addUnpaidAccountForJob(nid, cleanTitle, existingVal);
+      return;
+    }
+    setPayAmountPrompt({ nid, cleanTitle, kind: "unpaid" });
+    setPayAmountInput("");
+  };
+
   // Quick Paid/Unpaid toggle right on the job card — separate from the full
   // invoice flow, for jobs you're tracking payment on without generating a
-  // formal invoice. Toggling to "unpaid" creates an Unpaid Accounts entry
-  // (prefilled from Today's Earnings if a $ value is already set); toggling
-  // back to "paid" closes out that specific entry via paymentLinkRef, so
-  // going back and forth doesn't leave duplicate or orphaned rows.
+  // formal invoice. Toggling to "unpaid" creates an Unpaid Accounts entry;
+  // toggling to "paid" opens the same amount+method prompt the complete
+  // flow uses, so however you get to "paid" it's captured the same way.
   const handleTogglePaid = (jobId, jobTitle) => {
     const nid = normalizeId(jobId);
     const current = paymentStatus[nid];
     const cleanTitle = (jobTitle || "This job").replace(/^(⚠️ MISSED - )+/, "");
+    if (current === "unpaid") { openPaidPrompt(nid, cleanTitle); return; }
+    markUnpaidStatus(nid, cleanTitle);
+  };
 
-    if (current === "unpaid") {
-      setPaymentStatus(prev => ({ ...prev, [nid]: "paid" }));
-      setPending(nid + "__paid", { status: "paid", extra: "" });
-      flushStatusSaves();
-      const linkedKey = paymentLinkRef.current[nid];
-      if (linkedKey) {
-        const acct = unpaidAccounts.find(a => a._key === linkedKey);
-        if (acct) {
-          setUnpaidAccounts(prev => {
-            const next = prev.filter(a => a._key !== linkedKey);
-            try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
-            return next;
-          });
-          saveARAccountRow({ ...acct, paid: true }, true);
-          dbg("💳 Marked paid via job card: " + acct.name);
-        }
-        delete paymentLinkRef.current[nid];
-      }
+  // Shared by handleTogglePaid's prefilled-value path and the amount modal
+  // below — creates the Unpaid Accounts entry and flows the amount into
+  // Today's Earnings too, same persistence handleSetJobValue uses, so
+  // entering it once here covers both places.
+  const addUnpaidAccountForJob = (nid, cleanTitle, amount) => {
+    const id = "ar_" + Date.now();
+    const account = {
+      id, name: cleanTitle, amount,
+      dateAdded: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+      _key: id,
+    };
+    setUnpaidAccounts(prev => {
+      const next = [...prev, account];
+      try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
+      return next;
+    });
+    saveARAccountRow(account, false);
+    paymentLinkRef.current[nid] = id;
+    dbg("💳 Added unpaid account from job card: " + account.name + " — $" + amount);
+    setJobValues(prev => {
+      const next = { ...prev, [nid]: amount };
+      try { localStorage.setItem("techportal_jobValues_" + selectedDate.toDateString(), JSON.stringify(next)); } catch {}
+      return next;
+    });
+    setPending(nid + "__value", { status: "jobValue", extra: String(amount) });
+    flushStatusSaves();
+  };
+
+  const handleConfirmPayAmount = () => {
+    const amount = parseFloat(payAmountInput.trim());
+    if (isNaN(amount) || amount < 0) { alert("Enter a valid dollar amount."); return; }
+    const { nid, cleanTitle, kind } = payAmountPrompt;
+
+    if (kind === "paid") {
+      if (!payMethodInput) { alert("Select Cash or Check."); return; }
+      markPaidStatusWithDetails(nid, amount, payMethodInput);
+      setPayAmountPrompt(null);
+      setPayAmountInput("");
+      setPayMethodInput(null);
       return;
     }
 
-    // Switching to unpaid — add the Unpaid Accounts entry.
+    if (amount === 0) {
+      // Nothing owed — leave it as paid, no Unpaid Accounts entry needed.
+      setPayAmountPrompt(null);
+      setPayAmountInput("");
+      return;
+    }
     setPaymentStatus(prev => ({ ...prev, [nid]: "unpaid" }));
     setPending(nid + "__paid", { status: "unpaid", extra: "" });
     flushStatusSaves();
-    const addAccount = (amount) => {
-      const id = "ar_" + Date.now();
-      const account = {
-        id, name: cleanTitle, amount,
-        dateAdded: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
-        _key: id,
-      };
-      setUnpaidAccounts(prev => {
-        const next = [...prev, account];
-        try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
-        return next;
-      });
-      saveARAccountRow(account, false);
-      paymentLinkRef.current[nid] = id;
-      dbg("💳 Added unpaid account from job card: " + account.name + " — $" + amount);
-      // Flow the amount straight into Today's Earnings too — same
-      // persistence handleSetJobValue uses — so entering it once here
-      // covers both places instead of having to enter it again separately.
-      setJobValues(prev => {
-        const next = { ...prev, [nid]: amount };
-        try { localStorage.setItem("techportal_jobValues_" + selectedDate.toDateString(), JSON.stringify(next)); } catch {}
-        return next;
-      });
-      setPending(nid + "__value", { status: "jobValue", extra: String(amount) });
-      flushStatusSaves();
-    };
-    const existingVal = jobValues[nid];
-    if (existingVal != null && !isNaN(existingVal) && existingVal > 0) {
-      addAccount(existingVal);
-      return;
-    }
-    const amountStr = prompt("Amount owed for " + cleanTitle + " ($):");
-    if (amountStr === null) return;
-    const amount = parseFloat(amountStr.trim());
-    if (isNaN(amount) || amount <= 0) { alert("Enter a valid dollar amount — skipped adding to Unpaid Accounts."); return; }
-    addAccount(amount);
+    addUnpaidAccountForJob(nid, cleanTitle, amount);
+    setPayAmountPrompt(null);
+    setPayAmountInput("");
   };
 
   const handleUndoFinishDay = async () => {
@@ -1916,6 +2239,12 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     React.createElement("div", { style: styles.page },
       invoiceJob && React.createElement(InvoiceModal, { job: invoiceJob, accessToken, onClose: handleInvoiceClose, onInvoiceCreated: handleInvoiceCreated, onPaymentStatusSaved: handlePaymentStatusSaved }),
       showEtsy && React.createElement(EtsyStats, { onClose: () => setShowEtsy(false) }),
+      showMonthView && React.createElement(CalendarMonthView, {
+        accessToken,
+        initialDate: selectedDate,
+        onSelectDay: (d) => { setSelectedDate(d); setFilter("All"); setShowMonthView(false); },
+        onClose: () => setShowMonthView(false),
+      }),
       showUnpaidPage && React.createElement("div", { style: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "#fff", zIndex: 500, overflowY: "auto" } },
         React.createElement("div", { style: styles.topbar },
           React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
@@ -1939,6 +2268,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
                   ),
                   React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
                     React.createElement("span", { style: styles.mileageVal }, "$" + a.amount.toFixed(2)),
+                    React.createElement("button", { onClick: (e) => { e.stopPropagation(); handleOpenInvoicePrompt(key); }, style: { fontSize: 11, padding: "3px 8px", borderRadius: 6, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontWeight: 500 }, title: "Email an invoice" }, "✉️ Invoice"),
                     React.createElement("button", { onClick: (e) => { e.stopPropagation(); handleMarkPaid(key); }, style: { fontSize: 11, padding: "3px 8px", borderRadius: 6, background: "#27500A", color: "#fff", border: "none", cursor: "pointer", fontWeight: 500 }, title: "Mark as paid" }, "✓ Paid"),
                     React.createElement("button", { onClick: (e) => { e.stopPropagation(); handleDeleteUnpaidAccount(key); }, style: { fontSize: 14, color: "#c0392b", background: "none", border: "none", cursor: "pointer", padding: "2px 6px", fontWeight: 700, lineHeight: 1 }, title: "Delete this entry (not the same as paid)" }, "✕")
                   )
@@ -2051,6 +2381,56 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               )
         )
       ),
+      payAmountPrompt && React.createElement("div", { style: styles.overlay, onClick: () => { setPayAmountPrompt(null); setPayAmountInput(""); setPayMethodInput(null); } },
+        React.createElement("div", { style: styles.modalBox, onClick: e => e.stopPropagation() },
+          React.createElement("div", { style: styles.modalHeader },
+            React.createElement("div", { style: styles.modalTitle }, (payAmountPrompt.kind === "paid" ? "Payment for " : "Amount owed for ") + payAmountPrompt.cleanTitle),
+            React.createElement("button", { style: styles.modalClose, onClick: () => { setPayAmountPrompt(null); setPayAmountInput(""); setPayMethodInput(null); } }, "×")
+          ),
+          React.createElement("div", { style: { padding: "1.25rem" } },
+            React.createElement("label", { style: { fontSize: 13, color: "#666", display: "block", marginBottom: 6 } }, payAmountPrompt.kind === "paid" ? "Amount received ($)" : "Amount owed ($) — enter 0 if already paid"),
+            React.createElement("input", {
+              type: "number", inputMode: "decimal", autoFocus: true, value: payAmountInput,
+              onChange: e => setPayAmountInput(e.target.value),
+              onKeyDown: e => { if (e.key === "Enter" && (payAmountPrompt.kind !== "paid" || payMethodInput)) handleConfirmPayAmount(); },
+              style: { width: "100%", padding: "10px 12px", fontSize: 16, borderRadius: 8, border: "1px solid #ccc", boxSizing: "border-box", marginBottom: 14 },
+            }),
+            payAmountPrompt.kind === "paid" && React.createElement("div", { style: { marginBottom: 14 } },
+              React.createElement("label", { style: { fontSize: 13, color: "#666", display: "block", marginBottom: 6 } }, "How'd they pay?"),
+              React.createElement("div", { style: { display: "flex", gap: 8 } },
+                React.createElement("button", {
+                  onClick: () => setPayMethodInput("cash"),
+                  style: { flex: 1, padding: "10px", borderRadius: 8, border: payMethodInput === "cash" ? "2px solid #27500A" : "1px solid #ccc", background: payMethodInput === "cash" ? "#EAF3DE" : "#fff", color: payMethodInput === "cash" ? "#27500A" : "#444", cursor: "pointer", fontWeight: 600, fontSize: 14 },
+                }, "💵 Cash"),
+                React.createElement("button", {
+                  onClick: () => setPayMethodInput("check"),
+                  style: { flex: 1, padding: "10px", borderRadius: 8, border: payMethodInput === "check" ? "2px solid #0C447C" : "1px solid #ccc", background: payMethodInput === "check" ? "#E6F1FB" : "#fff", color: payMethodInput === "check" ? "#0C447C" : "#444", cursor: "pointer", fontWeight: 600, fontSize: 14 },
+                }, "📝 Check")
+              )
+            ),
+            React.createElement("button", { onClick: handleConfirmPayAmount, style: { width: "100%", padding: "10px", borderRadius: 8, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 } }, "Save")
+          )
+        )
+      ),
+      invoiceEmailPrompt && React.createElement("div", { style: styles.overlay, onClick: () => { setInvoiceEmailPrompt(null); setInvoiceEmailInput(""); } },
+        React.createElement("div", { style: styles.modalBox, onClick: e => e.stopPropagation() },
+          React.createElement("div", { style: styles.modalHeader },
+            React.createElement("div", { style: styles.modalTitle }, "Send Invoice"),
+            React.createElement("button", { style: styles.modalClose, onClick: () => { setInvoiceEmailPrompt(null); setInvoiceEmailInput(""); } }, "×")
+          ),
+          React.createElement("div", { style: { padding: "1.25rem" } },
+            React.createElement("label", { style: { fontSize: 13, color: "#666", display: "block", marginBottom: 6 } }, "Customer's email"),
+            React.createElement("input", {
+              type: "email", inputMode: "email", autoFocus: true, placeholder: "customer@example.com", value: invoiceEmailInput,
+              onChange: e => setInvoiceEmailInput(e.target.value),
+              onKeyDown: e => { if (e.key === "Enter") handleSendInvoice(); },
+              style: { width: "100%", padding: "10px 12px", fontSize: 16, borderRadius: 8, border: "1px solid #ccc", boxSizing: "border-box", marginBottom: 10 },
+            }),
+            React.createElement("div", { style: { fontSize: 12, color: "#888", marginBottom: 14, lineHeight: 1.4 } }, "Opens your email app with the invoice, the Square pay-online link, and check-by-mail instructions already filled in — review and hit send."),
+            React.createElement("button", { onClick: handleSendInvoice, style: { width: "100%", padding: "10px", borderRadius: 8, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 } }, "✉️ Open Email to Send")
+          )
+        )
+      ),
       React.createElement("div", { style: styles.topbar },
         React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
           React.createElement("button", { style: styles.hamburgerBtn, onClick: () => setMenuOpen(true) }, React.createElement("span", { style: styles.hamburgerLine }), React.createElement("span", { style: styles.hamburgerLine }), React.createElement("span", { style: styles.hamburgerLine })),
@@ -2101,7 +2481,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         )
       ),
       React.createElement("div", { style: styles.monthBar },
-        React.createElement("div", null, React.createElement("div", { style: styles.monthText }, monthName), React.createElement("div", { style: styles.monthSub }, monthlyCount !== null ? monthlyCount + " total jobs" : "Loading...")),
+        React.createElement("div", { style: { cursor: "pointer" }, onClick: () => setShowMonthView(true), title: "Open month calendar" }, React.createElement("div", { style: styles.monthText }, "📅 " + monthName + "  ›"), React.createElement("div", { style: styles.monthSub }, monthlyCount !== null ? monthlyCount + " total jobs" : "Loading...")),
         React.createElement("div", { style: styles.monthRight },
           React.createElement("button", { style: styles.monthStatBtn, onClick: () => setModalType("completed") }, React.createElement("div", { style: styles.monthStatVal }, totalCompleted), React.createElement("div", { style: styles.monthStatLabel }, "completed")),
           React.createElement("div", { style: styles.monthDivider }),
@@ -2171,9 +2551,22 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           : jobs.map((job) => {
               const nid = normalizeId(job.id);
               const val = jobValues[nid];
-              return React.createElement("div", { key: job.id, style: { ...styles.mileageRow, cursor: "pointer" }, onClick: () => handleSetJobValue(nid, job.title) },
-                React.createElement("span", null, job.title),
-                React.createElement("span", { style: val != null ? styles.mileageVal : { color: "#bbb", fontStyle: "italic" } }, val != null ? "$" + val.toFixed(2) : "+ add $")
+              const pStatus = paymentStatus[nid];
+              const method = paymentMethod[nid];
+              // Paid jobs turn green, awaiting-payment jobs turn red, so
+              // payment status reads at a glance without opening each job.
+              const rowTint = pStatus === "paid" ? { background: "#EAF3DE" } : pStatus === "unpaid" ? { background: "#FBE1DE" } : {};
+              const textColor = pStatus === "paid" ? "#27500A" : pStatus === "unpaid" ? "#B23A24" : "#1a1a1a";
+              const valueLabel = val != null
+                ? "$" + val.toFixed(2) + (pStatus === "paid" && method ? " · " + (method === "cash" ? "Cash" : "Check") : "")
+                : "+ add $";
+              return React.createElement("div", {
+                key: job.id,
+                style: { ...styles.mileageRow, cursor: "pointer", borderRadius: 6, padding: "4px 6px", margin: "1px 0", ...rowTint },
+                onClick: () => handleSetJobValue(nid, job.title),
+              },
+                React.createElement("span", { style: { color: textColor } }, job.title),
+                React.createElement("span", { style: val != null ? { ...styles.mileageVal, color: textColor } : { color: "#bbb", fontStyle: "italic" } }, valueLabel)
               );
             }),
         React.createElement("div", { style: styles.mileageTotal },
@@ -2217,18 +2610,20 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               checkedIn: checkedIn[nid], checkedOut: checkedOut[nid], completed: completed[nid],
               invoiceUrl: invoicedJobs[nid], isNearby,
               paymentStatus: paymentStatus[nid],
+              paymentMethod: paymentMethod[nid],
               accessToken: accessTokenRef.current,
               logSheetId,
               onTimeUpdated: refresh,
               onNotesSaved: handleNotesSaved,
               onCheckIn: () => handleCheckIn(nid, job.title),
               onCheckOut: () => handleCheckOut(nid, job.title),
-              onComplete: () => handleComplete(nid),
+              onComplete: (paymentChoice) => handleComplete(nid, paymentChoice),
               onNavigate: () => handleNavigate(nid),
               onUndo: () => handleUndo(nid),
               onInvoice: () => handleInvoice({ ...job, id: nid }),
               onMissed: () => handleMissed(nid, job.title, job.location, job.calendarId, job.id),
               onTogglePaid: () => handleTogglePaid(nid, job.title),
+              website: clientWebsites[clientKeyFor(job.title)]?.website || "",
             });
           })
         )

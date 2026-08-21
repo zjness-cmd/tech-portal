@@ -1,5 +1,18 @@
-// TechPortal Service Worker v13 — persistent background geofence
-const CACHE_NAME = "techportal-v13";
+// TechPortal Service Worker v14 — persistent background geofence
+//
+// v14 fixes the root cause of the app getting stuck showing an old
+// APP_VERSION on mobile no matter how many real deploys went out: the
+// fetch handler below used to serve the app shell (/, /index.html,
+// /manifest.json) cache-first — return whatever's cached, only touch the
+// network if nothing's cached at all. Once index.html was cached once,
+// it never refreshed itself again, even though every later deploy shipped
+// a new index.html pointing at a new hashed JS bundle. The phone kept
+// serving that first-ever cached HTML forever. Bumping CACHE_NAME here
+// (so this file's bytes actually change, which is what makes the browser
+// notice there's a new service worker to install) plus switching the
+// shell to network-first below fixes both the one-time stuck cache and
+// prevents it recurring on future deploys.
+const CACHE_NAME = "techportal-v14";
 const SHELL_FILES = ["/", "/index.html", "/manifest.json"];
 
 self.addEventListener("install", (event) => {
@@ -39,17 +52,20 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
+  // Network-first for the app shell (same strategy as /assets/ above) —
+  // as long as there's connectivity, the freshest HTML always wins, so a
+  // new deploy shows up the very next time the app opens. Cache is only a
+  // fallback for genuinely being offline, not the default source.
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request).then((response) => {
+    fetch(event.request)
+      .then((response) => {
         if (response.ok) {
           const clone = response.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
         }
         return response;
-      }).catch(() => caches.match("/index.html"));
-    })
+      })
+      .catch(() => caches.match(event.request).then((cached) => cached || caches.match("/index.html")))
   );
 });
 
