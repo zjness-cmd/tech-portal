@@ -12,7 +12,7 @@
 // notice there's a new service worker to install) plus switching the
 // shell to network-first below fixes both the one-time stuck cache and
 // prevents it recurring on future deploys.
-const CACHE_NAME = "techportal-v14";
+const CACHE_NAME = "techportal-v15";
 const SHELL_FILES = ["/", "/index.html", "/manifest.json"];
 
 self.addEventListener("install", (event) => {
