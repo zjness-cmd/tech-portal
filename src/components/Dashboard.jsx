@@ -22,7 +22,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.3";
+const APP_VERSION = "1.3.1";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -2504,7 +2504,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           React.createElement("button", { style: styles.logoutBtn, onClick: onLogout }, "Sign out")
         )
       ),
-      missedJobs.length > 0 && React.createElement("div", { style: { background: "#FEF3CD", borderBottom: "0.5px solid #f0c040", padding: "10px 1.5rem", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }, onClick: () => setShowMissedModal(true) },
+      missedJobs.length > 0 && React.createElement("div", { style: { background: "linear-gradient(90deg, #FFF6DA 0%, #FCE28A 100%)", borderBottom: "0.5px solid #f0c040", padding: "10px 1.5rem", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }, onClick: () => setShowMissedModal(true) },
         React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: "#856404" } }, "⚠️ " + missedJobs.length + " unfinished job" + (missedJobs.length > 1 ? "s" : "") + " — tap to review"),
         React.createElement("span", { style: { fontSize: 12, color: "#856404" } }, "›")
       ),
@@ -2709,7 +2709,7 @@ const styles = {
   menuItem: { display: "block", padding: "0.65rem 1.25rem", fontSize: 14, color: "#1a1a1a", textDecoration: "none", fontWeight: 500 },
   locationBar: { display: "flex", alignItems: "center", gap: 8, padding: "0.6rem 1.5rem", background: "#f5f5f3", borderBottom: "0.5px solid #e0e0e0" },
   locationText: { fontSize: 12, color: "#666" }, locationLink: { color: "#185FA5", fontSize: 12 },
-  monthBar: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0.75rem 1.5rem", background: "#185FA5" },
+  monthBar: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0.75rem 1.5rem", background: "linear-gradient(135deg, #2278CC 0%, #123F6E 100%)" },
   monthText: { fontSize: 14, fontWeight: 600, color: "#fff" }, monthSub: { fontSize: 11, color: "rgba(255,255,255,0.7)", marginTop: 2 },
   monthRight: { display: "flex", alignItems: "center", gap: 16 },
   monthStatBtn: { textAlign: "center", background: "none", border: "none", cursor: "pointer", padding: "4px 8px", borderRadius: 8 },
@@ -2717,8 +2717,8 @@ const styles = {
   monthStatLabel: { fontSize: 10, color: "rgba(255,255,255,0.7)", textTransform: "uppercase", letterSpacing: "0.04em" },
   monthDivider: { width: 1, height: 32, background: "rgba(255,255,255,0.3)" },
   dayBar: { display: "flex", alignItems: "center", gap: 12, padding: "0.75rem 1.5rem", background: "#f5f5f3", borderBottom: "0.5px solid #e0e0e0", flexWrap: "wrap" },
-  startBtn: { fontSize: 13, padding: "8px 18px", borderRadius: 8, background: "#27500A", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 },
-  finishBtn: { fontSize: 13, padding: "8px 18px", borderRadius: 8, background: "#633806", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 },
+  startBtn: { fontSize: 13, padding: "8px 18px", borderRadius: 8, background: "linear-gradient(135deg, #3E7A11 0%, #1D3A05 100%)", boxShadow: "0 2px 6px rgba(39,80,10,0.35)", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 },
+  finishBtn: { fontSize: 13, padding: "8px 18px", borderRadius: 8, background: "linear-gradient(135deg, #8A5410 0%, #4A2604 100%)", boxShadow: "0 2px 6px rgba(99,56,6,0.35)", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 },
   dayStatus: { fontSize: 12, color: "#666" },
   sheetLink: { fontSize: 12, color: "#185FA5", marginLeft: "auto" },
   mileageBar: { margin: "1rem 1.5rem 0", background: "#fff", border: "0.5px solid #e0e0e0", borderRadius: 12, padding: "0.75rem 1rem" },
@@ -2728,10 +2728,10 @@ const styles = {
   mileageVal: { color: "#1a1a1a", fontWeight: 500 },
   mileageTotal: { display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 600, color: "#1a1a1a", borderTop: "0.5px solid #e0e0e0", marginTop: 6, paddingTop: 6 },
   statsGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 12, padding: "1.25rem 1.5rem 0" },
-  statCard: { background: "#f5f5f3", borderRadius: 8, padding: "0.75rem 1rem" }, statLabel: { fontSize: 12, color: "#888", marginBottom: 4 }, statVal: { fontSize: 24, fontWeight: 600, color: "#1a1a1a" },
+  statCard: { background: "linear-gradient(135deg, #fafaf9 0%, #eeeeec 100%)", border: "0.5px solid #e6e6e3", borderRadius: 8, padding: "0.75rem 1rem" }, statLabel: { fontSize: 12, color: "#888", marginBottom: 4 }, statVal: { fontSize: 24, fontWeight: 600, color: "#1a1a1a" },
   filterRow: { display: "flex", gap: 8, padding: "1rem 1.5rem 0", flexWrap: "wrap" },
   filterBtn: { fontSize: 12, padding: "5px 14px", borderRadius: 20, border: "0.5px solid #ccc", background: "#fff", color: "#666", cursor: "pointer" },
-  filterActive: { background: "#185FA5", color: "#fff", borderColor: "#185FA5" },
+  filterActive: { background: "linear-gradient(135deg, #2278CC 0%, #123F6E 100%)", color: "#fff", borderColor: "#185FA5" },
   dateNav: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "1rem 1.5rem 0" },
   navBtn: { fontSize: 13, padding: "6px 14px", borderRadius: 8, border: "0.5px solid #ccc", background: "#fff", color: "#1a1a1a", cursor: "pointer" },
   dateCenter: { textAlign: "center" }, dateLabel: { fontSize: 13, fontWeight: 600, color: "#999", textTransform: "uppercase", letterSpacing: "0.05em" },
