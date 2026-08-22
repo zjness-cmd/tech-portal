@@ -22,7 +22,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.22.5";
+const APP_VERSION = "1.22.6";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -273,6 +273,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const accessTokenRef = useRef(accessToken);
 
   const dbg = (msg, type = "info") => {
+    console.log("[TechPortal]", msg);
+    if (type !== "error") return;
     const entry = { time: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }), msg, type };
     setDebugLog(prev => {
       const next = [entry, ...prev].slice(0, 500);
@@ -282,7 +284,6 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       } catch {}
       return next;
     });
-    console.log("[TechPortal]", msg);
   };
 
   // ── Pending-save persistence ────────────────────────────────────────────
@@ -2347,7 +2348,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         onExit: () => setDriveMode(false),
       }),
       React.createElement("div", { style: { position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 9999 } },
-        React.createElement("button", { onClick: () => setShowDebug(p => !p), style: { width: "100%", padding: "6px", background: "#1a1a2e", color: "#7dd3fc", fontSize: 11, fontFamily: "monospace", border: "none", cursor: "pointer", textAlign: "left" } }, "🔧 Debug (" + debugLog.length + " logs) — tap to " + (showDebug ? "hide" : "show")),
+        React.createElement("button", { onClick: () => setShowDebug(p => !p), style: { width: "100%", padding: "6px", background: "#1a1a2e", color: "#7dd3fc", fontSize: 11, fontFamily: "monospace", border: "none", cursor: "pointer", textAlign: "left" } }, "🔧 Debug (" + debugLog.length + " errors) — tap to " + (showDebug ? "hide" : "show")),
         showDebug && React.createElement("div", { style: { background: "#0d0d1a", color: "#cdd6f4", fontFamily: "monospace", fontSize: 10, padding: "8px", maxHeight: 200, overflowY: "auto", borderTop: "1px solid #333" } },
           React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 4 } },
             React.createElement("button", { onClick: () => { setDebugLog([]); try { localStorage.removeItem("techportal_debugLog_" + new Date().toDateString()); } catch {} }, style: { fontSize: 10, padding: "2px 8px", background: "#333", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer" } }, "Clear"),
