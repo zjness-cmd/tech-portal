@@ -476,15 +476,15 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   // app backgrounded and the OS kills location updates, a permission
   // hiccup — and when that happens this silently undercounts, sometimes
   // drastically (seen firsthand: legs summing to 107 mi while this read
-  // 5.7), while still being shown as "Total" directly under a per-leg log
-  // that visibly adds up to something much bigger. Each logged leg is its
-  // own routed driving-distance estimate between two real addresses, so
-  // it stays accurate even when the live GPS trace has gaps — only trust
-  // the GPS figure when it's at least in the same ballpark as those legs;
-  // otherwise fall back to the summed legs instead of showing a number
-  // that visibly contradicts the log right above it.
-  const gpsTrackedMiles = (gpsTrackedMilesRaw !== null && totalMiles > 1 && gpsTrackedMilesRaw < totalMiles * 0.5) ? null : gpsTrackedMilesRaw;
-  const displayMiles = gpsTrackedMiles !== null ? gpsTrackedMiles : Math.round(totalMiles * 10) / 10;
+  // 5.7, and separately 65.0 mi vs. 46.9 mi — the old 50%-of-leg-sum
+  // threshold was too loose to catch that). Each logged leg is its own
+  // routed driving-distance estimate between two real addresses, so it
+  // stays accurate even when the live GPS trace has gaps. The leg-sum is
+  // therefore the primary displayed total; GPS is only used as a
+  // cross-check (and only surfaced as one) when it's within 10% of the
+  // leg-sum, never as a replacement for it.
+  const displayMiles = Math.round(totalMiles * 10) / 10;
+  const gpsTrackedMiles = (gpsTrackedMilesRaw !== null && totalMiles > 1 && Math.abs(gpsTrackedMilesRaw - totalMiles) <= totalMiles * 0.1) ? gpsTrackedMilesRaw : null;
 
   // Total revenue: sum of every dollar value entered for today's jobs.
   const totalRevenue = Object.values(jobValues).reduce((sum, v) => sum + (Number(v) || 0), 0);
@@ -2633,7 +2633,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           React.createElement("span", null, "Total"),
           React.createElement("div", { style: { textAlign: "right" } },
             React.createElement("div", null, displayMiles + " mi"),
-            gpsTrackedMiles !== null && React.createElement("div", { style: { fontSize: 10, color: "#888", marginTop: 1 } }, "GPS tracked")
+            gpsTrackedMiles !== null && React.createElement("div", { style: { fontSize: 10, color: "#888", marginTop: 1 } }, "✓ GPS confirmed")
           )
         ),
         gpsTrack.length >= 2 && React.createElement("button", { onClick: handleViewRoute, style: { marginTop: 10, width: "100%", padding: "8px", borderRadius: 8, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600 } }, "🗺️ View Route in Maps")
