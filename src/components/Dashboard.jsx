@@ -75,14 +75,54 @@ async function getDrivingMiles(fromLat, fromLng, toLat, toLng) {
   } catch (e) { return straightLine; }
 }
 
+const GEOCODE_CACHE_KEY = "techportal_geocodeCache";
+// Client addresses churn slowly but the tech's book of business does turn
+// over — entries untouched for this long are dropped rather than kept
+// forever, and the cache is also capped by count (evicting the
+// least-recently-used entries) so it can't grow unbounded over years of use.
+const GEOCODE_CACHE_MAX_AGE_MS = 180 * 24 * 60 * 60 * 1000;
+const GEOCODE_CACHE_MAX_ENTRIES = 500;
+
+function loadGeocodeCache() {
+  let cache;
+  try { cache = JSON.parse(localStorage.getItem(GEOCODE_CACHE_KEY)) || {}; } catch { return {}; }
+  const cutoff = Date.now() - GEOCODE_CACHE_MAX_AGE_MS;
+  let pruned = false;
+  for (const key of Object.keys(cache)) {
+    if (!cache[key]?.ts || cache[key].ts < cutoff) { delete cache[key]; pruned = true; }
+  }
+  if (pruned) saveGeocodeCache(cache);
+  return cache;
+}
+
+function saveGeocodeCache(cache) {
+  let entries = Object.entries(cache);
+  if (entries.length > GEOCODE_CACHE_MAX_ENTRIES) {
+    entries.sort((a, b) => (b[1]?.ts || 0) - (a[1]?.ts || 0));
+    entries = entries.slice(0, GEOCODE_CACHE_MAX_ENTRIES);
+    cache = Object.fromEntries(entries);
+  }
+  try { localStorage.setItem(GEOCODE_CACHE_KEY, JSON.stringify(cache)); } catch {}
+}
+
 async function geocodeAddress(address, dbgFn) {
   if (!address) { if (dbgFn) dbgFn("❌ Geocode skipped — no address", "error"); return null; }
+  const cacheKey = address.trim().toLowerCase();
+  const cache = loadGeocodeCache();
+  const cached = cache[cacheKey];
+  if (cached) {
+    cached.ts = Date.now();
+    saveGeocodeCache(cache);
+    return { lat: cached.lat, lng: cached.lng };
+  }
   try {
     const url = "/api/geocode?" + new URLSearchParams({ address });
     const res = await fetch(url);
     const data = await res.json();
     if (data.status === "OK" && data.results[0]) {
       const { lat, lng } = data.results[0].geometry.location;
+      cache[cacheKey] = { lat, lng, ts: Date.now() };
+      saveGeocodeCache(cache);
       return { lat, lng };
     } else {
       if (dbgFn) dbgFn("❌ Geocode API status: " + data.status + (data.error_message ? " — " + data.error_message : ""), "error");
