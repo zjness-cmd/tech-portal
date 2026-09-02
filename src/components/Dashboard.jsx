@@ -22,7 +22,7 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.3.1";
+const APP_VERSION = "1.3.2";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -1202,23 +1202,30 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         Object.entries(rowsByDate).forEach(([dStr, dRows]) => {
           const parsed = new Date(dStr);
           if (isNaN(parsed) || parsed.getMonth() !== curMonth || parsed.getFullYear() !== curYear) return;
-          const gRow = dRows.find(r => r[1] === "__GPS_TRACK__");
-          const mRow = dRows.find(r => r[1] === "__MILEAGE_LOG__");
-          let dayMiles = 0;
+          const gRow = [...dRows].reverse().find(r => r[1] === "__GPS_TRACK__");
+          const mRow = [...dRows].reverse().find(r => r[1] === "__MILEAGE_LOG__");
+          // Same "leg-sum is primary, GPS is only a cross-check" logic as
+          // displayMiles/gpsTrackedMiles above — the leg log is per-leg
+          // routed driving distance between real addresses and stays
+          // accurate even when the live GPS trace has gaps, so it's used
+          // whenever available. GPS only fills in for days with no leg log.
+          let legMiles = 0;
+          if (mRow) {
+            try {
+              const log = JSON.parse(mRow[3]);
+              if (Array.isArray(log)) legMiles = log.reduce((s, m) => s + (m.miles || 0), 0);
+            } catch {}
+          }
+          let gpsMiles = 0;
           if (gRow) {
             try {
               const track = JSON.parse(gRow[3]);
               if (Array.isArray(track) && track.length >= 2) {
-                dayMiles = track.reduce((sum, pt, i) => i === 0 ? 0 : sum + calcMiles(track[i - 1][0], track[i - 1][1], pt[0], pt[1]), 0);
+                gpsMiles = track.reduce((sum, pt, i) => i === 0 ? 0 : sum + calcMiles(track[i - 1][0], track[i - 1][1], pt[0], pt[1]), 0);
               }
             } catch {}
           }
-          if (dayMiles === 0 && mRow) {
-            try {
-              const log = JSON.parse(mRow[3]);
-              if (Array.isArray(log)) dayMiles = log.reduce((s, m) => s + (m.miles || 0), 0);
-            } catch {}
-          }
+          const dayMiles = legMiles > 0 ? legMiles : gpsMiles;
           monthTotal += dayMiles;
           dRows.forEach(r => {
             const jobId = r[1];
