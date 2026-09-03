@@ -2626,8 +2626,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               }
               return React.createElement("div", { key: i, style: styles.mileageRow },
                 React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 1, flex: 1 } },
-                  React.createElement("span", { style: { fontSize: 11, color: "#aaa" } }, (m.from || "Start") + " →"),
-                  React.createElement("span", null, m.jobTitle),
+                  React.createElement("span", { style: { fontSize: 11, color: "#aaa" } }, (m.from || "Start").replace(/^(⚠️ MISSED - )+/, "") + " →"),
+                  React.createElement("span", null, (m.jobTitle || "").replace(/^(⚠️ MISSED - )+/, "")),
                   m.checkIn && React.createElement("span", { style: { fontSize: 11, color: "#888" } }, "⏱ " + m.checkIn + (m.checkOut ? " – " + m.checkOut : "") + (duration ? " (" + duration + ")" : ""))
                 ),
                 React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
