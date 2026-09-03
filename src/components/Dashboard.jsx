@@ -1997,7 +1997,10 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     updateCalendarEvent(job, {});
   };
 
-  const handleInvoice = (job) => { setInvoiceJob({ ...job, checkInTime: checkedIn[job.id] || null, checkOutTime: checkedOut[job.id] || null }); };
+  const handleInvoice = (job) => {
+    const nid = normalizeId(job.id);
+    setInvoiceJob({ ...job, checkInTime: checkedIn[nid] || null, checkOutTime: checkedOut[nid] || null });
+  };
   const handleInvoiceClose = () => { setInvoiceJob(null); };
   const handleInvoiceCreated = (jobId, invoiceUrl) => {
     const nid = normalizeId(jobId);
