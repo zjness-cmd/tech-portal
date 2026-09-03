@@ -2511,7 +2511,15 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
                 }, "💳 CC")
               )
             ),
-            React.createElement("button", { onClick: handleConfirmPayAmount, style: { width: "100%", padding: "10px", borderRadius: 8, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 } }, "Save")
+            React.createElement("button", { onClick: handleConfirmPayAmount, style: { width: "100%", padding: "10px", borderRadius: 8, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 } }, "Save"),
+            React.createElement("button", {
+              onClick: () => {
+                const job = jobs.find(j => normalizeId(j.id) === payAmountPrompt.nid);
+                if (job) handleInvoice(job);
+                setPayAmountPrompt(null);
+              },
+              style: { width: "100%", padding: "10px", borderRadius: 8, background: "#fff", color: "#185FA5", border: "1px solid #185FA5", cursor: "pointer", fontWeight: 600, marginTop: 8 },
+            }, "📄 Create Invoice")
           )
         )
       ),
