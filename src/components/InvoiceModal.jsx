@@ -106,6 +106,16 @@ export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreat
       if (!copyData.id) throw new Error("Could not copy template. Make sure the template is shared.");
       const createdSheetId = copyData.id;
 
+      // Formatting requests below (mergeCells/repeatCell/etc) need the
+      // numeric sheetId of the tab, not the spreadsheet file id — fetch it
+      // rather than assuming 0, in case the template's first tab ever
+      // changes.
+      const metaRes = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + createdSheetId + "?fields=sheets.properties", {
+        headers: { Authorization: "Bearer " + accessToken }
+      });
+      const metaData = await metaRes.json();
+      const sheetId = metaData.sheets?.[0]?.properties?.sheetId ?? 0;
+
       const serviceTimeStr = checkInTime && checkOutTime
         ? "Service time: " + checkInTime + " – " + checkOutTime
         : checkInTime
@@ -121,8 +131,7 @@ export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreat
         { range: "E16", values: [["$" + total]] },
         { range: "E20", values: [["=SUM(E16:E19)"]] },
         ...(serviceTimeStr ? [{ range: "B17", values: [[serviceTimeStr]] }] : []),
-        { range: "B18", values: [["💳 Pay online by card:"]] },
-        { range: "C18", values: [[INVOICE_SQUARE_PAY_URL]] },
+        { range: "B18", values: [["=HYPERLINK(\"" + INVOICE_SQUARE_PAY_URL + "\", \"💳  PAY BILL ONLINE\")"]] },
         { range: "B19", values: [["(enter invoice #" + invoiceNumber + " when prompted so it's matched to this invoice)"]] },
       ];
 
@@ -130,6 +139,58 @@ export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreat
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
         body: JSON.stringify({ valueInputOption: "USER_ENTERED", data: values })
+      });
+
+      // Turns the B18 HYPERLINK formula above into a wide blue "button" bar
+      // (merged B18:D18, taller row) instead of a plain text link, and
+      // wraps the row-19 invoice-number note so it doesn't get cut off.
+      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + createdSheetId + ":batchUpdate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
+        body: JSON.stringify({
+          requests: [
+            {
+              mergeCells: {
+                range: { sheetId, startRowIndex: 17, endRowIndex: 18, startColumnIndex: 1, endColumnIndex: 4 },
+                mergeType: "MERGE_ALL"
+              }
+            },
+            {
+              repeatCell: {
+                range: { sheetId, startRowIndex: 17, endRowIndex: 18, startColumnIndex: 1, endColumnIndex: 4 },
+                cell: {
+                  userEnteredFormat: {
+                    backgroundColor: { red: 0.09, green: 0.37, blue: 0.65 },
+                    horizontalAlignment: "CENTER",
+                    verticalAlignment: "MIDDLE",
+                    textFormat: { bold: true, fontSize: 13, foregroundColor: { red: 1, green: 1, blue: 1 } }
+                  }
+                },
+                fields: "userEnteredFormat(backgroundColor,horizontalAlignment,verticalAlignment,textFormat)"
+              }
+            },
+            {
+              updateDimensionProperties: {
+                range: { sheetId, dimension: "ROWS", startIndex: 17, endIndex: 18 },
+                properties: { pixelSize: 32 },
+                fields: "pixelSize"
+              }
+            },
+            {
+              mergeCells: {
+                range: { sheetId, startRowIndex: 18, endRowIndex: 19, startColumnIndex: 1, endColumnIndex: 4 },
+                mergeType: "MERGE_ALL"
+              }
+            },
+            {
+              repeatCell: {
+                range: { sheetId, startRowIndex: 18, endRowIndex: 19, startColumnIndex: 1, endColumnIndex: 4 },
+                cell: { userEnteredFormat: { wrapStrategy: "WRAP" } },
+                fields: "userEnteredFormat.wrapStrategy"
+              }
+            }
+          ]
+        })
       });
 
       const createdUrl = "https://docs.google.com/spreadsheets/d/" + createdSheetId + "/edit";
