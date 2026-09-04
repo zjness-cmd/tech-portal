@@ -22,9 +22,9 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-// v1.3.6: Sheets invoice pay link is now a styled button (merged B18:D18,
-// blue bar, white bold centered "PAY BILL ONLINE") instead of plain text.
-const APP_VERSION = "1.3.6";
+// v1.3.7: Sheets invoice pay button uses a real embedded hyperlink instead
+// of an =HYPERLINK() formula, so the link survives PDF export.
+const APP_VERSION = "1.3.7";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both

@@ -131,7 +131,6 @@ export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreat
         { range: "E16", values: [["$" + total]] },
         { range: "E20", values: [["=SUM(E16:E19)"]] },
         ...(serviceTimeStr ? [{ range: "B17", values: [[serviceTimeStr]] }] : []),
-        { range: "B18", values: [["=HYPERLINK(\"" + INVOICE_SQUARE_PAY_URL + "\", \"💳  PAY BILL ONLINE\")"]] },
         { range: "B19", values: [["(enter invoice #" + invoiceNumber + " when prompted so it's matched to this invoice)"]] },
       ];
 
@@ -141,9 +140,12 @@ export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreat
         body: JSON.stringify({ valueInputOption: "USER_ENTERED", data: values })
       });
 
-      // Turns the B18 HYPERLINK formula above into a wide blue "button" bar
-      // (merged B18:D18, taller row) instead of a plain text link, and
-      // wraps the row-19 invoice-number note so it doesn't get cut off.
+      // Renders B18 as a wide blue "button" bar (merged B18:D18, taller
+      // row) with a real embedded hyperlink rather than an =HYPERLINK()
+      // formula — a formula's link doesn't survive the .../export?format=pdf
+      // endpoint used in downloadAsPdf, but a cell-level textFormat.link
+      // does. Also wraps the row-19 invoice-number note so it doesn't get
+      // cut off.
       await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + createdSheetId + ":batchUpdate", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
@@ -167,6 +169,24 @@ export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreat
                   }
                 },
                 fields: "userEnteredFormat(backgroundColor,horizontalAlignment,verticalAlignment,textFormat)"
+              }
+            },
+            // Runs after repeatCell above so its link-bearing textFormat
+            // wins for B18 — repeatCell's fields spec replaces textFormat
+            // wholesale, so if this ran first repeatCell would strip the
+            // link right back out.
+            {
+              updateCells: {
+                range: { sheetId, startRowIndex: 17, endRowIndex: 18, startColumnIndex: 1, endColumnIndex: 2 },
+                rows: [{
+                  values: [{
+                    userEnteredValue: { stringValue: "💳  PAY BILL ONLINE" },
+                    userEnteredFormat: {
+                      textFormat: { bold: true, fontSize: 13, foregroundColor: { red: 1, green: 1, blue: 1 }, link: { uri: INVOICE_SQUARE_PAY_URL } }
+                    }
+                  }]
+                }],
+                fields: "userEnteredValue,userEnteredFormat.textFormat"
               }
             },
             {
