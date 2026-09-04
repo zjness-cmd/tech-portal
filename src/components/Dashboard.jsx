@@ -22,11 +22,9 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-// v1.3.4: Sheets invoice success view has an Email Invoice button that
-// sends a pre-filled mailto: (invoice link, amount due, Square pay link,
-// mail-a-check instructions) — same structure as the Unpaid Accounts
-// "Send Invoice" flow, reusing its INVOICE_BUSINESS/INVOICE_SQUARE_PAY_URL.
-const APP_VERSION = "1.3.4";
+// v1.3.5: Sheets invoice template itself now includes a Square pay-online
+// line (B18/C18/B19) so the link is on the invoice, not just the email.
+const APP_VERSION = "1.3.5";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
