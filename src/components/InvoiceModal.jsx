@@ -2,6 +2,10 @@ import React, { useState, useEffect } from "react";
 import { INVOICE_BUSINESS, INVOICE_SQUARE_PAY_URL } from "./Dashboard";
 
 const TEMPLATE_ID = "1mk7ZUarysG0TTAYHlmJAfCjNXAXTWTzq-b6vtewW95c";
+// Sampled from the navy in the "NESS DRAFT BEER SERVICE" logo wordmark on
+// the invoice template (A1:C2) — used to recolor the checks-payable bar,
+// the pay button, and the Total amount so they match the brand mark.
+const INVOICE_NAVY = { red: 0.09, green: 0.14, blue: 0.24 };
 
 export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreated, onPaymentStatusSaved }) {
   const checkInTime = job.checkInTime || null;
@@ -130,8 +134,10 @@ export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreat
         { range: "C16", values: [[description]] },
         { range: "E16", values: [["$" + total]] },
         { range: "E20", values: [["=SUM(E16:E19)"]] },
-        ...(serviceTimeStr ? [{ range: "B17", values: [[serviceTimeStr]] }] : []),
-        { range: "B19", values: [["(enter invoice #" + invoiceNumber + " when prompted so it's matched to this invoice)"]] },
+        // Under the item description, not Quantity — same column the
+        // description itself lives in one row up.
+        ...(serviceTimeStr ? [{ range: "C17", values: [[serviceTimeStr]] }] : []),
+        { range: "B22", values: [["Thanks for your business!"]] },
       ];
 
       await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + createdSheetId + "/values:batchUpdate", {
@@ -140,73 +146,112 @@ export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreat
         body: JSON.stringify({ valueInputOption: "USER_ENTERED", data: values })
       });
 
-      // Renders B18 as a wide blue "button" bar (merged B18:D18, taller
-      // row) with a real embedded hyperlink rather than an =HYPERLINK()
-      // formula — a formula's link doesn't survive the .../export?format=pdf
-      // endpoint used in downloadAsPdf, but a cell-level textFormat.link
-      // does. Also wraps the row-19 invoice-number note so it doesn't get
-      // cut off.
+      // Two-line pay-button text, styled as separate runs so line 2 (the
+      // reference note) can be smaller than the "PAY BILL ONLINE" line —
+      // a single userEnteredFormat.textFormat can't vary size within one
+      // cell, but textFormatRuns can. Both runs carry the same real
+      // textFormat.link.uri (not =HYPERLINK(), which doesn't survive the
+      // .../export?format=pdf endpoint used in downloadAsPdf).
+      const payLine1 = "💳  PAY BILL ONLINE";
+      const payLine2 = "(ref #" + invoiceNumber + ")";
+      const payButtonText = payLine1 + "\n" + payLine2;
+      const payLinkFormat = { link: { uri: INVOICE_SQUARE_PAY_URL }, foregroundColor: { red: 1, green: 1, blue: 1 } };
+
       await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + createdSheetId + ":batchUpdate", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
         body: JSON.stringify({
           requests: [
+            // Pay button — merged into the Total row (B20:C20), left of
+            // the Total label (D20) and amount (E20), instead of its own
+            // row, styled as a navy button with a real embedded link.
             {
               mergeCells: {
-                range: { sheetId, startRowIndex: 17, endRowIndex: 18, startColumnIndex: 1, endColumnIndex: 4 },
+                range: { sheetId, startRowIndex: 19, endRowIndex: 20, startColumnIndex: 1, endColumnIndex: 3 },
                 mergeType: "MERGE_ALL"
               }
             },
             {
               repeatCell: {
-                range: { sheetId, startRowIndex: 17, endRowIndex: 18, startColumnIndex: 1, endColumnIndex: 4 },
+                range: { sheetId, startRowIndex: 19, endRowIndex: 20, startColumnIndex: 1, endColumnIndex: 3 },
                 cell: {
                   userEnteredFormat: {
-                    backgroundColor: { red: 0.09, green: 0.37, blue: 0.65 },
+                    backgroundColor: INVOICE_NAVY,
                     horizontalAlignment: "CENTER",
                     verticalAlignment: "MIDDLE",
-                    textFormat: { bold: true, fontSize: 13, foregroundColor: { red: 1, green: 1, blue: 1 } }
+                    wrapStrategy: "WRAP"
                   }
                 },
-                fields: "userEnteredFormat(backgroundColor,horizontalAlignment,verticalAlignment,textFormat)"
+                fields: "userEnteredFormat(backgroundColor,horizontalAlignment,verticalAlignment,wrapStrategy)"
               }
             },
-            // Runs after repeatCell above so its link-bearing textFormat
-            // wins for B18 — repeatCell's fields spec replaces textFormat
-            // wholesale, so if this ran first repeatCell would strip the
-            // link right back out.
+            // Separate field mask from repeatCell above (textFormatRuns vs.
+            // userEnteredFormat), so there's no ordering dependency between
+            // the two — neither overwrites the other's fields.
             {
               updateCells: {
-                range: { sheetId, startRowIndex: 17, endRowIndex: 18, startColumnIndex: 1, endColumnIndex: 2 },
+                range: { sheetId, startRowIndex: 19, endRowIndex: 20, startColumnIndex: 1, endColumnIndex: 2 },
                 rows: [{
                   values: [{
-                    userEnteredValue: { stringValue: "💳  PAY BILL ONLINE" },
-                    userEnteredFormat: {
-                      textFormat: { bold: true, fontSize: 13, foregroundColor: { red: 1, green: 1, blue: 1 }, link: { uri: INVOICE_SQUARE_PAY_URL } }
-                    }
+                    userEnteredValue: { stringValue: payButtonText },
+                    textFormatRuns: [
+                      { startIndex: 0, format: { ...payLinkFormat, bold: true, fontSize: 13 } },
+                      { startIndex: payLine1.length + 1, format: { ...payLinkFormat, bold: false, fontSize: 9 } }
+                    ]
                   }]
                 }],
-                fields: "userEnteredValue,userEnteredFormat.textFormat"
+                fields: "userEnteredValue,textFormatRuns"
               }
             },
             {
               updateDimensionProperties: {
-                range: { sheetId, dimension: "ROWS", startIndex: 17, endIndex: 18 },
-                properties: { pixelSize: 32 },
+                range: { sheetId, dimension: "ROWS", startIndex: 19, endIndex: 20 },
+                properties: { pixelSize: 42 },
                 fields: "pixelSize"
               }
             },
-            {
-              mergeCells: {
-                range: { sheetId, startRowIndex: 18, endRowIndex: 19, startColumnIndex: 1, endColumnIndex: 4 },
-                mergeType: "MERGE_ALL"
-              }
-            },
+            // Recolor "MAKE CHECKS PAYABLE TO" bar from black to navy —
+            // same bold white text as before, just the background changed.
             {
               repeatCell: {
-                range: { sheetId, startRowIndex: 18, endRowIndex: 19, startColumnIndex: 1, endColumnIndex: 4 },
-                cell: { userEnteredFormat: { wrapStrategy: "WRAP" } },
-                fields: "userEnteredFormat.wrapStrategy"
+                range: { sheetId, startRowIndex: 8, endRowIndex: 9, startColumnIndex: 1, endColumnIndex: 6 },
+                cell: {
+                  userEnteredFormat: {
+                    backgroundColor: INVOICE_NAVY,
+                    textFormat: { bold: true, fontSize: 10, foregroundColor: { red: 1, green: 1, blue: 1 } }
+                  }
+                },
+                fields: "userEnteredFormat(backgroundColor,textFormat)"
+              }
+            },
+            // Emphasize the Total amount so it stands out from the
+            // line-item rows above it. Only touches textFormat, so the
+            // cell's existing background is untouched.
+            {
+              repeatCell: {
+                range: { sheetId, startRowIndex: 19, endRowIndex: 20, startColumnIndex: 4, endColumnIndex: 5 },
+                cell: { userEnteredFormat: { textFormat: { bold: true, fontSize: 16, foregroundColor: INVOICE_NAVY } } },
+                fields: "userEnteredFormat.textFormat"
+              }
+            },
+            // Thin outer border around the Quantity/Description/Amount
+            // table (rows 15-20) — outer edges only, so it doesn't touch
+            // the existing per-cell gridlines inside the table.
+            {
+              updateBorders: {
+                range: { sheetId, startRowIndex: 14, endRowIndex: 20, startColumnIndex: 1, endColumnIndex: 6 },
+                top: { style: "SOLID", width: 1, color: { red: 0, green: 0, blue: 0 } },
+                bottom: { style: "SOLID", width: 1, color: { red: 0, green: 0, blue: 0 } },
+                left: { style: "SOLID", width: 1, color: { red: 0, green: 0, blue: 0 } },
+                right: { style: "SOLID", width: 1, color: { red: 0, green: 0, blue: 0 } }
+              }
+            },
+            // Footer note, two rows below Total (row 22).
+            {
+              repeatCell: {
+                range: { sheetId, startRowIndex: 21, endRowIndex: 22, startColumnIndex: 1, endColumnIndex: 2 },
+                cell: { userEnteredFormat: { textFormat: { italic: true, fontSize: 10, foregroundColor: { red: 0.5, green: 0.5, blue: 0.5 } } } },
+                fields: "userEnteredFormat.textFormat"
               }
             }
           ]
