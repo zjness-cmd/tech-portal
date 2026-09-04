@@ -22,9 +22,11 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-// v1.3.3: completed-and-missed jobs now show a plain "Missed" label plus a
-// Reschedule button, instead of the clickable paid/awaiting-payment badge.
-const APP_VERSION = "1.3.3";
+// v1.3.4: Sheets invoice success view has an Email Invoice button that
+// sends a pre-filled mailto: (invoice link, amount due, Square pay link,
+// mail-a-check instructions) — same structure as the Unpaid Accounts
+// "Send Invoice" flow, reusing its INVOICE_BUSINESS/INVOICE_SQUARE_PAY_URL.
+const APP_VERSION = "1.3.4";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
