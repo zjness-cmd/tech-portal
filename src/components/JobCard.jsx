@@ -77,7 +77,7 @@ export default function JobCard({
   job, location, status, checkedIn, checkedOut, completed, invoiceUrl,
   onCheckIn, onCheckOut, onComplete, onNavigate, onUndo, onInvoice, onMissed,
   isNearby, accessToken, onTimeUpdated, onNotesSaved, logSheetId,
-  paymentStatus, paymentMethod, onTogglePaid, website,
+  paymentStatus, paymentMethod, onTogglePaid, website, onReschedule,
 }) {
   const [imgFailed, setImgFailed] = useState(false);
   const [imgChecked, setImgChecked] = useState(false);
@@ -119,6 +119,7 @@ export default function JobCard({
 
   React.useEffect(() => { setLogoFailed(false); }, [website]);
 
+  const isMissed = job.title.startsWith("⚠️ MISSED");
   const showMissed = !checkedIn && !completed && !!onMissed;
   const showCheckIn = !checkedIn && !completed;
   const showCheckOut = checkedIn && !checkedOut && !completed;
@@ -302,7 +303,13 @@ export default function JobCard({
         // to reach them), but the paid/unpaid label itself is tappable
         // right from the card now, so marking a job paid doesn't require
         // opening the detail view first.
-        completed &&
+        completed && isMissed &&
+          React.createElement(React.Fragment, null,
+            React.createElement("span", { style: s.checkedInLabel }, "⚠️ Missed"),
+            React.createElement("button", { style: s.missedBtn, onClick: onReschedule }, "📅 Reschedule")
+          ),
+
+        completed && !isMissed &&
           React.createElement("button", {
             style: { ...s.checkedInLabel, border: "none", background: "transparent", cursor: "pointer", font: "inherit", textAlign: "left" },
             onClick: (e) => { e.stopPropagation(); onTogglePaid && onTogglePaid(); },

@@ -2737,6 +2737,16 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               onUndo: () => handleUndo(nid),
               onInvoice: () => handleInvoice({ ...job, id: nid }),
               onMissed: () => handleMissed(nid, job.title, job.location, job.calendarId, job.id),
+              onReschedule: () => {
+                const cleanTitle = job.title.replace(/^(⚠️ MISSED - )+/, "");
+                const m = missedJobs.find(x => x.jobId === nid) || {
+                  jobId: nid, jobTitle: cleanTitle, jobLocation: job.location,
+                  calendarId: job.calendarId, eventId: job.id,
+                  date: selectedDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+                  missedAt: Date.now()
+                };
+                setRescheduleJob(m);
+              },
               onTogglePaid: () => handleTogglePaid(nid, job.title),
               website: clientWebsites[clientKeyFor(job.title)]?.website || "",
             });
