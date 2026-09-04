@@ -22,7 +22,9 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-const APP_VERSION = "1.3.2";
+// v1.3.3: completed-and-missed jobs now show a plain "Missed" label plus a
+// Reschedule button, instead of the clickable paid/awaiting-payment badge.
+const APP_VERSION = "1.3.3";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
