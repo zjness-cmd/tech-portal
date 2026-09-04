@@ -29,8 +29,8 @@ const APP_VERSION = "1.3.3";
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
 // invoicing flows show the same business details.
-const INVOICE_BUSINESS = { name: "Ness Draft Beer Service", addr1: "PO Box 222", addr2: "Albertville, MN 55301", phone: "612-293-9459" };
-const INVOICE_SQUARE_PAY_URL = "https://checkout.square.site/merchant/ML3V5FZFEF5B8/checkout/R6IKWK56UNMU6GSPBHVPLIBY";
+export const INVOICE_BUSINESS = { name: "Ness Draft Beer Service", addr1: "PO Box 222", addr2: "Albertville, MN 55301", phone: "612-293-9459" };
+export const INVOICE_SQUARE_PAY_URL = "https://checkout.square.site/merchant/ML3V5FZFEF5B8/checkout/R6IKWK56UNMU6GSPBHVPLIBY";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 

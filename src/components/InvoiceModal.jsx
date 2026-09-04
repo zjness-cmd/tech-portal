@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
+import { INVOICE_BUSINESS, INVOICE_SQUARE_PAY_URL } from "./Dashboard";
 
 const TEMPLATE_ID = "1mk7ZUarysG0TTAYHlmJAfCjNXAXTWTzq-b6vtewW95c";
-const BUSINESS = { name: "Ness Draft Beer Service", address1: "PO Box 222", address2: "Albertville, MN 55301", phone: "612-293-9459" };
 
 export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreated, onPaymentStatusSaved }) {
   const checkInTime = job.checkInTime || null;
@@ -24,6 +24,11 @@ export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreat
   const [paymentStatus, setPaymentStatus] = useState(null);
   const [savingStatus, setSavingStatus] = useState(false);
   const [statusSaved, setStatusSaved] = useState(false);
+  // In-app email prompt rather than window.prompt() — see the payAmountPrompt
+  // comment in Dashboard.jsx: prompt() silently no-ops on some installed/
+  // standalone PWA Android builds instead of showing a dialog.
+  const [emailPromptOpen, setEmailPromptOpen] = useState(false);
+  const [emailInput, setEmailInput] = useState("");
 
   const total = taps && pricePerTap ? (parseFloat(taps) * parseFloat(pricePerTap)).toFixed(2) : null;
   const now = new Date();
@@ -161,6 +166,44 @@ export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreat
     setSavingStatus(false);
   };
 
+  // Builds a pre-filled mailto: link, same structure as handleSendInvoice
+  // in Dashboard.jsx, but pointed at this Sheets invoice's own sheetUrl
+  // instead of an Unpaid Accounts entry.
+  const handleEmailInvoice = () => {
+    const email = emailInput.trim();
+    if (!email || !email.includes("@")) { setError("Enter a valid email address."); return; }
+
+    const amountStr = "$" + total;
+    const subject = "Invoice from " + INVOICE_BUSINESS.name;
+    const body = [
+      "Hi " + clientName + ",",
+      "",
+      "Here's your invoice for beer line cleaning service.",
+      "",
+      "Invoice: " + sheetUrl,
+      "Amount due: " + amountStr,
+      "",
+      "Pay online by card:",
+      INVOICE_SQUARE_PAY_URL,
+      "(enter invoice #" + invoiceNumber + " when prompted so it's matched to this invoice)",
+      "",
+      "Or mail a check to:",
+      INVOICE_BUSINESS.name,
+      INVOICE_BUSINESS.addr1,
+      INVOICE_BUSINESS.addr2,
+      "(please write invoice #" + invoiceNumber + " on the memo line)",
+      "",
+      "Thanks for your business!",
+      INVOICE_BUSINESS.name,
+      INVOICE_BUSINESS.phone,
+    ].join("\n");
+
+    const mailto = "mailto:" + encodeURIComponent(email) + "?subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
+    window.location.href = mailto;
+    setEmailPromptOpen(false);
+    setEmailInput("");
+  };
+
   const downloadAsPdf = async () => {
     if (!newSheetId) return;
     setDownloading(true);
@@ -238,6 +281,22 @@ export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreat
               onClick: downloadAsPdf,
               disabled: downloading
             }, downloading ? "⏳ Generating PDF..." : "⬇️ Download as PDF"),
+            sheetUrl && !emailPromptOpen && React.createElement("button", {
+              style: { ...styles.openSheetBtn, background: "#fff", color: "#185FA5", border: "1px solid #185FA5", cursor: "pointer", display: "block", margin: "0 auto 12px", textAlign: "center" },
+              onClick: () => { setEmailInput(selectedCustomer?.email_address || ""); setEmailPromptOpen(true); },
+            }, "✉️ Email Invoice"),
+            sheetUrl && emailPromptOpen && React.createElement("div", { style: styles.paymentSection },
+              React.createElement("div", { style: styles.paymentLabel }, "Client's email"),
+              React.createElement("input", {
+                style: styles.input, type: "email", inputMode: "email", autoFocus: true, placeholder: "customer@example.com",
+                value: emailInput, onChange: (e) => setEmailInput(e.target.value),
+                onKeyDown: (e) => { if (e.key === "Enter") handleEmailInvoice(); },
+              }),
+              React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 10 } },
+                React.createElement("button", { style: { ...styles.backBtn }, onClick: () => { setEmailPromptOpen(false); setEmailInput(""); } }, "Cancel"),
+                React.createElement("button", { style: styles.sendBtn, onClick: handleEmailInvoice }, "✉️ Open Email to Send")
+              )
+            ),
             React.createElement("button", { style: styles.doneBtn, onClick: onClose }, "Done")
           )
         ) : step === "type" ? (
