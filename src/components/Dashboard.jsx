@@ -22,9 +22,9 @@ const GEOFENCE_DWELL_MS = 30 * 1000;
 // big-box stores, parking ramps) is no longer thrown away outright; it's
 // compensated for in the distance check below instead.
 const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
-// v1.3.5: Sheets invoice template itself now includes a Square pay-online
-// line (B18/C18/B19) so the link is on the invoice, not just the email.
-const APP_VERSION = "1.3.5";
+// v1.3.6: Sheets invoice pay link is now a styled button (merged B18:D18,
+// blue bar, white bold centered "PAY BILL ONLINE") instead of plain text.
+const APP_VERSION = "1.3.6";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
