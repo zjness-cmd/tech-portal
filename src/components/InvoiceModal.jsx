@@ -121,6 +121,9 @@ export default function InvoiceModal({ job, accessToken, onClose, onInvoiceCreat
         { range: "E16", values: [["$" + total]] },
         { range: "E20", values: [["=SUM(E16:E19)"]] },
         ...(serviceTimeStr ? [{ range: "B17", values: [[serviceTimeStr]] }] : []),
+        { range: "B18", values: [["💳 Pay online by card:"]] },
+        { range: "C18", values: [[INVOICE_SQUARE_PAY_URL]] },
+        { range: "B19", values: [["(enter invoice #" + invoiceNumber + " when prompted so it's matched to this invoice)"]] },
       ];
 
       await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + createdSheetId + "/values:batchUpdate", {
