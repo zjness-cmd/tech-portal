@@ -26,7 +26,7 @@ const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
 // (merged B20:C20, navy, two-line real link), checks-payable bar and
 // Total amount recolored navy to match the logo, thin outer border
 // added around the item table, footer line added under Total.
-const APP_VERSION = "1.3.8";
+const APP_VERSION = "1.3.9";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -1433,10 +1433,10 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     const requeue = (scheduleRetry) => {
       persistPending(); // pending values are already still in the ref; just persist the current state
       if (!scheduleRetry) return;
-      if (retryCount < 3) {
+      if (retryCount < 6) {
         setTimeout(() => flushStatusSaves(retryCount + 1), (retryCount + 1) * 2000);
       } else {
-        dbg("⛔ Giving up after 3 retries — " + Object.keys(pending).length + " save(s) still pending, will retry on next trigger", "error");
+        dbg("⛔ Giving up after 6 retries — " + Object.keys(pending).length + " save(s) still pending, will retry on next trigger", "error");
       }
     };
 

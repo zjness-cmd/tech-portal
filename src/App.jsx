@@ -87,7 +87,7 @@ export default function App() {
       // few times with backoff before showing the "sign in again" banner;
       // only skip straight to the banner if the server told us the refresh
       // token is actually dead (401, marked .fatal above).
-      if (!e.fatal && retryCount < 3) {
+      if (!e.fatal && retryCount < 6) {
         setTimeout(() => silentRefresh(retryCount + 1), (retryCount + 1) * 5000);
         return; // still in flight — don't release the lock yet
       }
