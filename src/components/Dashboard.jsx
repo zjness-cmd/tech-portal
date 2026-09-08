@@ -26,7 +26,7 @@ const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
 // (merged B20:C20, navy, two-line real link), checks-payable bar and
 // Total amount recolored navy to match the logo, thin outer border
 // added around the item table, footer line added under Total.
-const APP_VERSION = "1.3.9";
+const APP_VERSION = "1.3.10";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -1742,7 +1742,15 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
         body: JSON.stringify({
-          summary: master.summary,
+          // Use cleanTitle, not master.summary — this function is only
+          // reachable if it's re-enabled above (see the DISABLED comment
+          // in cascadeReschedule), but if the OLD master's summary ever
+          // carried a stray "⚠️ MISSED - " prefix (e.g. from the bug
+          // handleMissed's new recurringEventId guard now prevents),
+          // copying it verbatim here would bake that prefix into the
+          // brand-new series' master too, and every future split would
+          // keep re-propagating it forever.
+          summary: cleanTitle,
           description: master.description,
           location: master.location,
           colorId: master.colorId,
@@ -2200,12 +2208,37 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     setPending(jobId + "__done", { status: "missed", extra: cleanTitle });
     flushStatusSaves();
     if (jobCalendarId && jobEventId && token) {
-      fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(jobCalendarId) + "/events/" + jobEventId, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-        body: JSON.stringify({ summary: "⚠️ MISSED - " + cleanTitle }),
-      }).then(r => { if (!r.ok) dbg("❌ Calendar title update failed for " + cleanTitle + ": " + r.status, "error"); else dbg("✅ Calendar title updated: " + cleanTitle); })
-        .catch(e => dbg("❌ Calendar title update error for " + cleanTitle + ": " + e.message, "error"));
+      // Guard added after a real-world incident: several recurring jobs'
+      // MASTER events (their bare recurringEventId, no instance-specific
+      // "_<timestamp>" suffix) ended up with their summary permanently
+      // set to "⚠️ MISSED - <title>", which then displayed on every
+      // future occurrence of that series — not just the one day that
+      // was actually missed. A genuine dated occurrence never carries a
+      // `recurrence` array (only a recurring series' master/template
+      // event does), so checking for that before writing means a
+      // bad/stale jobEventId can never again silently rename an entire
+      // series instead of just today's instance.
+      (async () => {
+        try {
+          const checkRes = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(jobCalendarId) + "/events/" + jobEventId, { headers: { Authorization: "Bearer " + token } });
+          if (checkRes.ok) {
+            const checkEvent = await checkRes.json();
+            if (checkEvent.recurrence && checkEvent.recurrence.length > 0) {
+              dbg("❌ Refused to mark missed on calendar — " + jobEventId + " is a recurring MASTER event, not a specific day's occurrence. Title left untouched to avoid renaming the whole series.", "error");
+              return;
+            }
+          }
+          const r = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(jobCalendarId) + "/events/" + jobEventId, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+            body: JSON.stringify({ summary: "⚠️ MISSED - " + cleanTitle }),
+          });
+          if (!r.ok) dbg("❌ Calendar title update failed for " + cleanTitle + ": " + r.status, "error");
+          else dbg("✅ Calendar title updated: " + cleanTitle);
+        } catch (e) {
+          dbg("❌ Calendar title update error for " + cleanTitle + ": " + e.message, "error");
+        }
+      })();
     } else {
       dbg("⚠️ Skipped calendar title update for " + cleanTitle + " — missing calendarId/eventId/token", "warn");
     }
