@@ -119,8 +119,17 @@ function parseSearchResult(row) {
 // starts you with) rather than throwing, since a bad guess here should
 // never block getting into the editable pars grid to fix it by hand.
 function parseHolesResponse(payload, fallbackName) {
-  const name = payload?.course?.name ?? payload?.course?.courseName ?? fallbackName;
+  const name = payload?.course?.name ?? payload?.course?.course_name ?? payload?.course?.courseName ?? fallbackName;
+  // Confirmed against a real third-party consumer of this API (its holes
+  // are nested under `holes_data`, per-hole fields are `number`/`par`) —
+  // the earlier guesses (bare `holes`) matched the array wrapper shape but
+  // not this key, which is why hole *count* came through right while every
+  // par silently fell back to the 4 default. Keeping the older guesses too
+  // in case the two endpoints (/:id vs /:id/holes) don't wrap it the same way.
   let holeList =
+    (Array.isArray(payload?.course?.holes_data) && payload.course.holes_data) ||
+    (Array.isArray(payload?.holes?.holes_data) && payload.holes.holes_data) ||
+    (Array.isArray(payload?.holes_data) && payload.holes_data) ||
     (Array.isArray(payload?.holes) && payload.holes) ||
     (Array.isArray(payload?.holes?.holes) && payload.holes.holes) ||
     (Array.isArray(payload?.course?.holes) && payload.course.holes) ||
@@ -132,9 +141,12 @@ function parseHolesResponse(payload, fallbackName) {
   }
 
   const withNumbers = holeList.map((h, i) => ({
-    num: h.hole ?? h.number ?? h.holeNumber ?? h.hole_number ?? h.index ?? i + 1,
+    num: h.number ?? h.hole ?? h.holeNumber ?? h.hole_number ?? h.index ?? i + 1,
     par: h.par ?? h.Par ?? h.holePar ?? h.hole_par ?? 4,
   }));
+  if (holeList.some(h => h.par == null && h.number == null)) {
+    console.warn("[GolfScorecard] Holes array found but par/number fields didn't match known keys — first hole object:", holeList[0]);
+  }
   withNumbers.sort((a, b) => a.num - b.num);
   const pars = withNumbers.map(h => parseInt(h.par) || 4);
   return { name, holes: pars.length, pars };
