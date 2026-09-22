@@ -39,23 +39,98 @@ const COURSES = {
   },
 };
 
+// The current in-progress card and the custom-course list used to just be
+// plain useState with no persistence — closing the PWA (or the phone just
+// backgrounding it long enough to get reclaimed) silently threw away
+// whatever was on the card. These now round-trip through localStorage so a
+// round in progress survives a reload, and finished rounds can be kept
+// around in their own history to view or re-send later.
+const CURRENT_KEY = "techportal_golfCurrent";
+const ROUNDS_KEY = "techportal_golfRounds";
+const CUSTOM_COURSES_KEY = "techportal_golfCustomCourses";
+
+function loadJSON(key, fallback) {
+  try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : fallback; } catch { return fallback; }
+}
+
+function sumScores(arr, holes) {
+  return (arr || []).slice(0, holes).reduce((a, v) => a + (v === "" || v == null ? 0 : parseInt(v)), 0);
+}
+
+const fmt = v => (v >= 0 ? "+$" : "-$") + Math.abs(v).toFixed(2);
+
+// Plain-text rendering of a round (live or saved) for the Text button — one
+// shared builder so a round texted straight off the live card and one
+// texted later from Saved Rounds look identical. Kept to a compact
+// hole-by-hole line rather than a full aligned table since SMS/iMessage
+// don't render monospace, so a table wouldn't line up anyway.
+function buildScorecardText(r) {
+  const lines = [];
+  lines.push("⛳ " + r.courseName + " — " + r.date);
+  lines.push(r.p1name + ": " + sumScores(r.scores.p1, r.holes) + "   " + r.p2name + ": " + sumScores(r.scores.p2, r.holes));
+  lines.push("");
+  for (let i = 0; i < r.holes; i++) {
+    const s1 = r.scores.p1[i] || "-";
+    const s2 = r.scores.p2[i] || "-";
+    const res = r.results[i];
+    let tag = "";
+    if (res?.winner === 1) tag = " → " + r.p1name + " +$" + res.amount;
+    else if (res?.winner === 2) tag = " → " + r.p2name + " +$" + res.amount;
+    else if (res?.winner === 0 && res.carryover > 0) tag = " → push";
+    lines.push("Hole " + (i + 1) + " (par " + r.pars[i] + "): " + s1 + " / " + s2 + tag);
+  }
+  lines.push("");
+  lines.push(r.p1name + " " + fmt(r.p1money) + "  ·  " + r.p2name + " " + fmt(r.p2money));
+  return lines.join("\n");
+}
+
+// Prefers the native share sheet (lets the tech pick Messages, WhatsApp,
+// email, whatever) and falls back to opening the Messages app directly via
+// an sms: link — iOS and Android expect a different separator before
+// `body=`, hence the UA check.
+function shareScorecard(r) {
+  const text = buildScorecardText(r);
+  if (navigator.share) {
+    navigator.share({ title: "⛳ " + r.courseName + " Scorecard", text }).catch(() => {});
+    return;
+  }
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+  window.location.href = "sms:" + (isIOS ? "&" : "?") + "body=" + encodeURIComponent(text);
+}
+
 export default function GolfScorecard() {
-  const [selectedCourse, setSelectedCourse] = useState("custom");
+  const [selectedCourse, setSelectedCourse] = useState(() => loadJSON(CURRENT_KEY, {}).selectedCourse || "custom");
   const [showCourseModal, setShowCourseModal] = useState(false);
   const [showAddCourse, setShowAddCourse] = useState(false);
-  const [customCourses, setCustomCourses] = useState({});
+  const [customCourses, setCustomCourses] = useState(() => loadJSON(CUSTOM_COURSES_KEY, {}));
   const [newCourseName, setNewCourseName] = useState("");
   const [newCourseHoles, setNewCourseHoles] = useState(18);
   const [newCoursePars, setNewCoursePars] = useState(Array(18).fill(4));
 
-  const [p1name, setP1name] = useState("Player 1");
-  const [p2name, setP2name] = useState("Player 2");
-  const [scores, setScores] = useState({ p1: Array(18).fill(""), p2: Array(18).fill("") });
+  const [p1name, setP1name] = useState(() => loadJSON(CURRENT_KEY, {}).p1name || "Player 1");
+  const [p2name, setP2name] = useState(() => loadJSON(CURRENT_KEY, {}).p2name || "Player 2");
+  const [scores, setScores] = useState(() => loadJSON(CURRENT_KEY, {}).scores || { p1: Array(18).fill(""), p2: Array(18).fill("") });
   const [editingPars, setEditingPars] = useState(false);
-  const [courseParOverrides, setCourseParOverrides] = useState({});
+  const [courseParOverrides, setCourseParOverrides] = useState(() => loadJSON(CURRENT_KEY, {}).courseParOverrides || {});
+  const [savedRounds, setSavedRounds] = useState(() => loadJSON(ROUNDS_KEY, []));
+  const [showSavedRounds, setShowSavedRounds] = useState(false);
+
+  // Persist the in-progress card on every change so a reload resumes
+  // exactly where it left off — this is separate from "Save Round" below,
+  // which snapshots a finished round into history.
+  React.useEffect(() => {
+    try { localStorage.setItem(CURRENT_KEY, JSON.stringify({ selectedCourse, p1name, p2name, scores, courseParOverrides })); } catch {}
+  }, [selectedCourse, p1name, p2name, scores, courseParOverrides]);
+  React.useEffect(() => {
+    try { localStorage.setItem(CUSTOM_COURSES_KEY, JSON.stringify(customCourses)); } catch {}
+  }, [customCourses]);
 
   const allCourses = { ...COURSES, ...customCourses };
-  const course = allCourses[selectedCourse];
+  // Falls back to the built-in Custom Course if the restored selectedCourse
+  // points at a custom course that's no longer in customCourses (e.g. its
+  // own localStorage entry got cleared independently) — otherwise course
+  // would be undefined and every field below would throw.
+  const course = allCourses[selectedCourse] || allCourses.custom;
   const holes = course.holes;
   const basePars = courseParOverrides[selectedCourse] || course.pars;
   const pars = basePars.slice(0, holes);
@@ -152,9 +227,38 @@ export default function GolfScorecard() {
   const resetScores = () => setScores({ p1: Array(18).fill(""), p2: Array(18).fill("") });
 
   const { p1money, p2money, p1wins, p2wins, results, carryover } = calcBetting();
-  const fmt = v => (v >= 0 ? "+$" : "-$") + Math.abs(v).toFixed(2);
   const moneyColor = v => v > 0 ? "#27500A" : v < 0 ? "#A32D2D" : "#888";
   const playedHoles = results.filter(r => r.s1 !== undefined && r.s1 !== null).length;
+
+  // Snapshots the live card into a plain object independent of the COURSES
+  // lookup / selectedCourse key — so a saved round still renders and texts
+  // correctly even if the course it was played on gets edited or removed
+  // later. Used both for "Save Round" (persisted) and "Text" on the live
+  // card (built fresh, never persisted).
+  const currentSnapshot = () => ({
+    id: null,
+    date: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+    courseName: course.name,
+    holes, pars,
+    p1name, p2name,
+    scores: { p1: scores.p1.slice(0, holes), p2: scores.p2.slice(0, holes) },
+    results: results.slice(0, holes),
+    p1money, p2money, p1wins, p2wins, carryover,
+  });
+
+  const saveRound = () => {
+    const snapshot = { ...currentSnapshot(), id: Date.now() };
+    const next = [snapshot, ...savedRounds];
+    setSavedRounds(next);
+    try { localStorage.setItem(ROUNDS_KEY, JSON.stringify(next)); } catch {}
+    setShowSavedRounds(true);
+  };
+
+  const deleteRound = (id) => {
+    const next = savedRounds.filter(r => r.id !== id);
+    setSavedRounds(next);
+    try { localStorage.setItem(ROUNDS_KEY, JSON.stringify(next)); } catch {}
+  };
 
   const front9 = Array.from({ length: Math.min(9, holes) }, (_, i) => i);
   const back9 = holes > 9 ? Array.from({ length: holes - 9 }, (_, i) => i + 9) : [];
@@ -262,8 +366,33 @@ export default function GolfScorecard() {
         )
       ),
       React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+        React.createElement("button", { style: { ...styles.btn, color: "#185FA5" }, onClick: () => setShowSavedRounds(true) }, "📋 Saved (" + savedRounds.length + ")"),
+        React.createElement("button", { style: { ...styles.btn, color: "#185FA5" }, onClick: () => shareScorecard(currentSnapshot()) }, "📱 Text"),
+        React.createElement("button", { style: { ...styles.btn, color: "#27500A" }, onClick: saveRound }, "💾 Save Round"),
         React.createElement("button", { style: styles.btn, onClick: () => setEditingPars(!editingPars) }, editingPars ? "Done" : "Edit Pars"),
         React.createElement("button", { style: { ...styles.btn, color: "#A32D2D" }, onClick: resetScores }, "Reset")
+      )
+    ),
+
+    // Saved rounds modal
+    showSavedRounds && React.createElement("div", { style: styles.overlay, onClick: () => setShowSavedRounds(false) },
+      React.createElement("div", { style: styles.modal, onClick: e => e.stopPropagation() },
+        React.createElement("div", { style: styles.modalHeader },
+          React.createElement("div", { style: styles.modalTitle }, "Saved Rounds"),
+          React.createElement("button", { style: styles.modalClose, onClick: () => setShowSavedRounds(false) }, "×")
+        ),
+        savedRounds.length === 0
+          ? React.createElement("div", { style: { padding: "2rem 1.25rem", textAlign: "center", color: "#888", fontSize: 14 } }, "No saved rounds yet — tap \"Save Round\" after a round to keep it here.")
+          : savedRounds.map(r =>
+              React.createElement("div", { key: r.id, style: styles.savedRoundRow },
+                React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                  React.createElement("div", { style: styles.savedRoundTitle }, r.courseName),
+                  React.createElement("div", { style: styles.courseMeta }, r.date + " · " + r.p1name + " " + fmt(r.p1money) + "  ·  " + r.p2name + " " + fmt(r.p2money))
+                ),
+                React.createElement("button", { style: styles.iconBtn, title: "Text this scorecard", onClick: () => shareScorecard(r) }, "📱"),
+                React.createElement("button", { style: { ...styles.iconBtn, color: "#A32D2D" }, title: "Delete", onClick: () => deleteRound(r.id) }, "🗑")
+              )
+            )
       )
     ),
 
@@ -352,34 +481,6 @@ export default function GolfScorecard() {
     )
   );
 }
-// Add this function inside the component
-const downloadCSV = () => {
-  const date = new Date().toLocaleDateString("en-US");
-  const rows = [
-    ["Date", "Course", "Hole", "Par", p1name, p2name, "Winner", "Amount"],
-    ...Array.from({ length: holes }, (_, i) => {
-      const r = results[i] || {};
-      const s1 = scores.p1[i] || "";
-      const s2 = scores.p2[i] || "";
-      const winner = r.winner === 1 ? p1name : r.winner === 2 ? p2name : r.winner === 0 ? "Tie/Carry" : "";
-      const amount = r.amount ? "$" + r.amount : "";
-      return [date, course.name, i + 1, pars[i], s1, s2, winner, amount];
-    }),
-    [],
-    ["", "", "TOTAL", parTotal(0, holes), holeTotal("p1", 0, holes), holeTotal("p2", 0, holes), "", ""],
-    ["", "", p1name + " winnings", "", "", "", "", fmt(p1money)],
-    ["", "", p2name + " winnings", "", "", "", "", fmt(p2money)],
-  ];
-
-  const csv = rows.map(r => r.join(",")).join("\n");
-  const blob = new Blob([csv], { type: "text/csv" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = course.name + " " + new Date().toLocaleDateString("en-US").replace(/\//g, "-") + ".csv";
-  a.click();
-  URL.revokeObjectURL(url);
-};
 const styles = {
   page: { fontFamily: "system-ui, sans-serif", maxWidth: 680, margin: "0 auto", padding: "1rem", paddingBottom: "3rem" },
   header: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1rem", flexWrap: "wrap", gap: 8 },
@@ -415,4 +516,7 @@ const styles = {
   fieldGroup: { marginBottom: "0.75rem" },
   fieldLabel: { fontSize: 12, color: "#888", display: "block", marginBottom: 4 },
   input: { width: "100%", padding: "9px 12px", fontSize: 14, border: "0.5px solid #ccc", borderRadius: 8, background: "#fff", color: "#1a1a1a", boxSizing: "border-box" },
+  savedRoundRow: { display: "flex", alignItems: "center", gap: 8, padding: "0.75rem 1.25rem", borderBottom: "0.5px solid #f0f0f0" },
+  savedRoundTitle: { fontSize: 14, fontWeight: 500, color: "#1a1a1a", marginBottom: 2 },
+  iconBtn: { fontSize: 16, background: "none", border: "none", cursor: "pointer", padding: "4px 6px", color: "#185FA5" },
 };
