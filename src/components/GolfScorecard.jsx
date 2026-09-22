@@ -98,6 +98,48 @@ function shareScorecard(r) {
   window.location.href = "sms:" + (isIOS ? "&" : "?") + "body=" + encodeURIComponent(text);
 }
 
+// Pulls a name/city/state out of a search-result row from api/golfcourses
+// (?action=search). Written defensively — OpenGolfAPI's exact field names
+// couldn't be confirmed against a live response from this environment, so
+// this tries a few plausible variants rather than assuming one.
+function parseSearchResult(row) {
+  return {
+    id: row.id ?? row.courseId ?? row.course_id ?? row.slug,
+    name: row.name ?? row.courseName ?? row.course_name ?? "Unknown course",
+    city: row.city ?? row.locality ?? "",
+    state: row.state ?? row.stateCode ?? row.state_code ?? "",
+  };
+}
+
+// Same defensiveness for the ?action=detail payload (which is
+// { course, holes } as assembled by api/golfcourses.js). Tries several
+// shapes for where the hole array and each hole's par/number might live.
+// Always returns a usable { name, holes, pars } — worst case, pars falls
+// back to a flat array of 4s (the same default "+ Add Custom Course"
+// starts you with) rather than throwing, since a bad guess here should
+// never block getting into the editable pars grid to fix it by hand.
+function parseHolesResponse(payload, fallbackName) {
+  const name = payload?.course?.name ?? payload?.course?.courseName ?? fallbackName;
+  let holeList =
+    (Array.isArray(payload?.holes) && payload.holes) ||
+    (Array.isArray(payload?.holes?.holes) && payload.holes.holes) ||
+    (Array.isArray(payload?.course?.holes) && payload.course.holes) ||
+    null;
+
+  if (!holeList || holeList.length === 0) {
+    console.warn("[GolfScorecard] Couldn't find a holes array in course detail response — raw payload:", payload);
+    return { name, holes: 18, pars: Array(18).fill(4) };
+  }
+
+  const withNumbers = holeList.map((h, i) => ({
+    num: h.hole ?? h.number ?? h.holeNumber ?? h.hole_number ?? h.index ?? i + 1,
+    par: h.par ?? h.Par ?? h.holePar ?? h.hole_par ?? 4,
+  }));
+  withNumbers.sort((a, b) => a.num - b.num);
+  const pars = withNumbers.map(h => parseInt(h.par) || 4);
+  return { name, holes: pars.length, pars };
+}
+
 export default function GolfScorecard() {
   const [selectedCourse, setSelectedCourse] = useState(() => loadJSON(CURRENT_KEY, {}).selectedCourse || "custom");
   const [showCourseModal, setShowCourseModal] = useState(false);
@@ -114,6 +156,13 @@ export default function GolfScorecard() {
   const [courseParOverrides, setCourseParOverrides] = useState(() => loadJSON(CURRENT_KEY, {}).courseParOverrides || {});
   const [savedRounds, setSavedRounds] = useState(() => loadJSON(ROUNDS_KEY, []));
   const [showSavedRounds, setShowSavedRounds] = useState(false);
+
+  const [showFindCourse, setShowFindCourse] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findStateCode, setFindStateCode] = useState("");
+  const [findResults, setFindResults] = useState([]);
+  const [findLoading, setFindLoading] = useState(false);
+  const [findError, setFindError] = useState("");
 
   // Persist the in-progress card on every change so a reload resumes
   // exactly where it left off — this is separate from "Save Round" below,
@@ -174,6 +223,53 @@ export default function GolfScorecard() {
     setNewCourseName("");
     setNewCoursePars(Array(18).fill(4));
     selectCourse(key);
+  };
+
+  // Course search (OpenGolfAPI via api/golfcourses.js) — results feed into
+  // the same "Add Custom Course" form/grid used for manual entry, so
+  // whatever comes back is always reviewable/editable before it's saved
+  // rather than trusted blindly.
+  const searchCourses = async () => {
+    if (findQuery.trim().length < 2) { setFindError("Type at least 2 characters"); return; }
+    setFindLoading(true);
+    setFindError("");
+    try {
+      const params = new URLSearchParams({ action: "search", q: findQuery.trim() });
+      if (findStateCode.trim()) params.set("state", findStateCode.trim());
+      const r = await fetch("/api/golfcourses?" + params.toString());
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || "Search failed");
+      const rows = Array.isArray(data) ? data : data.results || data.courses || [];
+      setFindResults(rows.map(parseSearchResult));
+      if (rows.length === 0) setFindError("No courses found — try a shorter name or drop the state.");
+    } catch (e) {
+      setFindError(e.message || "Search failed");
+      setFindResults([]);
+    } finally {
+      setFindLoading(false);
+    }
+  };
+
+  const pickCourseResult = async (result) => {
+    setFindLoading(true);
+    setFindError("");
+    try {
+      const r = await fetch("/api/golfcourses?" + new URLSearchParams({ action: "detail", id: result.id }));
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || "Couldn't load that course");
+      const { name, holes: h, pars: p } = parseHolesResponse(data, result.name);
+      const clampedHoles = Math.min(h, 18) || 18;
+      setNewCourseName(name);
+      setNewCourseHoles(clampedHoles);
+      setNewCoursePars(Array.from({ length: 18 }, (_, i) => p[i] || 4));
+      setShowFindCourse(false);
+      setFindQuery(""); setFindResults([]);
+      setShowAddCourse(true);
+    } catch (e) {
+      setFindError(e.message || "Couldn't load that course — try entering it manually.");
+    } finally {
+      setFindLoading(false);
+    }
   };
 
   const calcBetting = () => {
@@ -316,8 +412,43 @@ export default function GolfScorecard() {
             React.createElement("div", { style: styles.courseMeta }, (c.location || "") + (c.location ? " · " : "") + c.holes + " holes · Par " + c.pars.slice(0, c.holes).reduce((a, v) => a + v, 0))
           )
         ),
-        React.createElement("div", { style: { padding: "0.75rem 1.25rem", borderTop: "0.5px solid #e0e0e0" } },
-          React.createElement("button", { style: { ...styles.btn, width: "100%", textAlign: "center" }, onClick: () => { setShowAddCourse(true); setShowCourseModal(false); } }, "+ Add Custom Course")
+        React.createElement("div", { style: { padding: "0.75rem 1.25rem", borderTop: "0.5px solid #e0e0e0", display: "flex", gap: 8 } },
+          React.createElement("button", { style: { ...styles.btn, flex: 1, textAlign: "center", background: "#185FA5", color: "#fff", border: "none" }, onClick: () => { setShowFindCourse(true); setShowCourseModal(false); } }, "🔍 Find Course"),
+          React.createElement("button", { style: { ...styles.btn, flex: 1, textAlign: "center" }, onClick: () => { setShowAddCourse(true); setShowCourseModal(false); } }, "+ Add Manually")
+        )
+      )
+    ),
+
+    // Find course modal — searches OpenGolfAPI and, on pick, hands off to
+    // the Add Custom Course form pre-filled so the pars are always
+    // reviewable/editable before saving (see pickCourseResult's comment).
+    showFindCourse && React.createElement("div", { style: styles.overlay, onClick: () => setShowFindCourse(false) },
+      React.createElement("div", { style: styles.modal, onClick: e => e.stopPropagation() },
+        React.createElement("div", { style: styles.modalHeader },
+          React.createElement("div", { style: styles.modalTitle }, "Find Course"),
+          React.createElement("button", { style: styles.modalClose, onClick: () => setShowFindCourse(false) }, "×")
+        ),
+        React.createElement("div", { style: { padding: "1rem 1.25rem" } },
+          React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 8 } },
+            React.createElement("input", {
+              style: { ...styles.input, flex: 1 }, type: "text", placeholder: "Course name",
+              value: findQuery, onChange: e => setFindQuery(e.target.value),
+              onKeyDown: e => { if (e.key === "Enter") searchCourses(); },
+            }),
+            React.createElement("input", {
+              style: { ...styles.input, width: 60, textAlign: "center" }, type: "text", placeholder: "St", maxLength: 2,
+              value: findStateCode, onChange: e => setFindStateCode(e.target.value.toUpperCase()),
+              onKeyDown: e => { if (e.key === "Enter") searchCourses(); },
+            })
+          ),
+          React.createElement("button", { style: { ...styles.btn, width: "100%", textAlign: "center", background: "#185FA5", color: "#fff", border: "none", marginBottom: 8 }, onClick: searchCourses, disabled: findLoading }, findLoading ? "Searching..." : "Search"),
+          findError && React.createElement("div", { style: { fontSize: 13, color: "#A32D2D", marginBottom: 8 } }, findError),
+          findResults.map(res =>
+            React.createElement("div", { key: res.id, style: styles.courseRow, onClick: () => pickCourseResult(res) },
+              React.createElement("div", { style: styles.courseName }, res.name),
+              React.createElement("div", { style: styles.courseMeta }, [res.city, res.state].filter(Boolean).join(", "))
+            )
+          )
         )
       )
     ),
