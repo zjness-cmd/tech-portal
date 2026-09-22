@@ -66,7 +66,7 @@ const fmt = v => (v >= 0 ? "+$" : "-$") + Math.abs(v).toFixed(2);
 // don't render monospace, so a table wouldn't line up anyway.
 function buildScorecardText(r) {
   const lines = [];
-  lines.push("⛳ " + r.courseName + " — " + r.date);
+  lines.push("⛳ " + r.courseName + " — " + r.date + (r.betPerHole ? " ($" + r.betPerHole + "/hole)" : ""));
   lines.push(r.p1name + ": " + sumScores(r.scores.p1, r.holes) + "   " + r.p2name + ": " + sumScores(r.scores.p2, r.holes));
   lines.push("");
   for (let i = 0; i < r.holes; i++) {
@@ -164,6 +164,7 @@ export default function GolfScorecard() {
   const [p1name, setP1name] = useState(() => loadJSON(CURRENT_KEY, {}).p1name || "Player 1");
   const [p2name, setP2name] = useState(() => loadJSON(CURRENT_KEY, {}).p2name || "Player 2");
   const [scores, setScores] = useState(() => loadJSON(CURRENT_KEY, {}).scores || { p1: Array(18).fill(""), p2: Array(18).fill("") });
+  const [betPerHole, setBetPerHole] = useState(() => loadJSON(CURRENT_KEY, {}).betPerHole || 1);
   const [editingPars, setEditingPars] = useState(false);
   const [courseParOverrides, setCourseParOverrides] = useState(() => loadJSON(CURRENT_KEY, {}).courseParOverrides || {});
   const [savedRounds, setSavedRounds] = useState(() => loadJSON(ROUNDS_KEY, []));
@@ -180,8 +181,8 @@ export default function GolfScorecard() {
   // exactly where it left off — this is separate from "Save Round" below,
   // which snapshots a finished round into history.
   React.useEffect(() => {
-    try { localStorage.setItem(CURRENT_KEY, JSON.stringify({ selectedCourse, p1name, p2name, scores, courseParOverrides })); } catch {}
-  }, [selectedCourse, p1name, p2name, scores, courseParOverrides]);
+    try { localStorage.setItem(CURRENT_KEY, JSON.stringify({ selectedCourse, p1name, p2name, scores, courseParOverrides, betPerHole })); } catch {}
+  }, [selectedCourse, p1name, p2name, scores, courseParOverrides, betPerHole]);
   React.useEffect(() => {
     try { localStorage.setItem(CUSTOM_COURSES_KEY, JSON.stringify(customCourses)); } catch {}
   }, [customCourses]);
@@ -291,12 +292,18 @@ export default function GolfScorecard() {
     let p1wins = 0;
     let p2wins = 0;
     let results = [];
+    // Birdie-or-better and par bonuses were originally flat $4/$2 on top of
+    // a fixed $1 base bet — i.e. 4x/2x the base. Scaling them by betPerHole
+    // keeps that same ratio at any bet size instead of freezing them at $1
+    // rates once the base bet becomes configurable.
+    const birdieBonus = 4 * betPerHole;
+    const parBonus = 2 * betPerHole;
 
     for (let i = 0; i < holes; i++) {
       const s1 = getScore("p1", i);
       const s2 = getScore("p2", i);
       const par = pars[i];
-      const pot = 1 + carryover;
+      const pot = betPerHole + carryover;
 
       if (s1 === null || s2 === null) {
         results.push({ winner: null, pot, carryover });
@@ -305,8 +312,8 @@ export default function GolfScorecard() {
 
       if (s1 < s2) {
         let bonus = 0;
-        if (s1 <= par - 1) bonus = 4;
-        else if (s1 === par) bonus = 2;
+        if (s1 <= par - 1) bonus = birdieBonus;
+        else if (s1 === par) bonus = parBonus;
         const winAmount = pot + bonus;
         p1money += winAmount;
         p2money -= winAmount;
@@ -315,8 +322,8 @@ export default function GolfScorecard() {
         carryover = 0;
       } else if (s2 < s1) {
         let bonus = 0;
-        if (s2 <= par - 1) bonus = 4;
-        else if (s2 === par) bonus = 2;
+        if (s2 <= par - 1) bonus = birdieBonus;
+        else if (s2 === par) bonus = parBonus;
         const winAmount = pot + bonus;
         p2money += winAmount;
         p1money -= winAmount;
@@ -324,7 +331,7 @@ export default function GolfScorecard() {
         results.push({ winner: 2, amount: winAmount, pot, carryover, bonus, s1, s2, par });
         carryover = 0;
       } else {
-        carryover += 1;
+        carryover += betPerHole;
         results.push({ winner: 0, pot, carryover, s1, s2, par });
       }
     }
@@ -347,7 +354,7 @@ export default function GolfScorecard() {
     id: null,
     date: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
     courseName: course.name,
-    holes, pars,
+    holes, pars, betPerHole,
     p1name, p2name,
     scores: { p1: scores.p1.slice(0, holes), p2: scores.p2.slice(0, holes) },
     results: results.slice(0, holes),
@@ -504,8 +511,18 @@ export default function GolfScorecard() {
     React.createElement("div", { style: styles.header },
       React.createElement("div", null,
         React.createElement("div", { style: styles.title }, "⛳ Golf Scorecard"),
-        React.createElement("button", { style: styles.courseBtn, onClick: () => setShowCourseModal(true) },
-          course.name + " ▾"
+        React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } },
+          React.createElement("button", { style: styles.courseBtn, onClick: () => setShowCourseModal(true) },
+            course.name + " ▾"
+          ),
+          React.createElement("div", { style: styles.betInputWrap },
+            React.createElement("span", { style: { color: "#888" } }, "$"),
+            React.createElement("input", {
+              style: styles.betInput, type: "number", min: 1, step: 1, value: betPerHole,
+              onChange: e => setBetPerHole(Math.max(1, parseInt(e.target.value) || 1)),
+            }),
+            React.createElement("span", { style: { color: "#888" } }, "/ hole")
+          )
         )
       ),
       React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
@@ -629,6 +646,8 @@ const styles = {
   header: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1rem", flexWrap: "wrap", gap: 8 },
   title: { fontSize: 20, fontWeight: 500, color: "#1a1a1a", marginBottom: 4 },
   courseBtn: { fontSize: 13, padding: "5px 10px", borderRadius: 8, border: "0.5px solid #185FA5", background: "#f0f4ff", color: "#185FA5", cursor: "pointer", fontWeight: 500 },
+  betInputWrap: { display: "flex", alignItems: "center", gap: 4, fontSize: 13, padding: "5px 10px", borderRadius: 8, border: "0.5px solid #ccc", background: "#fff" },
+  betInput: { width: 32, border: "none", outline: "none", fontSize: 13, fontWeight: 500, color: "#1a1a1a", textAlign: "center", padding: 0 },
   btn: { fontSize: 12, padding: "6px 12px", borderRadius: 8, border: "0.5px solid #ccc", background: "#fff", cursor: "pointer", color: "#1a1a1a" },
   playerGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: "1rem" },
   playerCard: { background: "#f5f5f3", borderRadius: 12, padding: "12px 16px" },
