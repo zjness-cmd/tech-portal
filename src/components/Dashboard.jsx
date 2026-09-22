@@ -31,6 +31,14 @@ const GEOFENCE_AMBIGUOUS_SEPARATION_MILES = GEOFENCE_RADIUS_MILES * 2;
 // card) is unaffected — the tech can always Check In immediately after Undo,
 // this only pauses automatic re-triggering.
 const MANUAL_OVERRIDE_COOLDOWN_MS = 10 * 60 * 1000;
+// How far outside a job's zone a fresh reading has to clearly place you
+// before the app's-resumed "catch-up" check (below, near handleCheckOut)
+// will auto check you out on the spot instead of waiting for the normal
+// dwell-timer path — see that effect's comment for why it exists at all.
+// Much wider than GEOFENCE_RADIUS_MILES on purpose: this fires off a single
+// one-shot reading with no dwell confirmation, so it needs its own margin
+// of safety against one noisy fix, not just "technically outside the zone."
+const GEOFENCE_CATCHUP_CLEAR_MILES = 0.5;
 // Readings worse than this are unusable for any distance math (the accuracy
 // circle is bigger than a city block) — always skipped, always logged.
 // Anything better than this but still noisy (common indoors — malls,
@@ -41,7 +49,7 @@ const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
 // (merged B20:C20, navy, two-line real link), checks-payable bar and
 // Total amount recolored navy to match the logo, thin outer border
 // added around the item table, footer line added under Total.
-const APP_VERSION = "1.3.11";
+const APP_VERSION = "1.3.12";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -313,6 +321,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   // synchronously — not React state — so it can't lose the race the way
   // checkedInRef (which only updates after a render commits) can.
   const checkInLockRef = useRef({});
+  // Same idea as checkInLockRef, for check-out — needed once check-out could
+  // be triggered from two independent paths (the normal geofence watcher's
+  // dwell timer, and the "catch-up on resume" one-shot check near
+  // handleCheckOut) that could otherwise both fire for the same job in the
+  // same beat, before either's async handleCheckOut call has updated
+  // checkedOutRef, and double-log the check-out.
+  const checkOutLockRef = useRef({});
   // Tracks which jobs have already had a cascade reschedule applied today,
   // so even if handleCheckIn does get called again for the same job (lock
   // notwithstanding — belt and suspenders), the calendar doesn't get shoved
@@ -673,7 +688,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     setDayStarted(false); setDayFinished(false); setDayStatus(""); setPastDayStatus(""); setStatusLoading(true);
     jobCoordsRef.current = {}; geofenceDwellRef.current = {}; departureDwellRef.current = {}; setGeofenceStatus({});
     ambiguousWarnedRef.current = {}; manualOverrideRef.current = {};
-    checkInLockRef.current = {}; cascadedTodayRef.current = {}; paymentLinkRef.current = {};
+    checkInLockRef.current = {}; checkOutLockRef.current = {}; cascadedTodayRef.current = {}; paymentLinkRef.current = {};
     if (new Date().toDateString() !== selectedDate.toDateString()) { try { localStorage.removeItem("techportal_lastPos"); } catch {} lastPositionRef.current = null; }
     try { const ck = JOB_STATUS_CACHE_KEY + selectedDate.toDateString(); const c = localStorage.getItem(ck); if (c) { const { checkedIn: ci, checkedOut: co, completed: comp, invoiced: inv } = JSON.parse(c); if (ci) setCheckedIn(ci); if (co) setCheckedOut(co); if (comp) setCompleted(comp); if (inv) setInvoicedJobs(inv); } } catch {}
     try { const k = "techportal_jobValues_" + selectedDate.toDateString(); const s = localStorage.getItem(k); setJobValues(s ? JSON.parse(s) : {}); } catch { setJobValues({}); }
@@ -1954,6 +1969,16 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   };
 
   const handleCheckOut = async (jobId, jobTitle, auto = false) => {
+    // Same synchronous-guard reasoning as handleCheckIn's checkInLockRef —
+    // now that check-out can fire from two independent paths (the normal
+    // dwell timer and the catch-up-on-resume check below), both could read
+    // checkedOutRef as still false and both call in before either's state
+    // update lands.
+    if (checkedOutRef.current[jobId] || checkOutLockRef.current[jobId]) {
+      dbg("⏭️ Ignoring check-out for " + jobTitle + " — already checked out" + (auto ? " (auto)" : ""), "warn");
+      return;
+    }
+    checkOutLockRef.current[jobId] = true;
     const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
     dbg("🚪 Check-out: " + jobTitle + (auto ? " (auto)" : ""));
@@ -1980,6 +2005,65 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     const job = jobsRef.current.find(j => normalizeId(j.id) === jobId);
     updateCalendarEvent(job, { checkIn: checkedInRef.current[jobId], checkOut: time });
   };
+
+  // ── Catch-up departure check ────────────────────────────────────────────
+  // The watchPosition loop above is the ONLY thing that drives auto
+  // check-out today — sw.js caches state for its notifications but has no
+  // distance math of its own (it can't call navigator.geolocation at all),
+  // so there is no real background geofencing happening while the tab isn't
+  // actively running JS. Mobile browsers throttle or fully suspend
+  // watchPosition once the screen locks or the app is backgrounded, which
+  // is exactly what happens on a drive — so a job checked in right before
+  // driving 30 miles home with the screen off just stays checked in, with
+  // nothing watching for the departure, until something gives the app a
+  // fresh reading to react to.
+  //
+  // This effect is that fresh reading: on mount and every time the app
+  // comes back to the foreground (or regains connectivity), it takes one
+  // one-shot GPS fix and, for any job that's checked in but not checked
+  // out, checks whether that single reading already places you well clear
+  // of the job's zone (GEOFENCE_CATCHUP_CLEAR_MILES — a wider margin than
+  // the normal geofence radius, since this has no dwell-timer confirmation
+  // to fall back on). If so, it checks you out immediately instead of
+  // silently leaving the job open until you notice.
+  useEffect(() => {
+    const catchUpDepartures = () => {
+      if (!dayStartedRef.current || dayFinishedRef.current) return;
+      if (!navigator.geolocation) return;
+      const pending = jobsRef.current.filter(job => {
+        const nid = normalizeId(job.id);
+        return checkedInRef.current[nid] && !checkedOutRef.current[nid] && !completedRef.current[nid] && jobCoordsRef.current[nid];
+      });
+      if (pending.length === 0) return;
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const accuracyM = pos.coords.accuracy || 9999;
+          if (accuracyM > GEOFENCE_HARD_ACCURACY_CUTOFF_M) return;
+          const accuracyMiles = accuracyM / 1609.344;
+          pending.forEach(job => {
+            const nid = normalizeId(job.id);
+            const coords = jobCoordsRef.current[nid];
+            const dist = calcMiles(pos.coords.latitude, pos.coords.longitude, coords.lat, coords.lng);
+            const effectiveDist = Math.max(0, dist - accuracyMiles);
+            if (effectiveDist > GEOFENCE_CATCHUP_CLEAR_MILES) {
+              dbg("🕐 Catch-up auto check-out: " + job.title + " — reopened app " + effectiveDist.toFixed(1) + " mi away, still checked in", "warn");
+              handleCheckOut(nid, job.title, true);
+            }
+          });
+        },
+        () => {},
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
+      );
+    };
+    catchUpDepartures();
+    const onVisible = () => { if (document.visibilityState === "visible") catchUpDepartures(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("online", catchUpDepartures);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("online", catchUpDepartures);
+    };
+  }, []);
 
   // paymentChoice is "paid" or "awaiting", coming from the job card's
   // Paid/Awaiting Payment picker shown right after tapping Mark complete.
@@ -2048,6 +2132,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     setPending(jobId + "__paid", { status: "undone", extra: "" });
     setPending(jobId + "__method", { status: "undone", extra: "" });
     delete checkInLockRef.current[jobId];
+    delete checkOutLockRef.current[jobId];
     delete cascadedTodayRef.current[normalizeId(jobId)];
     delete paymentLinkRef.current[normalizeId(jobId)];
     delete ambiguousWarnedRef.current[jobId];
