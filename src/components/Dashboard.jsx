@@ -16,6 +16,21 @@ const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
 const PENDING_SAVES_KEY = "techportal_pendingSaves";
 const GEOFENCE_RADIUS_MILES = 0.12;
 const GEOFENCE_DWELL_MS = 30 * 1000;
+// Two jobs whose real-world coordinates are closer together than this can
+// both read as "in zone" from a single GPS fix (radius + radius), which is
+// exactly what caused two adjacent jobs to auto check-in at the same time —
+// the geofence watcher processes each job independently against the same
+// position, with no idea the other job is also technically in range. Jobs
+// this close together are auto-check-in-disabled entirely (manual tap only)
+// rather than racing each other to whichever's dwell timer elapses first.
+const GEOFENCE_AMBIGUOUS_SEPARATION_MILES = GEOFENCE_RADIUS_MILES * 2;
+// How long after a manual Undo the geofence watcher stays hands-off that job
+// — otherwise, undoing a wrong auto check-in while still standing in its
+// zone just gets immediately re-fired by the same watcher a dwell period
+// later, making Undo look like it didn't work. Manual check-in (tapping the
+// card) is unaffected — the tech can always Check In immediately after Undo,
+// this only pauses automatic re-triggering.
+const MANUAL_OVERRIDE_COOLDOWN_MS = 10 * 60 * 1000;
 // Readings worse than this are unusable for any distance math (the accuracy
 // circle is bigger than a city block) — always skipped, always logged.
 // Anything better than this but still noisy (common indoors — malls,
@@ -26,7 +41,7 @@ const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
 // (merged B20:C20, navy, two-line real link), checks-payable bar and
 // Total amount recolored navy to match the logo, thin outer border
 // added around the item table, footer line added under Total.
-const APP_VERSION = "1.3.10";
+const APP_VERSION = "1.3.11";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -272,6 +287,15 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const websiteLookupAttemptedRef = useRef({});
   const geofenceDwellRef = useRef({});
   const departureDwellRef = useRef({});
+  // Tracks jobs currently flagged as having an ambiguous neighbor (another
+  // pending job within GEOFENCE_AMBIGUOUS_SEPARATION_MILES), just so the
+  // "skip auto check-in" dbg line only logs once per approach instead of
+  // spamming every position update while parked in the overlap.
+  const ambiguousWarnedRef = useRef({});
+  // jobId -> timestamp of the last manual Undo, used to pause the geofence
+  // watcher's auto check-in for that job for MANUAL_OVERRIDE_COOLDOWN_MS —
+  // see the constant's comment for why.
+  const manualOverrideRef = useRef({});
   const checkedInRef = useRef(checkedIn);
   const completedRef = useRef(completed);
   const checkedOutRef = useRef(checkedOut);
@@ -579,8 +603,30 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           if (accuracyM > 150 && !isCheckedIn && !isCompleted && Math.random() < 0.15) {
             dbg("📶 Noisy reading (" + Math.round(accuracyM) + "m accuracy) near " + job.title + " — raw " + Math.round(dist * 5280) + "ft, accuracy-adjusted " + Math.round(effectiveDist * 5280) + "ft", "warn");
           }
+          const overrideUntil = manualOverrideRef.current[nid];
+          const inOverrideCooldown = overrideUntil && (nowMs - overrideUntil) < MANUAL_OVERRIDE_COOLDOWN_MS;
+          // A job has an ambiguous neighbor if another still-pending job's
+          // coords are close enough that this same GPS fix could plausibly
+          // be "in zone" for both — see GEOFENCE_AMBIGUOUS_SEPARATION_MILES.
+          const hasAmbiguousNeighbor = !isCheckedIn && !isCompleted && currentJobs.some(other => {
+            if (other === job) return false;
+            const oid = normalizeId(other.id);
+            if (currentCheckedIn[oid] || currentCompleted[oid]) return false;
+            const oCoords = jobCoordsRef.current[oid];
+            if (!oCoords) return false;
+            return calcMiles(coords.lat, coords.lng, oCoords.lat, oCoords.lng) <= GEOFENCE_AMBIGUOUS_SEPARATION_MILES;
+          });
           if (!isCheckedIn && !isCompleted) {
-            if (inZone) {
+            if (inZone && (hasAmbiguousNeighbor || inOverrideCooldown)) {
+              if (geofenceDwellRef.current[nid]) delete geofenceDwellRef.current[nid];
+              setGeofenceStatus(prev => ({ ...prev, [nid]: "ambiguous" }));
+              if (!ambiguousWarnedRef.current[nid]) {
+                ambiguousWarnedRef.current[nid] = true;
+                dbg(hasAmbiguousNeighbor
+                  ? "📍⚠️ " + job.title + " — another pending job is nearby too, skipping auto check-in (tap to check in manually)"
+                  : "📍⏸ " + job.title + " — recently undone, auto check-in paused (tap to check in manually)", "warn");
+              }
+            } else if (inZone) {
               if (!geofenceDwellRef.current[nid]) {
                 geofenceDwellRef.current[nid] = nowMs;
                 setGeofenceStatus(prev => ({ ...prev, [nid]: "nearby" }));
@@ -592,10 +638,9 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
                 handleCheckIn(nid, job.title, true);
               }
             } else {
-              if (geofenceDwellRef.current[nid]) {
-                delete geofenceDwellRef.current[nid];
-                setGeofenceStatus(prev => { const n = {...prev}; delete n[nid]; return n; });
-              }
+              delete ambiguousWarnedRef.current[nid];
+              if (geofenceDwellRef.current[nid]) delete geofenceDwellRef.current[nid];
+              setGeofenceStatus(prev => { if (!(nid in prev)) return prev; const n = {...prev}; delete n[nid]; return n; });
             }
           }
           if (isCheckedIn && !isCheckedOut && !isCompleted) {
@@ -627,6 +672,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     setCheckedIn({}); setCheckedOut({}); setCompleted({}); setNavStart({}); setJobValues({}); setPaymentStatus({});
     setDayStarted(false); setDayFinished(false); setDayStatus(""); setPastDayStatus(""); setStatusLoading(true);
     jobCoordsRef.current = {}; geofenceDwellRef.current = {}; departureDwellRef.current = {}; setGeofenceStatus({});
+    ambiguousWarnedRef.current = {}; manualOverrideRef.current = {};
     checkInLockRef.current = {}; cascadedTodayRef.current = {}; paymentLinkRef.current = {};
     if (new Date().toDateString() !== selectedDate.toDateString()) { try { localStorage.removeItem("techportal_lastPos"); } catch {} lastPositionRef.current = null; }
     try { const ck = JOB_STATUS_CACHE_KEY + selectedDate.toDateString(); const c = localStorage.getItem(ck); if (c) { const { checkedIn: ci, checkedOut: co, completed: comp, invoiced: inv } = JSON.parse(c); if (ci) setCheckedIn(ci); if (co) setCheckedOut(co); if (comp) setCompleted(comp); if (inv) setInvoicedJobs(inv); } } catch {}
@@ -2004,6 +2050,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     delete checkInLockRef.current[jobId];
     delete cascadedTodayRef.current[normalizeId(jobId)];
     delete paymentLinkRef.current[normalizeId(jobId)];
+    delete ambiguousWarnedRef.current[jobId];
+    manualOverrideRef.current[jobId] = Date.now();
     flushStatusSaves();
     const job = jobs.find(j => normalizeId(j.id) === jobId);
     updateCalendarEvent(job, {});
@@ -2757,10 +2805,11 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           !loading && !statusLoading && filtered.map(job => {
             const nid = normalizeId(job.id);
             const isNearby = geofenceStatus[nid] === "nearby";
+            const isAmbiguous = geofenceStatus[nid] === "ambiguous";
             return React.createElement(JobCard, {
               key: job.id, job, location, status: getStatus(job),
               checkedIn: checkedIn[nid], checkedOut: checkedOut[nid], completed: completed[nid],
-              invoiceUrl: invoicedJobs[nid], isNearby,
+              invoiceUrl: invoicedJobs[nid], isNearby, isAmbiguous,
               paymentStatus: paymentStatus[nid],
               paymentMethod: paymentMethod[nid],
               accessToken: accessTokenRef.current,

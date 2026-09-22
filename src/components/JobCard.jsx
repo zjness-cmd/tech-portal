@@ -76,7 +76,7 @@ function timeStrToInput(timeStr) {
 export default function JobCard({
   job, location, status, checkedIn, checkedOut, completed, invoiceUrl,
   onCheckIn, onCheckOut, onComplete, onNavigate, onUndo, onInvoice, onMissed,
-  isNearby, accessToken, onTimeUpdated, onNotesSaved, logSheetId,
+  isNearby, isAmbiguous, accessToken, onTimeUpdated, onNotesSaved, logSheetId,
   paymentStatus, paymentMethod, onTogglePaid, website, onReschedule,
 }) {
   const [imgFailed, setImgFailed] = useState(false);
@@ -272,6 +272,13 @@ export default function JobCard({
       isNearby && !checkedIn && !completed && React.createElement("div", {
         style: { fontSize: 12, color: "#27500A", background: "#EAF3DE", borderRadius: 6, padding: "5px 10px", marginBottom: 6, fontWeight: 500 }
       }, "📍 You're nearby — auto check-in in ~30 sec"),
+      // Shown instead of the nearby banner when another pending job is close
+      // enough that a single GPS fix can't tell which one you're actually
+      // at (or right after an Undo) — auto check-in is paused for this job,
+      // tap Check In below to confirm it yourself.
+      isAmbiguous && !checkedIn && !completed && React.createElement("div", {
+        style: { fontSize: 12, color: "#856404", background: "#FEF3CD", borderRadius: 6, padding: "5px 10px", marginBottom: 6, fontWeight: 500 }
+      }, "📍 Nearby, but too close to call — tap Check In to confirm"),
 
       // ── Action buttons ──────────────────────────────────────────────────
       React.createElement("div", { style: s.actionRow },
