@@ -59,7 +59,7 @@ const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
 // (merged B20:C20, navy, two-line real link), checks-payable bar and
 // Total amount recolored navy to match the logo, thin outer border
 // added around the item table, footer line added under Total.
-const APP_VERSION = "1.3.17";
+const APP_VERSION = "1.3.18";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -223,6 +223,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [navStart, setNavStart] = useState({});
   const [monthlyCount, setMonthlyCount] = useState(null);
   const [monthlyMiles, setMonthlyMiles] = useState(null);
+  const [monthlyRevenue, setMonthlyRevenue] = useState(null);
   const [monthlyCompleted, setMonthlyCompleted] = useState(0);
   const [monthCompletedIds, setMonthCompletedIds] = useState(() => new Set());
   const [monthlyEvents, setMonthlyEvents] = useState([]);
@@ -1287,6 +1288,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         const curMonth = selectedDate.getMonth();
         const curYear = selectedDate.getFullYear();
         let monthTotal = 0;
+        let monthRevenue = 0;
         const doneIds = new Set();
         Object.entries(rowsByDate).forEach(([dStr, dRows]) => {
           const parsed = new Date(dStr);
@@ -1316,15 +1318,30 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           }
           const dayMiles = legMiles > 0 ? legMiles : gpsMiles;
           monthTotal += dayMiles;
+          // Per-job dollar values get re-saved (edited amount, corrected
+          // typo) rather than only ever written once, so this sheet can
+          // hold several __value rows for the same job on the same day.
+          // Since rows are appended in chronological order, walking them in
+          // order and letting a later row overwrite an earlier one in this
+          // per-day map — same pattern loadJobStatuses uses for "today" —
+          // naturally keeps only the latest amount per job instead of
+          // summing every edit on top of itself.
+          const dayValues = {};
           dRows.forEach(r => {
             const jobId = r[1];
             const status = r[2];
             if (jobId && jobId.endsWith("__done") && (status === "completed" || status === "missed")) {
               doneIds.add(normalizeId(jobId.slice(0, -6)));
             }
+            if (jobId && jobId.endsWith("__value") && status === "jobValue") {
+              const v = parseFloat(r[3]);
+              if (!isNaN(v)) dayValues[normalizeId(jobId.slice(0, -7))] = v;
+            }
           });
+          monthRevenue += Object.values(dayValues).reduce((s, v) => s + v, 0);
         });
         setMonthlyMiles(Math.round(monthTotal * 10) / 10);
+        setMonthlyRevenue(Math.round(monthRevenue * 100) / 100);
         setMonthCompletedIds(doneIds);
       } catch (e) {
         dbg("❌ Monthly mileage calc error: " + e.message, "error");
@@ -2809,6 +2826,10 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           React.createElement("div", { style: styles.monthStatBtn }, React.createElement("div", { style: { ...styles.monthStatVal, color: "#7dd3fc" } }, monthlyMiles !== null ? monthlyMiles + " mi" : "—"), React.createElement("div", { style: styles.monthStatLabel }, "this month"))
         )
       ),
+      React.createElement("div", { style: styles.monthRevenueBar },
+        React.createElement("span", { style: styles.monthRevenueLabel }, "💰 Revenue this month"),
+        React.createElement("span", { style: styles.monthRevenueVal }, monthlyRevenue !== null ? "$" + monthlyRevenue.toFixed(2) : "—")
+      ),
       (isToday || dayStatus) && React.createElement("div", { style: styles.dayBar },
         isToday && (!dayStarted
           ? React.createElement("button", { style: { ...styles.startBtn, opacity: gpsWaiting ? 0.7 : 1, cursor: gpsWaiting ? "default" : "pointer" }, onClick: gpsWaiting ? undefined : handleStartDay, disabled: gpsWaiting }, gpsWaiting ? "📡 Getting GPS..." : "🚗 Start Day")
@@ -2990,6 +3011,9 @@ const styles = {
   monthStatVal: { fontSize: 20, fontWeight: 700, color: "#fff" },
   monthStatLabel: { fontSize: 10, color: "rgba(255,255,255,0.7)", textTransform: "uppercase", letterSpacing: "0.04em" },
   monthDivider: { width: 1, height: 32, background: "rgba(255,255,255,0.3)" },
+  monthRevenueBar: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0.65rem 1.5rem", background: "linear-gradient(135deg, #EAF3DE 0%, #D7EAC4 100%)", borderBottom: "0.5px solid #e0e0e0" },
+  monthRevenueLabel: { fontSize: 13, fontWeight: 600, color: "#27500A" },
+  monthRevenueVal: { fontSize: 20, fontWeight: 700, color: "#27500A" },
   dayBar: { display: "flex", alignItems: "center", gap: 12, padding: "0.75rem 1.5rem", background: "#f5f5f3", borderBottom: "0.5px solid #e0e0e0", flexWrap: "wrap" },
   startBtn: { fontSize: 13, padding: "8px 18px", borderRadius: 8, background: "linear-gradient(135deg, #3E7A11 0%, #1D3A05 100%)", boxShadow: "0 2px 6px rgba(39,80,10,0.35)", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 },
   finishBtn: { fontSize: 13, padding: "8px 18px", borderRadius: 8, background: "linear-gradient(135deg, #8A5410 0%, #4A2604 100%)", boxShadow: "0 2px 6px rgba(99,56,6,0.35)", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 },
