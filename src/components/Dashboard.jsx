@@ -59,7 +59,7 @@ const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
 // (merged B20:C20, navy, two-line real link), checks-payable bar and
 // Total amount recolored navy to match the logo, thin outer border
 // added around the item table, footer line added under Total.
-const APP_VERSION = "1.3.18";
+const APP_VERSION = "1.3.19";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -224,6 +224,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [monthlyCount, setMonthlyCount] = useState(null);
   const [monthlyMiles, setMonthlyMiles] = useState(null);
   const [monthlyRevenue, setMonthlyRevenue] = useState(null);
+  const [monthlyJobHistory, setMonthlyJobHistory] = useState([]);
+  const [showRevenueDetail, setShowRevenueDetail] = useState(false);
   const [monthlyCompleted, setMonthlyCompleted] = useState(0);
   const [monthCompletedIds, setMonthCompletedIds] = useState(() => new Set());
   const [monthlyEvents, setMonthlyEvents] = useState([]);
@@ -1290,6 +1292,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         let monthTotal = 0;
         let monthRevenue = 0;
         const doneIds = new Set();
+        const historyEntries = [];
         Object.entries(rowsByDate).forEach(([dStr, dRows]) => {
           const parsed = new Date(dStr);
           if (isNaN(parsed) || parsed.getMonth() !== curMonth || parsed.getFullYear() !== curYear) return;
@@ -1327,6 +1330,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           // naturally keeps only the latest amount per job instead of
           // summing every edit on top of itself.
           const dayValues = {};
+          const dayPaymentStatus = {};
           dRows.forEach(r => {
             const jobId = r[1];
             const status = r[2];
@@ -1337,11 +1341,18 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               const v = parseFloat(r[3]);
               if (!isNaN(v)) dayValues[normalizeId(jobId.slice(0, -7))] = v;
             }
+            if (jobId && jobId.endsWith("__paid") && (status === "paid" || status === "unpaid")) {
+              dayPaymentStatus[normalizeId(jobId.slice(0, -6))] = status;
+            }
           });
           monthRevenue += Object.values(dayValues).reduce((s, v) => s + v, 0);
+          Object.entries(dayValues).forEach(([nid, amount]) => {
+            historyEntries.push({ nid, date: dStr, amount, paymentStatus: dayPaymentStatus[nid] || null });
+          });
         });
         setMonthlyMiles(Math.round(monthTotal * 10) / 10);
         setMonthlyRevenue(Math.round(monthRevenue * 100) / 100);
+        setMonthlyJobHistory(historyEntries);
         setMonthCompletedIds(doneIds);
       } catch (e) {
         dbg("❌ Monthly mileage calc error: " + e.message, "error");
@@ -2559,6 +2570,19 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const modalEvents = modalType === "completed" ? completedEvents : remainingEvents;
   const modalTitleText = modalType === "completed" ? "Completed This Month" : "Remaining This Month";
 
+  // Joins monthlyJobHistory (date/amount/paymentStatus, built alongside
+  // monthlyRevenue in loadJobStatuses) with monthlyEvents to pull in each
+  // entry's title/location for the revenue-detail modal — kept as a join
+  // rather than stored together since monthlyEvents already exists from the
+  // calendar fetch and re-fetching titles into the history array would just
+  // duplicate it.
+  const revenueHistoryRows = monthlyJobHistory
+    .map(h => {
+      const ev = monthlyEvents.find(e => normalizeId(e.id) === h.nid);
+      return { ...h, title: (ev?.summary || "Unknown job").replace(/^(⚠️ MISSED - )+/, ""), location: ev?.location || "" };
+    })
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+
   return (
     React.createElement("div", { style: styles.page },
       invoiceJob && React.createElement(InvoiceModal, { job: invoiceJob, accessToken, onClose: handleInvoiceClose, onInvoiceCreated: handleInvoiceCreated, onPaymentStatusSaved: handlePaymentStatusSaved }),
@@ -2657,6 +2681,41 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
                     React.createElement("div", { style: styles.modalRowTitle }, e.summary || "Untitled"),
                     e.location && React.createElement("div", { style: styles.modalRowLoc }, "📍 " + e.location),
                     React.createElement("a", { href: e.htmlLink || "https://calendar.google.com/calendar/r", target: "_blank", rel: "noreferrer", style: styles.editBtn }, "✏️ Edit in Calendar")
+                  );
+                })
+          )
+        )
+      ),
+      showRevenueDetail && React.createElement("div", { style: styles.overlay, onClick: () => setShowRevenueDetail(false) },
+        React.createElement("div", { style: styles.modalBox, onClick: e => e.stopPropagation() },
+          React.createElement("div", { style: styles.modalHeader },
+            React.createElement("div", { style: styles.modalTitle }, "This Month's Jobs (" + revenueHistoryRows.length + ")"),
+            React.createElement("button", { style: styles.modalClose, onClick: () => setShowRevenueDetail(false) }, "×")
+          ),
+          React.createElement("div", { style: styles.modalList },
+            revenueHistoryRows.length === 0 ? React.createElement("div", { style: styles.modalEmpty }, "No revenue entered yet this month.")
+              : revenueHistoryRows.map((r, i) => {
+                  const dateStr = new Date(r.date).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+                  const paid = r.paymentStatus === "paid";
+                  const unpaid = r.paymentStatus === "unpaid";
+                  return React.createElement("div", { key: r.nid + "_" + r.date + "_" + i, style: styles.modalRow },
+                    React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 } },
+                      React.createElement("div", null,
+                        React.createElement("div", { style: styles.modalRowDate }, dateStr),
+                        React.createElement("div", { style: styles.modalRowTitle }, r.title),
+                        r.location && React.createElement("div", { style: styles.modalRowLoc }, "📍 " + r.location)
+                      ),
+                      React.createElement("div", { style: { textAlign: "right", flexShrink: 0 } },
+                        React.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: "#1a1a1a" } }, "$" + r.amount.toFixed(2)),
+                        React.createElement("span", {
+                          style: {
+                            fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 10, display: "inline-block", marginTop: 3,
+                            background: paid ? "#EAF3DE" : unpaid ? "#F8D7DA" : "#f0f0f0",
+                            color: paid ? "#27500A" : unpaid ? "#A32D2D" : "#888",
+                          }
+                        }, paid ? "Paid" : unpaid ? "Unpaid" : "No status")
+                      )
+                    )
                   );
                 })
           )
@@ -2826,9 +2885,12 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           React.createElement("div", { style: styles.monthStatBtn }, React.createElement("div", { style: { ...styles.monthStatVal, color: "#7dd3fc" } }, monthlyMiles !== null ? monthlyMiles + " mi" : "—"), React.createElement("div", { style: styles.monthStatLabel }, "this month"))
         )
       ),
-      React.createElement("div", { style: styles.monthRevenueBar },
+      React.createElement("div", { style: { ...styles.monthRevenueBar, cursor: "pointer" }, onClick: () => setShowRevenueDetail(true), title: "Tap to see every job this month" },
         React.createElement("span", { style: styles.monthRevenueLabel }, "💰 Revenue this month"),
-        React.createElement("span", { style: styles.monthRevenueVal }, monthlyRevenue !== null ? "$" + monthlyRevenue.toFixed(2) : "—")
+        React.createElement("span", { style: { display: "flex", alignItems: "center", gap: 6 } },
+          React.createElement("span", { style: styles.monthRevenueVal }, monthlyRevenue !== null ? "$" + monthlyRevenue.toFixed(2) : "—"),
+          React.createElement("span", { style: { color: "#27500A", fontSize: 14 } }, "›")
+        )
       ),
       (isToday || dayStatus) && React.createElement("div", { style: styles.dayBar },
         isToday && (!dayStarted
