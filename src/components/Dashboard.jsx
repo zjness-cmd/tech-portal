@@ -39,6 +39,16 @@ const MANUAL_OVERRIDE_COOLDOWN_MS = 10 * 60 * 1000;
 // one-shot reading with no dwell confirmation, so it needs its own margin
 // of safety against one noisy fix, not just "technically outside the zone."
 const GEOFENCE_CATCHUP_CLEAR_MILES = 0.5;
+// Minimum time a job has to have been checked in before the catch-up check
+// above will act on it at all. Without this, checking in while genuinely
+// not at the job's coords yet — a deliberate early check-in, or a test job
+// whose address is nowhere near you — gets immediately reversed the next
+// time catch-up runs (e.g. just switching apps and back fires a
+// visibilitychange), since a fresh GPS fix miles away looks identical to
+// "drove home an hour ago" the instant after check-in as it does an hour
+// later. checkInTimestampRef (in-memory only) is what this is measured
+// against.
+const CATCHUP_MIN_CHECKIN_AGE_MS = 5 * 60 * 1000;
 // Readings worse than this are unusable for any distance math (the accuracy
 // circle is bigger than a city block) — always skipped, always logged.
 // Anything better than this but still noisy (common indoors — malls,
@@ -49,7 +59,7 @@ const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
 // (merged B20:C20, navy, two-line real link), checks-payable bar and
 // Total amount recolored navy to match the logo, thin outer border
 // added around the item table, footer line added under Total.
-const APP_VERSION = "1.3.16";
+const APP_VERSION = "1.3.17";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -328,6 +338,20 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   // same beat, before either's async handleCheckOut call has updated
   // checkedOutRef, and double-log the check-out.
   const checkOutLockRef = useRef({});
+  // jobId -> Date.now() at the moment a check-in actually committed —
+  // exists purely so the catch-up-on-resume check (near handleCheckOut)
+  // can tell "just checked in a few seconds ago" apart from "been checked
+  // in for a while." Without this, checking into a job while genuinely not
+  // standing at its address yet (a deliberate early/manual check-in, or a
+  // test job whose address is nowhere near you) gets immediately reversed
+  // the next time that catch-up check runs — e.g. simply switching apps
+  // and back triggers a visibilitychange, and a fresh GPS fix miles from
+  // the job's coords looks identical to "drove home an hour ago" to that
+  // check, even though the check-in is seconds old. Deliberately in-memory
+  // only, not persisted — a real reload naturally clearing this is fine,
+  // since by then enough time has plausibly passed for catch-up to be
+  // exactly what should happen.
+  const checkInTimestampRef = useRef({});
   // Tracks which jobs have already had a cascade reschedule applied today,
   // so even if handleCheckIn does get called again for the same job (lock
   // notwithstanding — belt and suspenders), the calendar doesn't get shoved
@@ -688,7 +712,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     setDayStarted(false); setDayFinished(false); setDayStatus(""); setPastDayStatus(""); setStatusLoading(true);
     jobCoordsRef.current = {}; geofenceDwellRef.current = {}; departureDwellRef.current = {}; setGeofenceStatus({});
     ambiguousWarnedRef.current = {}; manualOverrideRef.current = {};
-    checkInLockRef.current = {}; checkOutLockRef.current = {}; cascadedTodayRef.current = {}; paymentLinkRef.current = {};
+    checkInLockRef.current = {}; checkOutLockRef.current = {}; checkInTimestampRef.current = {}; cascadedTodayRef.current = {}; paymentLinkRef.current = {};
     if (new Date().toDateString() !== selectedDate.toDateString()) { try { localStorage.removeItem("techportal_lastPos"); } catch {} lastPositionRef.current = null; }
     try { const ck = JOB_STATUS_CACHE_KEY + selectedDate.toDateString(); const c = localStorage.getItem(ck); if (c) { const { checkedIn: ci, checkedOut: co, completed: comp, invoiced: inv } = JSON.parse(c); if (ci) setCheckedIn(ci); if (co) setCheckedOut(co); if (comp) setCompleted(comp); if (inv) setInvoicedJobs(inv); } } catch {}
     try { const k = "techportal_jobValues_" + selectedDate.toDateString(); const s = localStorage.getItem(k); setJobValues(s ? JSON.parse(s) : {}); } catch { setJobValues({}); }
@@ -1925,6 +1949,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       return;
     }
     checkInLockRef.current[jobId] = true;
+    checkInTimestampRef.current[jobId] = Date.now();
     const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
     dbg("📍 Check-in: " + jobTitle + (auto ? " (auto)" : ""));
@@ -2024,15 +2049,24 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   // out, checks whether that single reading already places you well clear
   // of the job's zone (GEOFENCE_CATCHUP_CLEAR_MILES — a wider margin than
   // the normal geofence radius, since this has no dwell-timer confirmation
-  // to fall back on). If so, it checks you out immediately instead of
+  // to fall back on) AND has been checked in for at least
+  // CATCHUP_MIN_CHECKIN_AGE_MS (so a check-in from seconds ago isn't
+  // immediately reversed the next time this fires — see that constant's
+  // comment). If both hold, it checks you out immediately instead of
   // silently leaving the job open until you notice.
   useEffect(() => {
     const catchUpDepartures = () => {
       if (!dayStartedRef.current || dayFinishedRef.current) return;
       if (!navigator.geolocation) return;
+      const nowMs = Date.now();
       const pending = jobsRef.current.filter(job => {
         const nid = normalizeId(job.id);
-        return checkedInRef.current[nid] && !checkedOutRef.current[nid] && !completedRef.current[nid] && jobCoordsRef.current[nid];
+        if (!checkedInRef.current[nid] || checkedOutRef.current[nid] || completedRef.current[nid] || !jobCoordsRef.current[nid]) return false;
+        const checkedInAt = checkInTimestampRef.current[nid];
+        // No timestamp means it wasn't checked in during this page load
+        // (e.g. restored from a reload) — treat as old enough, since by
+        // definition real time has passed since whatever session set it.
+        return !checkedInAt || (nowMs - checkedInAt) >= CATCHUP_MIN_CHECKIN_AGE_MS;
       });
       if (pending.length === 0) return;
       navigator.geolocation.getCurrentPosition(
@@ -2133,6 +2167,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     setPending(jobId + "__method", { status: "undone", extra: "" });
     delete checkInLockRef.current[jobId];
     delete checkOutLockRef.current[jobId];
+    delete checkInTimestampRef.current[jobId];
     delete cascadedTodayRef.current[normalizeId(jobId)];
     delete paymentLinkRef.current[normalizeId(jobId)];
     delete ambiguousWarnedRef.current[jobId];
