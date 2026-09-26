@@ -75,7 +75,7 @@ function timeStrToInput(timeStr) {
 
 export default function JobCard({
   job, location, status, checkedIn, checkedOut, completed, invoiceUrl,
-  onCheckIn, onCheckOut, onComplete, onNavigate, onUndo, onInvoice, onMissed,
+  onCheckIn, onCheckOut, onComplete, onNavigate, onUndo, onInvoice, onTextInvoice, onMissed,
   isNearby, isAmbiguous, accessToken, onTimeUpdated, onNotesSaved, logSheetId,
   paymentStatus, paymentMethod, onTogglePaid, website, onReschedule,
 }) {
@@ -187,7 +187,7 @@ export default function JobCard({
         onClose: () => setShowDetail(false),
         onNotesSaved,
         logSheetId,
-        onUndo, onInvoice, invoiceUrl, paymentStatus, paymentMethod, onTogglePaid,
+        onUndo, onInvoice, onTextInvoice, invoiceUrl, paymentStatus, paymentMethod, onTogglePaid,
       }),
 
       // ── Time edit modal ─────────────────────────────────────────────────

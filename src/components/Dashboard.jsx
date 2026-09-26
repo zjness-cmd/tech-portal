@@ -59,13 +59,55 @@ const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
 // (merged B20:C20, navy, two-line real link), checks-payable bar and
 // Total amount recolored navy to match the logo, thin outer border
 // added around the item table, footer line added under Total.
-const APP_VERSION = "1.3.24";
+const APP_VERSION = "1.3.25";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
 // invoicing flows show the same business details.
 export const INVOICE_BUSINESS = { name: "Ness Draft Beer Service", addr1: "PO Box 222", addr2: "Albertville, MN 55301", phone: "612-293-9459" };
 export const INVOICE_SQUARE_PAY_URL = "https://checkout.square.site/merchant/ML3V5FZFEF5B8/checkout/R6IKWK56UNMU6GSPBHVPLIBY";
+
+// Shared by the mailto: invoice flow (Unpaid Accounts' "Send Invoice") and
+// the text/share invoice flow (a job card's quick "Text Invoice") so the
+// wording — and both payment paths, Square pay link + mail-a-check —
+// only lives in one place.
+function buildInvoiceBody(name, amount, invoiceNumber) {
+  return [
+    "Hi " + name + ",",
+    "",
+    "Here's your invoice for beer line cleaning service.",
+    "",
+    "Invoice #: " + invoiceNumber,
+    "Amount due: $" + amount.toFixed(2),
+    "",
+    "Pay online by card:",
+    INVOICE_SQUARE_PAY_URL,
+    "(enter invoice #" + invoiceNumber + " when prompted so it's matched to this invoice)",
+    "",
+    "Or mail a check to:",
+    INVOICE_BUSINESS.name,
+    INVOICE_BUSINESS.addr1,
+    INVOICE_BUSINESS.addr2,
+    "(please write invoice #" + invoiceNumber + " on the memo line)",
+    "",
+    "Thanks for your business!",
+    INVOICE_BUSINESS.name,
+    INVOICE_BUSINESS.phone,
+  ].join("\n");
+}
+
+// Prefers the native share sheet (Messages, WhatsApp, email, whatever the
+// tech picks) and falls back to opening Messages directly via an sms:
+// link — same pattern as the golf scorecard's shareScorecard. iOS and
+// Android expect a different separator before `body=`.
+function shareInvoiceText(title, text) {
+  if (navigator.share) {
+    navigator.share({ title, text }).catch(() => {});
+    return;
+  }
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+  window.location.href = "sms:" + (isIOS ? "&" : "?") + "body=" + encodeURIComponent(text);
+}
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -1304,30 +1346,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     });
     saveARAccountRow(updated, true);
 
-    const amountStr = "$" + account.amount.toFixed(2);
     const subject = "Invoice " + invoiceNumber + " from " + INVOICE_BUSINESS.name;
-    const body = [
-      "Hi " + account.name + ",",
-      "",
-      "Here's your invoice for beer line cleaning service.",
-      "",
-      "Invoice #: " + invoiceNumber,
-      "Amount due: " + amountStr,
-      "",
-      "Pay online by card:",
-      INVOICE_SQUARE_PAY_URL,
-      "(enter invoice #" + invoiceNumber + " when prompted so it's matched to this invoice)",
-      "",
-      "Or mail a check to:",
-      INVOICE_BUSINESS.name,
-      INVOICE_BUSINESS.addr1,
-      INVOICE_BUSINESS.addr2,
-      "(please write invoice #" + invoiceNumber + " on the memo line)",
-      "",
-      "Thanks for your business!",
-      INVOICE_BUSINESS.name,
-      INVOICE_BUSINESS.phone,
-    ].join("\n");
+    const body = buildInvoiceBody(account.name, account.amount, invoiceNumber);
 
     const mailto = "mailto:" + encodeURIComponent(email) + "?subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
     window.location.href = mailto;
@@ -2532,6 +2552,58 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     flushStatusSaves();
   };
 
+  // Quick "text this invoice" straight from a job — for a fast informal
+  // invoice without going through the full Square create-invoice flow.
+  // Finds the job's existing linked Unpaid Accounts entry if there is one
+  // (e.g. it was already marked unpaid from the job card or Today's
+  // Earnings) rather than creating a second one, so the invoice number and
+  // the AR page always agree — same dedup shape as addUnpaidAccountForJob,
+  // just find-or-create instead of always-create.
+  const handleTextInvoice = (nid, jobTitle) => {
+    const cleanTitle = (jobTitle || "").replace(/^(⚠️ MISSED - )+/, "");
+    let amount = jobValues[nid];
+    if (amount == null) {
+      const input = prompt("Amount for this invoice ($):");
+      if (input === null) return;
+      amount = parseFloat(input);
+      if (isNaN(amount) || amount <= 0) { alert("Enter a valid dollar amount."); return; }
+      setJobValues(prev => {
+        const next = { ...prev, [nid]: amount };
+        try { localStorage.setItem("techportal_jobValues_" + selectedDate.toDateString(), JSON.stringify(next)); } catch {}
+        return next;
+      });
+      setPending(nid + "__value", { status: "jobValue", extra: String(amount) });
+      flushStatusSaves();
+    }
+
+    const existingKey = paymentLinkRef.current[nid];
+    let account = existingKey ? unpaidAccounts.find(a => a._key === existingKey) : null;
+    if (!account) {
+      const id = "ar_" + Date.now();
+      account = { id, name: cleanTitle, amount, dateAdded: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }), _key: id };
+      setUnpaidAccounts(prev => {
+        const next = [...prev, account];
+        try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
+        return next;
+      });
+      saveARAccountRow(account, false);
+      paymentLinkRef.current[nid] = id;
+    }
+    const invoiceNumber = account.invoiceNumber || invoiceNumberFor(account);
+    if (!account.invoiceNumber) {
+      const updated = { ...account, invoiceNumber };
+      setUnpaidAccounts(prev => {
+        const next = prev.map(a => a._key === account._key ? updated : a);
+        try { localStorage.setItem("techportal_unpaidAccounts", JSON.stringify(next)); } catch {}
+        return next;
+      });
+      saveARAccountRow(updated, true);
+    }
+
+    shareInvoiceText("Invoice " + invoiceNumber + " — " + cleanTitle, buildInvoiceBody(cleanTitle, amount, invoiceNumber));
+    dbg("📱 Text invoice opened for " + cleanTitle + " — " + invoiceNumber);
+  };
+
   const handleConfirmPayAmount = () => {
     const amount = parseFloat(payAmountInput.trim());
     if (isNaN(amount) || amount < 0) { alert("Enter a valid dollar amount."); return; }
@@ -3373,6 +3445,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               onNavigate: () => handleNavigate(nid),
               onUndo: () => handleUndo(nid),
               onInvoice: () => handleInvoice({ ...job, id: nid }),
+              onTextInvoice: () => handleTextInvoice(nid, job.title),
               onMissed: () => handleMissed(nid, job.title, job.location, job.calendarId, job.id),
               onReschedule: () => {
                 const cleanTitle = job.title.replace(/^(⚠️ MISSED - )+/, "");

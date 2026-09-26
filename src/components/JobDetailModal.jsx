@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 
 export default function JobDetailModal({
   job, accessToken, checkedIn, checkedOut, completed, onClose, onNotesSaved, logSheetId,
-  onUndo, onInvoice, invoiceUrl, paymentStatus, paymentMethod, onTogglePaid,
+  onUndo, onInvoice, onTextInvoice, invoiceUrl, paymentStatus, paymentMethod, onTogglePaid,
 }) {
   const [notes, setNotes] = useState("");
   const [photos, setPhotos] = useState([]);
@@ -179,7 +179,16 @@ export default function JobDetailModal({
                   : onInvoice && React.createElement("button", {
                       onClick: onInvoice,
                       style: { fontSize: 13, padding: "8px 12px", borderRadius: 10, background: "#F0F4FF", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 500 },
-                    }, "💵 Invoice"))
+                    }, "💵 Invoice")),
+                // Quick informal invoice — skips Square entirely, just
+                // texts (or shares) an amount + pay-online link + mail-a-
+                // check option, same wording the AR page's "Email Invoice"
+                // uses. Available independent of the full Square invoice
+                // above, since not every job needs a formal Square invoice.
+                completed && onTextInvoice && React.createElement("button", {
+                  onClick: onTextInvoice,
+                  style: { fontSize: 13, padding: "8px 12px", borderRadius: 10, background: "#F0F4FF", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 500 },
+                }, "📱 Text Invoice")
               )
             ),
 
