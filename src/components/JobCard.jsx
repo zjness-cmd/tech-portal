@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import JobDetailModal from "./JobDetailModal";
-import { findClientLogo } from "../clientLogos";
+import { findClientLogo, findClientTapPhoto } from "../clientAssets";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -120,6 +120,11 @@ export default function JobCard({
   // logo, not a best-effort guess from a domain.
   const logoUrl = findClientLogo(job.title) || getLogoUrl(website);
   const showLogo = logoUrl && !logoFailed;
+  // A reference photo of the client's actual tap tower/lines
+  // (src/assets/client-taps/) — shown alongside Street View, not instead of
+  // it: Street View is for finding the building, this is for what's on tap
+  // once you're there.
+  const tapPhotoUrl = findClientTapPhoto(job.title);
 
   React.useEffect(() => { setLogoFailed(false); }, [website, job.title]);
 
@@ -251,15 +256,21 @@ export default function JobCard({
       ),
       job.location && React.createElement("div", { style: s.cardMeta }, "📍 " + job.location),
 
-      // ── Street View image ────────────────────────────────────────────────
-      showImage && React.createElement("a", {
-        href: job.calendarLink || "#", target: "_blank", rel: "noreferrer",
-        style: { display: "block", marginBottom: 8 },
-      },
-        React.createElement("img", {
-          src: streetViewUrl, alt: "Street View",
-          style: { width: "100%", height: 110, objectFit: "cover", borderRadius: 8, display: "block" },
-          onError: () => setImgFailed(true),
+      // ── Street View + tap tower photos ───────────────────────────────────
+      (showImage || tapPhotoUrl) && React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 8 } },
+        showImage && React.createElement("a", {
+          href: job.calendarLink || "#", target: "_blank", rel: "noreferrer",
+          style: { display: "block", flex: 1, minWidth: 0 },
+        },
+          React.createElement("img", {
+            src: streetViewUrl, alt: "Street View",
+            style: { width: "100%", height: 110, objectFit: "cover", borderRadius: 8, display: "block" },
+            onError: () => setImgFailed(true),
+          })
+        ),
+        tapPhotoUrl && React.createElement("img", {
+          src: tapPhotoUrl, alt: "Tap tower",
+          style: { flex: 1, minWidth: 0, width: showImage ? undefined : "100%", height: 110, objectFit: "cover", borderRadius: 8, display: "block" },
         })
       ),
 
