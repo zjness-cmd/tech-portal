@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import JobDetailModal from "./JobDetailModal";
+import { findClientLogo } from "../clientLogos";
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
 
@@ -114,10 +115,13 @@ export default function JobCard({
 
   const streetViewUrl = getStreetViewUrl(job.location);
   const showImage = streetViewUrl && !imgFailed && imgChecked && imgExists;
-  const logoUrl = getLogoUrl(website);
+  // A manually-saved local logo (src/assets/client-logos/) always wins over
+  // the auto-discovered website favicon — it's there because it's the real
+  // logo, not a best-effort guess from a domain.
+  const logoUrl = findClientLogo(job.title) || getLogoUrl(website);
   const showLogo = logoUrl && !logoFailed;
 
-  React.useEffect(() => { setLogoFailed(false); }, [website]);
+  React.useEffect(() => { setLogoFailed(false); }, [website, job.title]);
 
   const isMissed = job.title.startsWith("⚠️ MISSED");
   const showMissed = !checkedIn && !completed && !!onMissed;
