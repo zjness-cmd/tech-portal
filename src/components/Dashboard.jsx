@@ -59,7 +59,7 @@ const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
 // (merged B20:C20, navy, two-line real link), checks-payable bar and
 // Total amount recolored navy to match the logo, thin outer border
 // added around the item table, footer line added under Total.
-const APP_VERSION = "1.3.21";
+const APP_VERSION = "1.3.22";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -204,6 +204,83 @@ function parseClockTime(t) {
   return d;
 }
 
+// "8:15 AM" -> 495 (minutes since midnight) — used to compare a mileage
+// leg's clock-time strings against a Google Timeline drive's real Date
+// objects without having to rebase either one onto the other's date.
+function clockStrToMinutes(t) {
+  if (!t) return null;
+  const parts = t.split(" ");
+  if (parts.length !== 2) return null;
+  const [time, ampm] = parts;
+  let [h, min] = time.split(":").map(Number);
+  if (isNaN(h) || isNaN(min)) return null;
+  if (ampm === "PM" && h !== 12) h += 12;
+  if (ampm === "AM" && h === 12) h = 0;
+  return h * 60 + min;
+}
+
+// Google Timeline exports moved off Google Takeout entirely in 2024 — it's
+// now an on-device "Timeline.json" file (Android: Settings > Location >
+// Location services > Timeline > Export Timeline data; iOS: Google Maps >
+// Settings > Personal Content > Export Timeline data), and the shape
+// differs by platform and export vintage, so this tries each defensively:
+//   - Android (2024+): { semanticSegments: [...] }
+//   - iOS (2024+): a bare array of segments, no wrapper key
+//   - Legacy Takeout ("Semantic Location History"): { timelineObjects: [{ activitySegment: {...} }] }
+// Returns every driving-shaped segment overlapping targetDate, sorted by
+// start time — filtering to "on this day" and "looks like driving" is
+// deliberately soft (see isLikelyDrive) since the import UI shows every
+// candidate for the tech to confirm rather than silently excluding one
+// that Google mis-classified.
+function parseTimelineSegments(raw) {
+  if (Array.isArray(raw)) return raw;
+  if (Array.isArray(raw?.semanticSegments)) return raw.semanticSegments;
+  if (Array.isArray(raw?.timelineObjects)) {
+    return raw.timelineObjects
+      .map(o => o.activitySegment && {
+        startTime: o.activitySegment.duration?.startTimestamp,
+        endTime: o.activitySegment.duration?.endTimestamp,
+        activity: { distanceMeters: o.activitySegment.distance, topCandidate: { type: o.activitySegment.activityType } },
+      })
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function parseTimelineTimestamp(v) {
+  if (v == null) return null;
+  const d = new Date(v);
+  if (!isNaN(d)) return d;
+  const n = Number(v);
+  return isNaN(n) ? null : new Date(n);
+}
+
+function isLikelyDrive(type) {
+  return /vehicle|driving|motorcycl/i.test(type || "");
+}
+
+function extractTimelineDrives(raw, targetDate) {
+  const dayStart = new Date(targetDate); dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(targetDate); dayEnd.setHours(23, 59, 59, 999);
+  const segments = parseTimelineSegments(raw);
+  const drives = [];
+  segments.forEach((seg, i) => {
+    const activity = seg.activity;
+    if (!activity) return; // visits and other segment kinds carry no distance
+    const start = parseTimelineTimestamp(seg.startTime);
+    const end = parseTimelineTimestamp(seg.endTime);
+    if (!start || !end || end < dayStart || start > dayEnd) return;
+    const distanceMeters = Number(activity.distanceMeters);
+    if (!distanceMeters || distanceMeters <= 0) return;
+    const miles = Math.round((distanceMeters / 1609.344) * 100) / 100;
+    if (miles < 0.1) return; // ignore trivial/stationary noise
+    const type = activity.topCandidate?.type || activity.activityType || "";
+    drives.push({ id: "tl_" + i + "_" + (seg.startTime || start.getTime()), start, end, miles, type, likelyDrive: isLikelyDrive(type) });
+  });
+  drives.sort((a, b) => a.start - b.start);
+  return drives;
+}
+
 const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout }, ref) {
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [filter, setFilter] = useState("All");
@@ -220,6 +297,10 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     try { const k = "mileageLog_" + new Date().toDateString(); const s = localStorage.getItem(k); return s ? JSON.parse(s) : []; } catch { return []; }
   });
   const [pastDayStatus, setPastDayStatus] = useState("");
+  const [showTimelineImport, setShowTimelineImport] = useState(false);
+  const [timelineDrives, setTimelineDrives] = useState([]);
+  const [timelineImportError, setTimelineImportError] = useState("");
+  const [timelineImportLoading, setTimelineImportLoading] = useState(false);
   const [navStart, setNavStart] = useState({});
   const [monthlyCount, setMonthlyCount] = useState(null);
   const [monthlyMiles, setMonthlyMiles] = useState(null);
@@ -799,7 +880,14 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const saveMileage = (updater) => {
     setMileageLog(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
-      try { localStorage.setItem("mileageLog_" + new Date().toDateString(), JSON.stringify(next)); } catch {}
+      // selectedDateRef, not `new Date()` — this used to always cache under
+      // *today's* key regardless of which day was being edited, harmless
+      // while every mileage edit only ever happened on today, but wrong the
+      // moment a past day's log can be edited too (deleting a leg on a past
+      // day already could; the Timeline import and un-gated "+ Add leg"
+      // make it routine). The Sheets write below was already correctly
+      // dated via selectedDateRef — only this local cache mirror was off.
+      try { localStorage.setItem("mileageLog_" + selectedDateRef.current.toDateString(), JSON.stringify(next)); } catch {}
       setPending("__MILEAGE_LOG__", { status: "mileageLog", extra: JSON.stringify(next) });
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = setTimeout(() => flushStatusSaves(), 800);
@@ -2557,6 +2645,75 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     addLeg(miles);
   };
 
+  // ── Google Timeline import ───────────────────────────────────────────────
+  // Parsed entirely client-side — the file never leaves the browser — since
+  // it's the tech's full location history, not something to route through
+  // our own server for no reason.
+  const timelineDriveOverlapsExisting = (drive) => {
+    const driveStartMin = drive.start.getHours() * 60 + drive.start.getMinutes();
+    const driveEndMin = drive.end.getHours() * 60 + drive.end.getMinutes();
+    return mileageLog.some(leg => {
+      const legStartMin = clockStrToMinutes(leg.checkIn || leg.time);
+      if (legStartMin == null) return false;
+      const legEndMin = clockStrToMinutes(leg.checkOut) ?? legStartMin;
+      return driveStartMin < legEndMin && driveEndMin > legStartMin;
+    });
+  };
+
+  const handleTimelineFileSelect = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // lets the same file be re-picked later (e.g. after switching days)
+    if (!file) return;
+    setTimelineImportError("");
+    setTimelineImportLoading(true);
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        const drives = extractTimelineDrives(data, selectedDate);
+        if (drives.length === 0) {
+          setTimelineImportError("No drives found for " + selectedDate.toLocaleDateString() + " in this file.");
+          setTimelineDrives([]);
+        } else {
+          setTimelineDrives(drives.map(d => {
+            const overlap = timelineDriveOverlapsExisting(d);
+            return {
+              ...d,
+              overlap,
+              checked: d.likelyDrive && !overlap,
+              label: "Drive " + d.start.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + " – " + d.end.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+            };
+          }));
+        }
+      } catch (err) {
+        setTimelineImportError("Couldn't read that file — make sure it's the Timeline.json export.");
+        setTimelineDrives([]);
+      }
+      setTimelineImportLoading(false);
+    };
+    reader.onerror = () => { setTimelineImportError("Couldn't read that file."); setTimelineImportLoading(false); };
+    reader.readAsText(file);
+  };
+
+  const toggleTimelineDrive = (id) => setTimelineDrives(prev => prev.map(d => d.id === id ? { ...d, checked: !d.checked } : d));
+  const updateTimelineDriveLabel = (id, label) => setTimelineDrives(prev => prev.map(d => d.id === id ? { ...d, label } : d));
+
+  const handleImportTimelineDrives = () => {
+    const selected = timelineDrives.filter(d => d.checked);
+    if (selected.length === 0) { setShowTimelineImport(false); return; }
+    const additions = selected.map(d => {
+      const t = d.start.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      const checkOut = d.end.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      return { jobId: "timeline_" + d.id, jobTitle: d.label || "Drive", from: "", miles: d.miles, time: t, checkIn: t, checkOut };
+    });
+    saveMileage(prev => [...prev, ...additions]
+      .sort((a, b) => (clockStrToMinutes(a.checkIn || a.time) ?? 0) - (clockStrToMinutes(b.checkIn || b.time) ?? 0))
+      .map((leg, i, arr) => ({ ...leg, from: i === 0 ? "Start" : arr[i - 1].jobTitle })));
+    dbg("📂 Imported " + selected.length + " leg(s) from Google Timeline (" + selected.reduce((s, d) => s + d.miles, 0).toFixed(1) + " mi)");
+    setShowTimelineImport(false);
+    setTimelineDrives([]);
+  };
+
   const handleSetJobValue = (jobId, jobTitle) => {
     const current = jobValues[jobId];
     const input = prompt("Job value for " + jobTitle + " ($):", current != null ? String(current) : "");
@@ -2780,6 +2937,46 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           )
         )
       ),
+      showTimelineImport && React.createElement("div", { style: styles.overlay, onClick: () => { setShowTimelineImport(false); setTimelineDrives([]); setTimelineImportError(""); } },
+        React.createElement("div", { style: styles.modalBox, onClick: e => e.stopPropagation() },
+          React.createElement("div", { style: styles.modalHeader },
+            React.createElement("div", { style: styles.modalTitle }, "📂 Import from Google Timeline"),
+            React.createElement("button", { style: styles.modalClose, onClick: () => { setShowTimelineImport(false); setTimelineDrives([]); setTimelineImportError(""); } }, "×")
+          ),
+          React.createElement("div", { style: { padding: "1rem 1.25rem" } },
+            React.createElement("div", { style: { fontSize: 12, color: "#888", marginBottom: 10, lineHeight: 1.5 } },
+              "Export your Timeline.json — Android: Settings → Location → Location services → Timeline → Export Timeline data. iPhone: Google Maps → Settings → Personal Content → Export Timeline data. Processed right here in the browser; the file is never uploaded anywhere.",
+            ),
+            React.createElement("input", { type: "file", accept: ".json,application/json", onChange: handleTimelineFileSelect, style: { fontSize: 13, marginBottom: 10 } }),
+            timelineImportLoading && React.createElement("div", { style: { fontSize: 13, color: "#888" } }, "Reading file..."),
+            timelineImportError && React.createElement("div", { style: { fontSize: 13, color: "#A32D2D", marginTop: 6 } }, timelineImportError),
+            timelineDrives.length > 0 && React.createElement(React.Fragment, null,
+              React.createElement("div", { style: { fontSize: 12, color: "#888", margin: "10px 0 4px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em" } },
+                "Drives found for " + selectedDate.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + " — review before importing"
+              ),
+              React.createElement("div", { style: { maxHeight: "40vh", overflowY: "auto", border: "0.5px solid #e0e0e0", borderRadius: 8 } },
+                timelineDrives.map(d =>
+                  React.createElement("div", { key: d.id, style: { padding: "8px 10px", borderBottom: "0.5px solid #f0f0f0", display: "flex", gap: 8, alignItems: "flex-start" } },
+                    React.createElement("input", { type: "checkbox", checked: d.checked, onChange: () => toggleTimelineDrive(d.id), style: { marginTop: 4 } }),
+                    React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                      React.createElement("input", { value: d.label, onChange: e => updateTimelineDriveLabel(d.id, e.target.value), style: { width: "100%", fontSize: 13, border: "none", borderBottom: "0.5px solid #ccc", padding: "2px 0", boxSizing: "border-box" } }),
+                      React.createElement("div", { style: { fontSize: 11, color: "#888", marginTop: 2 } },
+                        d.start.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + " – " + d.end.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + " · " + d.miles + " mi",
+                        !d.likelyDrive && " · " + (d.type || "not detected as driving"),
+                        d.overlap && " · ⚠️ overlaps an existing leg"
+                      )
+                    )
+                  )
+                )
+              ),
+              React.createElement("button", {
+                style: { width: "100%", padding: "10px", borderRadius: 8, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, marginTop: 10 },
+                onClick: handleImportTimelineDrives,
+              }, "Import " + timelineDrives.filter(d => d.checked).length + " leg" + (timelineDrives.filter(d => d.checked).length === 1 ? "" : "s") + " (" + timelineDrives.filter(d => d.checked).reduce((s, d) => s + d.miles, 0).toFixed(1) + " mi)")
+            )
+          )
+        )
+      ),
       arPicker && React.createElement("div", { style: styles.overlay, onClick: () => { setArPicker(null); setArAmountInput(""); } },
         React.createElement("div", { style: styles.modalBox, onClick: e => e.stopPropagation() },
           arPicker.step === "pick"
@@ -2974,11 +3171,14 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       (isToday || mileageLog.length > 0) && React.createElement("div", { style: styles.mileageBar },
         React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
           React.createElement("div", { style: styles.mileageTitle }, isToday ? "Today's mileage log" : "Mileage log"),
-          // No longer gated to isToday/dayStarted — handleAddManualLeg
-          // falls back to a typed-in mileage prompt for a past day (or
-          // whenever a live GPS fix isn't available), so this is useful
-          // for logging something missed after the fact, not just live.
-          React.createElement("button", { style: { fontSize: 11, padding: "3px 10px", borderRadius: 8, background: "#F0F4FF", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 500 }, onClick: () => handleAddManualLeg() }, "+ Add leg")
+          React.createElement("div", { style: { display: "flex", gap: 6 } },
+            React.createElement("button", { style: { fontSize: 11, padding: "3px 10px", borderRadius: 8, background: "#F0F4FF", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 500 }, onClick: () => setShowTimelineImport(true) }, "📂 Import Timeline"),
+            // No longer gated to isToday/dayStarted — handleAddManualLeg
+            // falls back to a typed-in mileage prompt for a past day (or
+            // whenever a live GPS fix isn't available), so this is useful
+            // for logging something missed after the fact, not just live.
+            React.createElement("button", { style: { fontSize: 11, padding: "3px 10px", borderRadius: 8, background: "#F0F4FF", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 500 }, onClick: () => handleAddManualLeg() }, "+ Add leg")
+          )
         ),
         mileageLog.length === 0
           ? React.createElement("div", { style: styles.mileageEmpty }, dayStarted ? "Check in to your first job to start tracking" : "Start your day to begin tracking miles")
