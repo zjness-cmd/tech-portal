@@ -89,6 +89,7 @@ export default function JobCard({
   const [newTime, setNewTime] = useState("");
   const [timeSaving, setTimeSaving] = useState(false);
   const [timeError, setTimeError] = useState("");
+  const [showTapLightbox, setShowTapLightbox] = useState(false);
   const [showDetail, setShowDetail] = useState(false);
 
   React.useEffect(() => {
@@ -190,6 +191,41 @@ export default function JobCard({
   return (
     React.createElement("div", { style: s.card },
 
+      // ── Tap tower photo lightbox ─────────────────────────────────────────
+      // No CSS files in this project — everything's inline styles — so the
+      // zoom-in keyframes are injected as a plain <style> tag right here,
+      // scoped to existing only while the lightbox itself is mounted.
+      showTapLightbox && React.createElement(React.Fragment, null,
+        React.createElement("style", null, `
+          @keyframes tapLightboxFadeIn { from { opacity: 0; } to { opacity: 1; } }
+          @keyframes tapLightboxZoomIn { from { transform: scale(0.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+        `),
+        React.createElement("div", {
+          style: {
+            position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 4000,
+            background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "center", justifyContent: "center",
+            padding: "1.5rem", animation: "tapLightboxFadeIn 0.15s ease-out",
+          },
+          onClick: () => setShowTapLightbox(false),
+        },
+          React.createElement("img", {
+            src: tapPhotoUrl, alt: "Tap tower",
+            style: {
+              maxWidth: "92vw", maxHeight: "85vh", borderRadius: 12, display: "block",
+              boxShadow: "0 12px 40px rgba(0,0,0,0.5)",
+              animation: "tapLightboxZoomIn 0.35s cubic-bezier(0.34, 1.56, 0.64, 1)",
+            },
+          }),
+          React.createElement("button", {
+            onClick: () => setShowTapLightbox(false),
+            style: {
+              position: "fixed", top: 16, right: 16, fontSize: 28, lineHeight: 1, width: 44, height: 44,
+              borderRadius: "50%", background: "rgba(255,255,255,0.15)", color: "#fff", border: "none", cursor: "pointer",
+            },
+          }, "×")
+        )
+      ),
+
       // ── Job Detail Modal ────────────────────────────────────────────────
       showDetail && React.createElement(JobDetailModal, {
         job, accessToken, checkedIn, checkedOut, completed,
@@ -270,7 +306,8 @@ export default function JobCard({
         ),
         tapPhotoUrl && React.createElement("img", {
           src: tapPhotoUrl, alt: "Tap tower",
-          style: { flex: 1, minWidth: 0, width: showImage ? undefined : "100%", height: 110, objectFit: "cover", borderRadius: 8, display: "block" },
+          style: { flex: 1, minWidth: 0, width: showImage ? undefined : "100%", height: 110, objectFit: "cover", borderRadius: 8, display: "block", cursor: "zoom-in" },
+          onClick: (e) => { e.stopPropagation(); setShowTapLightbox(true); },
         })
       ),
 
