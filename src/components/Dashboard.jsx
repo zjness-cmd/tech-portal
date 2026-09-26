@@ -59,7 +59,7 @@ const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
 // (merged B20:C20, navy, two-line real link), checks-payable bar and
 // Total amount recolored navy to match the logo, thin outer border
 // added around the item table, footer line added under Total.
-const APP_VERSION = "1.3.22";
+const APP_VERSION = "1.3.23";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -319,6 +319,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [rescheduleJob, setRescheduleJob] = useState(null);
   const [dayStarted, setDayStarted] = useState(false);
   const [dayFinished, setDayFinished] = useState(false);
+  const [screenWakeLocked, setScreenWakeLocked] = useState(false);
   const [confirmFinish, setConfirmFinish] = useState(false);
   const [gpsWaiting, setGpsWaiting] = useState(false);
   const [logSheetId, setLogSheetId] = useState(() => localStorage.getItem("techportal_logSheetId") || null);
@@ -805,6 +806,51 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     );
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
+
+  // ── Screen wake lock while the day is active ────────────────────────────
+  // GPS tracking (the watchPosition effect above, and the 30s gpsTrack
+  // interval elsewhere) already runs continuously whenever dayStarted is
+  // true, regardless of which screen is showing — but only while the tab
+  // is actually alive. The screen auto-locking is exactly what kills that:
+  // the OS suspends JS once the screen sleeps, no exception for
+  // geolocation. A wake lock keeps the screen from auto-locking due to
+  // inactivity for as long as the day is active and this tab is the one in
+  // front — not a fix for backgrounding the app entirely (switching to
+  // another app still releases it; there's no way around that on the web),
+  // but it means just leaving TechPortal open and the phone unlocked in a
+  // cupholder tracks the whole day with no daily export/import needed,
+  // instead of the screen timing out a minute after the last tap.
+  useEffect(() => {
+    if (!dayStarted || dayFinished) return;
+    if (!("wakeLock" in navigator)) { dbg("⚠️ Wake Lock API not supported on this browser — screen may time out during the day", "warn"); return; }
+    let wakeLock = null;
+    let cancelled = false;
+    const requestLock = async () => {
+      try {
+        const lock = await navigator.wakeLock.request("screen");
+        if (cancelled) { lock.release().catch(() => {}); return; }
+        wakeLock = lock;
+        setScreenWakeLocked(true);
+        wakeLock.addEventListener("release", () => setScreenWakeLocked(false));
+        dbg("🔆 Screen wake lock acquired — screen won't auto-lock while the day is active");
+      } catch (e) {
+        dbg("⚠️ Wake lock request failed: " + e.message, "warn");
+      }
+    };
+    requestLock();
+    // The spec releases the lock automatically whenever the tab is hidden
+    // (backgrounded/screen off) — this re-acquires it the moment the tab
+    // is visible again, so coming back to the app resumes the wake lock
+    // rather than requiring a manual re-trigger.
+    const onVisible = () => { if (document.visibilityState === "visible" && !wakeLock) requestLock(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVisible);
+      if (wakeLock) wakeLock.release().catch(() => {});
+      setScreenWakeLocked(false);
+    };
+  }, [dayStarted, dayFinished]);
 
   useEffect(() => {
     setCheckedIn({}); setCheckedOut({}); setCompleted({}); setNavStart({}); setJobValues({}); setPaymentStatus({});
@@ -3124,6 +3170,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         location ? React.createElement("span", { style: styles.locationText },
           "GPS active · ±" + location.accuracy + "m",
           location.accuracy > 500 && React.createElement("span", { style: { color: "#c0392b", marginLeft: 6 } }, "⚠️ Poor accuracy"),
+          screenWakeLocked && React.createElement("span", { style: { color: "#185FA5", marginLeft: 6 } }, "· 🔆 Screen staying on"),
           "  ",
           React.createElement("a", { href: "https://www.google.com/maps?q=" + location.lat + "," + location.lng, target: "_blank", rel: "noreferrer", style: styles.locationLink }, "View my location")
         ) : React.createElement("span", { style: { ...styles.locationText, display: "flex", alignItems: "center", gap: 8 } },
