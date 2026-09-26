@@ -59,7 +59,7 @@ const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
 // (merged B20:C20, navy, two-line real link), checks-payable bar and
 // Total amount recolored navy to match the logo, thin outer border
 // added around the item table, footer line added under Total.
-const APP_VERSION = "1.3.23";
+const APP_VERSION = "1.3.24";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -3287,13 +3287,37 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               const valueLabel = val != null
                 ? "$" + val.toFixed(2) + (pStatus === "paid" && methodLabel ? " · " + methodLabel : "")
                 : "+ add $";
+              const cleanTitle = (job.title || "").replace(/^(⚠️ MISSED - )+/, "");
               return React.createElement("div", {
                 key: job.id,
                 style: { ...styles.mileageRow, cursor: "pointer", borderRadius: 6, padding: "4px 6px", margin: "1px 0", ...rowTint },
                 onClick: () => handleSetJobValue(nid, job.title),
               },
                 React.createElement("span", { style: { color: textColor } }, job.title),
-                React.createElement("span", { style: val != null ? { ...styles.mileageVal, color: textColor } : { color: "#bbb", fontStyle: "italic" } }, valueLabel)
+                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
+                  React.createElement("span", { style: val != null ? { ...styles.mileageVal, color: textColor } : { color: "#bbb", fontStyle: "italic" } }, valueLabel),
+                  // A tap on the row itself edits the $ amount (unchanged) —
+                  // this is a separate, explicit one-tap way to mark a job
+                  // paid once the money actually comes in later (check in
+                  // the mail, cash handed over after the invoice), without
+                  // having to go through the job card's Mark Complete flow
+                  // again. Only shown once there's an amount to attach
+                  // payment info to.
+                  val != null && pStatus !== "paid" && React.createElement("button", {
+                    onClick: (e) => { e.stopPropagation(); openPaidPrompt(nid, cleanTitle); },
+                    style: { fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "#27500A", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 },
+                  }, "✓ Paid"),
+                  // Once paid, tapping the amount/method label itself (via
+                  // this small reset icon next to it) flips it back to
+                  // unpaid — same toggle the job card's "Completed" label
+                  // uses, kept separate from the row's main tap so it can't
+                  // be triggered by accident while just checking the amount.
+                  pStatus === "paid" && React.createElement("button", {
+                    onClick: (e) => { e.stopPropagation(); handleTogglePaid(nid, job.title); },
+                    title: "Mark unpaid",
+                    style: { fontSize: 12, padding: "2px 4px", background: "none", border: "none", color: textColor, cursor: "pointer", opacity: 0.6 },
+                  }, "↩")
+                )
               );
             }),
         React.createElement("div", { style: styles.mileageTotal },
