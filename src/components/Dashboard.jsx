@@ -59,7 +59,7 @@ const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
 // (merged B20:C20, navy, two-line real link), checks-payable bar and
 // Total amount recolored navy to match the logo, thin outer border
 // added around the item table, footer line added under Total.
-const APP_VERSION = "1.3.20";
+const APP_VERSION = "1.3.21";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -556,6 +556,20 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   // leg-sum, never as a replacement for it.
   const displayMiles = Math.round(totalMiles * 10) / 10;
   const gpsTrackedMiles = (gpsTrackedMilesRaw !== null && totalMiles > 1 && Math.abs(gpsTrackedMilesRaw - totalMiles) <= totalMiles * 0.1) ? gpsTrackedMilesRaw : null;
+  // The flip side of the guard above: a leg is only ever created at a job
+  // check-in, so a detour to somewhere that isn't on today's job list (an
+  // unscheduled stop, running an errand between two jobs) drives real
+  // miles the leg log has no way to capture — the next leg is still just
+  // "last checkpoint to this job," computed as a routed distance between
+  // those two points, not the actual path driven. The GPS trail (already
+  // filtered for accuracy/movement when it's recorded, see the 30s
+  // tracking interval) did see that detour, though, so when it reads
+  // meaningfully HIGHER than the leg-sum — the opposite direction from the
+  // undercounting failure mode above — that's a real signal of missing
+  // mileage, not GPS noise, and gets surfaced instead of silently dropped.
+  const gpsExtraMiles = (gpsTrackedMilesRaw !== null && gpsTrackedMilesRaw - totalMiles > Math.max(1, totalMiles * 0.1))
+    ? Math.round((gpsTrackedMilesRaw - totalMiles) * 10) / 10
+    : null;
 
   // Total revenue: sum of every dollar value entered for today's jobs.
   const totalRevenue = Object.values(jobValues).reduce((sum, v) => sum + (Number(v) || 0), 0);
@@ -2513,18 +2527,34 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     window.open("https://www.google.com/maps/dir/" + pts.map(p => p[0] + "," + p[1]).join("/"), "_blank");
   };
 
-  const handleAddManualLeg = async () => {
-    const fromPos = lastPositionRef.current || startPosRef.current;
-    if (!fromPos) { alert("GPS not ready."); return; }
-    const livePos = locationRef.current;
-    if (!livePos) { alert("GPS not available."); return; }
+  // prefillMiles (optional) seeds the manual-miles prompt — used by the
+  // GPS-mismatch warning below, which already knows roughly how much
+  // driving is missing from the log.
+  const handleAddManualLeg = async (prefillMiles) => {
     const label = prompt("What's this leg for?");
     if (!label) return;
     const from = mileageLog.length > 0 ? mileageLog[mileageLog.length - 1].jobTitle : "Last stop";
-    const miles = await getDrivingMiles(fromPos.lat, fromPos.lng, livePos.lat, livePos.lng);
     const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    if (miles > 0.05 && miles < 150) { saveMileage((prev) => [...prev, { jobId: "manual_" + Date.now(), jobTitle: label, from, miles, time, checkIn: time }]); setLastPos({ lat: livePos.lat, lng: livePos.lng }); }
-    else { alert("Miles: " + miles + " — too small or too large."); }
+    const addLeg = (miles) => saveMileage((prev) => [...prev, { jobId: "manual_" + Date.now(), jobTitle: label, from, miles, time, checkIn: time }]);
+
+    // Auto-computing via live GPS only makes sense for "add a leg for what
+    // I'm doing right now" — today, with a live fix, and no prefill (a
+    // prefill means this is the GPS-mismatch warning retroactively
+    // accounting for a detour earlier in the day; routing from wherever
+    // the tech happens to be standing *now* would have nothing to do with
+    // that gap). A past day likewise has no "current position" to route
+    // from. Either case falls through to asking for the mileage directly.
+    const fromPos = lastPositionRef.current || startPosRef.current;
+    const livePos = locationRef.current;
+    if (isToday && prefillMiles == null && fromPos && livePos) {
+      const miles = await getDrivingMiles(fromPos.lat, fromPos.lng, livePos.lat, livePos.lng);
+      if (miles > 0.05 && miles < 150) { addLeg(miles); setLastPos({ lat: livePos.lat, lng: livePos.lng }); return; }
+    }
+    const milesInput = prompt("Miles for this leg:", prefillMiles != null ? String(prefillMiles) : "");
+    if (milesInput === null) return;
+    const miles = parseFloat(milesInput);
+    if (isNaN(miles) || miles <= 0) { alert("Enter a valid number of miles."); return; }
+    addLeg(miles);
   };
 
   const handleSetJobValue = (jobId, jobTitle) => {
@@ -2944,7 +2974,11 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       (isToday || mileageLog.length > 0) && React.createElement("div", { style: styles.mileageBar },
         React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
           React.createElement("div", { style: styles.mileageTitle }, isToday ? "Today's mileage log" : "Mileage log"),
-          isToday && dayStarted && React.createElement("button", { style: { fontSize: 11, padding: "3px 10px", borderRadius: 8, background: "#F0F4FF", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 500 }, onClick: handleAddManualLeg }, "+ Add leg")
+          // No longer gated to isToday/dayStarted — handleAddManualLeg
+          // falls back to a typed-in mileage prompt for a past day (or
+          // whenever a live GPS fix isn't available), so this is useful
+          // for logging something missed after the fact, not just live.
+          React.createElement("button", { style: { fontSize: 11, padding: "3px 10px", borderRadius: 8, background: "#F0F4FF", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 500 }, onClick: () => handleAddManualLeg() }, "+ Add leg")
         ),
         mileageLog.length === 0
           ? React.createElement("div", { style: styles.mileageEmpty }, dayStarted ? "Check in to your first job to start tracking" : "Start your day to begin tracking miles")
@@ -2974,6 +3008,17 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
             gpsTrackedMiles !== null && React.createElement("div", { style: { fontSize: 10, color: "#888", marginTop: 1 } }, "✓ GPS confirmed")
           )
         ),
+        // Surfaces the opposite failure mode from "✓ GPS confirmed" above —
+        // GPS recorded meaningfully more driving than this log accounts
+        // for, which usually means a stop that isn't a calendar job (an
+        // errand, an unscheduled visit) never got its own leg. Tapping it
+        // opens the same manual-leg prompt as "+ Add leg" above, prefilled
+        // with the detected gap so it's a name-and-confirm instead of a
+        // guess at how many miles were missing.
+        gpsExtraMiles !== null && React.createElement("div", {
+          style: { fontSize: 12, color: "#A32D2D", background: "#F8D7DA", borderRadius: 6, padding: "6px 10px", marginTop: 8, cursor: "pointer", fontWeight: 500 },
+          onClick: () => handleAddManualLeg(gpsExtraMiles),
+        }, "⚠️ GPS shows " + gpsExtraMiles + " mi not in this log — possible unlogged stop, tap to add"),
         gpsTrack.length >= 2 && React.createElement("button", { onClick: handleViewRoute, style: { marginTop: 10, width: "100%", padding: "8px", borderRadius: 8, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600 } }, "🗺️ View Route in Maps")
       ),
       (isToday || Object.keys(jobValues).length > 0) && React.createElement("div", { style: styles.mileageBar },
