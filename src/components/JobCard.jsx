@@ -126,8 +126,10 @@ export default function JobCard({
   const showComplete = checkedOut && !completed && !showCompleteChoice;
   const showCompleteChoice_ = checkedOut && !completed && showCompleteChoice;
   // Navigate is only useful before you've checked in — once you're on site
-  // there's nothing left to navigate to. Undo/Invoice move into the job
-  // detail view (tap the card) to keep this row to one action per state.
+  // there's nothing left to navigate to. Invoice still lives in the job
+  // detail view (tap the card); Undo also has a one-tap button right in
+  // this row (see the action row below) since that's the moment it's most
+  // likely to actually be needed.
   const showNavigate = !checkedIn && !completed;
 
   const handleOpenTimeEdit = () => {
@@ -294,6 +296,14 @@ export default function JobCard({
 
         showCheckOut &&
           React.createElement("button", { style: s.checkOutBtn, onClick: onCheckOut }, "🚪 Check out"),
+
+        // Right after checking in (or checking out) is exactly when a
+        // wrong auto/mis-tap is most likely to be noticed, so Undo gets a
+        // one-tap button in the action row itself instead of only living
+        // inside the detail view (tap the card) — that's still there too,
+        // this is just a faster path to the same onUndo.
+        onUndo && (showCheckOut || showComplete) &&
+          React.createElement("button", { style: s.undoBtn, onClick: onUndo }, "↩ Undo"),
 
         showComplete &&
           React.createElement("button", { style: s.completeBtn, onClick: () => setShowCompleteChoice(true) }, "✅ Mark complete"),

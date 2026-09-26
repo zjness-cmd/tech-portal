@@ -59,7 +59,7 @@ const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
 // (merged B20:C20, navy, two-line real link), checks-payable bar and
 // Total amount recolored navy to match the logo, thin outer border
 // added around the item table, footer line added under Total.
-const APP_VERSION = "1.3.19";
+const APP_VERSION = "1.3.20";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -224,6 +224,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [monthlyCount, setMonthlyCount] = useState(null);
   const [monthlyMiles, setMonthlyMiles] = useState(null);
   const [monthlyRevenue, setMonthlyRevenue] = useState(null);
+  const [monthlyHours, setMonthlyHours] = useState(null);
   const [monthlyJobHistory, setMonthlyJobHistory] = useState([]);
   const [showRevenueDetail, setShowRevenueDetail] = useState(false);
   const [monthlyCompleted, setMonthlyCompleted] = useState(0);
@@ -1291,6 +1292,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         const curYear = selectedDate.getFullYear();
         let monthTotal = 0;
         let monthRevenue = 0;
+        let monthHours = 0;
         const doneIds = new Set();
         const historyEntries = [];
         Object.entries(rowsByDate).forEach(([dStr, dRows]) => {
@@ -1321,6 +1323,32 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
           }
           const dayMiles = legMiles > 0 ? legMiles : gpsMiles;
           monthTotal += dayMiles;
+          // Same "GPS track span, fall back to mileage log first/last time"
+          // logic as the live dayHours calc above — just replayed against
+          // this day's saved GPS/mileage rows instead of the current
+          // in-memory gpsTrack/mileageLog state, since this runs for every
+          // day in the month, not just today.
+          let dayHoursVal = null;
+          if (gRow) {
+            try {
+              const track = JSON.parse(gRow[3]);
+              if (Array.isArray(track) && track.length >= 2) {
+                dayHoursVal = (track[track.length - 1][2] - track[0][2]) / 3600000;
+              }
+            } catch {}
+          }
+          if (dayHoursVal === null && mRow) {
+            try {
+              const log = JSON.parse(mRow[3]);
+              if (Array.isArray(log) && log.length >= 2) {
+                const firstT = parseClockTime(log[0].time);
+                const lastWithTime = [...log].reverse().find(m => m.checkOut || m.time);
+                const lastT = lastWithTime ? parseClockTime(lastWithTime.checkOut || lastWithTime.time) : null;
+                if (firstT && lastT) dayHoursVal = (lastT - firstT) / 3600000;
+              }
+            } catch {}
+          }
+          if (dayHoursVal !== null && dayHoursVal > 0) monthHours += dayHoursVal;
           // Per-job dollar values get re-saved (edited amount, corrected
           // typo) rather than only ever written once, so this sheet can
           // hold several __value rows for the same job on the same day.
@@ -1352,6 +1380,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         });
         setMonthlyMiles(Math.round(monthTotal * 10) / 10);
         setMonthlyRevenue(Math.round(monthRevenue * 100) / 100);
+        setMonthlyHours(Math.round(monthHours * 10) / 10);
         setMonthlyJobHistory(historyEntries);
         setMonthCompletedIds(doneIds);
       } catch (e) {
@@ -2886,7 +2915,10 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         )
       ),
       React.createElement("div", { style: { ...styles.monthRevenueBar, cursor: "pointer" }, onClick: () => setShowRevenueDetail(true), title: "Tap to see every job this month" },
-        React.createElement("span", { style: styles.monthRevenueLabel }, "💰 Revenue this month"),
+        React.createElement("div", null,
+          React.createElement("div", { style: styles.monthRevenueLabel }, "💰 Revenue this month"),
+          React.createElement("div", { style: styles.monthHoursLabel }, monthlyHours !== null ? monthlyHours.toFixed(1) + " hrs worked" : "—")
+        ),
         React.createElement("span", { style: { display: "flex", alignItems: "center", gap: 6 } },
           React.createElement("span", { style: styles.monthRevenueVal }, monthlyRevenue !== null ? "$" + monthlyRevenue.toFixed(2) : "—"),
           React.createElement("span", { style: { color: "#27500A", fontSize: 14 } }, "›")
@@ -3075,6 +3107,7 @@ const styles = {
   monthDivider: { width: 1, height: 32, background: "rgba(255,255,255,0.3)" },
   monthRevenueBar: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0.65rem 1.5rem", background: "linear-gradient(135deg, #EAF3DE 0%, #D7EAC4 100%)", borderBottom: "0.5px solid #e0e0e0" },
   monthRevenueLabel: { fontSize: 13, fontWeight: 600, color: "#27500A" },
+  monthHoursLabel: { fontSize: 11, color: "#4a7a2e", marginTop: 1 },
   monthRevenueVal: { fontSize: 20, fontWeight: 700, color: "#27500A" },
   dayBar: { display: "flex", alignItems: "center", gap: 12, padding: "0.75rem 1.5rem", background: "#f5f5f3", borderBottom: "0.5px solid #e0e0e0", flexWrap: "wrap" },
   startBtn: { fontSize: 13, padding: "8px 18px", borderRadius: 8, background: "linear-gradient(135deg, #3E7A11 0%, #1D3A05 100%)", boxShadow: "0 2px 6px rgba(39,80,10,0.35)", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 },

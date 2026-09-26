@@ -152,8 +152,10 @@ export default function JobDetailModal({
           ? React.createElement("div", { style: { textAlign: "center", color: "#888", padding: "2rem", fontSize: 14 } }, "Loading notes...")
           : React.createElement(React.Fragment, null,
 
-            // Actions — Undo / payment status / invoice, moved here off the
-            // job card's action row to keep that row to one button per state.
+            // Actions — payment status / invoice, plus Undo (which also has
+            // a one-tap shortcut directly in the job card's action row now;
+            // it's kept here too since this is where payment/invoice live
+            // and a completed job no longer shows an Undo button on the card).
             (checkedIn || checkedOut || completed) && React.createElement("div", { style: { marginBottom: 16 } },
               React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 } }, "⚙️ Actions"),
               React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
