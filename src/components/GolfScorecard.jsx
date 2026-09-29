@@ -524,20 +524,24 @@ export default function GolfScorecard() {
           : React.createElement("span", { style: { color: "#888", fontSize: 13 } }, pars[i])
       ),
       React.createElement("td", { style: styles.td },
-        React.createElement("input", { style: styles.scoreInput, type: "number", min: 1, max: 15, value: scores.p1[i], onChange: e => updateScore("p1", i, e.target.value) }),
-        isPar3 && React.createElement("button", {
-          onClick: () => updateGreenie("p1", i),
-          title: "Greenie — hit the green from the tee box",
-          style: { ...styles.greenieBtn, ...(greenies.p1[i] ? styles.greenieBtnActive : {}) },
-        }, "🟢")
+        React.createElement("div", { style: styles.scoreCell },
+          React.createElement("input", { style: styles.scoreInput, type: "number", min: 1, max: 15, value: scores.p1[i], onChange: e => updateScore("p1", i, e.target.value) }),
+          isPar3 && React.createElement("button", {
+            onClick: () => updateGreenie("p1", i),
+            title: "Greenie — hit the green from the tee box",
+            style: { ...styles.greenieBtn, ...(greenies.p1[i] ? styles.greenieBtnActive : {}) },
+          }, "🟢")
+        )
       ),
       React.createElement("td", { style: styles.td },
-        React.createElement("input", { style: styles.scoreInput, type: "number", min: 1, max: 15, value: scores.p2[i], onChange: e => updateScore("p2", i, e.target.value) }),
-        isPar3 && React.createElement("button", {
-          onClick: () => updateGreenie("p2", i),
-          title: "Greenie — hit the green from the tee box",
-          style: { ...styles.greenieBtn, ...(greenies.p2[i] ? styles.greenieBtnActive : {}) },
-        }, "🟢")
+        React.createElement("div", { style: styles.scoreCell },
+          React.createElement("input", { style: styles.scoreInput, type: "number", min: 1, max: 15, value: scores.p2[i], onChange: e => updateScore("p2", i, e.target.value) }),
+          isPar3 && React.createElement("button", {
+            onClick: () => updateGreenie("p2", i),
+            title: "Greenie — hit the green from the tee box",
+            style: { ...styles.greenieBtn, ...(greenies.p2[i] ? styles.greenieBtnActive : {}) },
+          }, "🟢")
+        )
       ),
       React.createElement("td", { style: { ...styles.td, minWidth: 130 } }, resultEl, greenieEl),
       React.createElement("td", { style: { ...styles.td, fontSize: 11, color: "#888" } }, "$" + r.pot)
@@ -859,7 +863,8 @@ const styles = {
   td: { padding: "5px 4px", textAlign: "center", fontSize: 13 },
   holeNum: { fontSize: 12, color: "#888", fontWeight: 500 },
   scoreInput: { width: 40, height: 32, textAlign: "center", fontSize: 14, fontWeight: 500, border: "0.5px solid #ccc", borderRadius: 6, background: "#fff", color: "#1a1a1a" },
-  greenieBtn: { display: "block", margin: "3px auto 0", width: 24, height: 24, fontSize: 12, lineHeight: "22px", padding: 0, borderRadius: "50%", border: "1px solid #ccc", background: "#fff", opacity: 0.4, cursor: "pointer" },
+  scoreCell: { display: "flex", alignItems: "center", justifyContent: "center", gap: 4 },
+  greenieBtn: { flexShrink: 0, width: 22, height: 22, fontSize: 11, lineHeight: "20px", padding: 0, borderRadius: "50%", border: "1px solid #ccc", background: "#fff", opacity: 0.4, cursor: "pointer" },
   greenieBtnActive: { opacity: 1, border: "1px solid #27500A", background: "#EAF3DE" },
   badge: { fontSize: 11, fontWeight: 500, padding: "3px 8px", borderRadius: 20, whiteSpace: "nowrap" },
   summary: { background: "#f5f5f3", borderRadius: 12, padding: "1rem" },
