@@ -311,8 +311,11 @@ export default function JobCard({
       job.location && React.createElement("div", { style: s.cardMeta }, "📍 " + job.location),
 
       // ── Street View + tap tower photos ───────────────────────────────────
+      // No `capture` attribute on purpose — that forces straight to the
+      // camera on mobile, skipping the OS's own camera-vs-existing-photo
+      // chooser. Leaving it off gets that native picker instead.
       onUploadTapPhoto && React.createElement("input", {
-        type: "file", accept: "image/*", capture: "environment", ref: tapFileInputRef,
+        type: "file", accept: "image/*", ref: tapFileInputRef,
         style: { display: "none" }, onChange: handleTapPhotoFileChange,
       }),
       (showImage || tapPhotoUrl || onUploadTapPhoto) && React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 8 } },
