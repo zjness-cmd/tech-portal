@@ -79,7 +79,7 @@ export default function JobCard({
   onCheckIn, onCheckOut, onComplete, onNavigate, onUndo, onInvoice, onTextInvoice, onMissed,
   isNearby, isAmbiguous, accessToken, onTimeUpdated, onNotesSaved, logSheetId,
   paymentStatus, paymentMethod, onTogglePaid, website, onReschedule,
-  tapPhotoUrl: dynamicTapPhotoUrl, onUploadTapPhoto,
+  tapPhotoUrl: dynamicTapPhotoUrl, onUploadTapPhoto, tapCount, onUpdateTapCount,
 }) {
   const [imgFailed, setImgFailed] = useState(false);
   const [imgChecked, setImgChecked] = useState(false);
@@ -333,6 +333,18 @@ export default function JobCard({
                 style: { width: "100%", height: 110, objectFit: "cover", borderRadius: 8, display: "block", cursor: "zoom-in" },
                 onClick: (e) => { e.stopPropagation(); setShowTapLightbox(true); },
               }),
+              // Tap count badge — typed in by the tech (at upload time, or
+              // any time after by tapping the badge), not detected from the
+              // photo. Separate tap target from the photo itself, same
+              // reasoning as the retake button below.
+              onUpdateTapCount && React.createElement("button", {
+                onClick: (e) => { e.stopPropagation(); onUpdateTapCount(); },
+                title: tapCount != null ? "Tap to change" : "Tap to set tap count",
+                style: {
+                  position: "absolute", top: 4, left: 4, fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 10,
+                  background: "rgba(0,0,0,0.6)", color: "#fff", border: "none", cursor: "pointer",
+                },
+              }, tapCount != null ? tapCount + (tapCount === 1 ? " tap" : " taps") : "+ count"),
               // Retake — separate tap target from the photo itself (which
               // opens the lightbox), same as a camera app's "retake" corner
               // button.

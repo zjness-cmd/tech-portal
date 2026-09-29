@@ -60,7 +60,7 @@ const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
 // (merged B20:C20, navy, two-line real link), checks-payable bar and
 // Total amount recolored navy to match the logo, thin outer border
 // added around the item table, footer line added under Total.
-const APP_VERSION = "1.3.30";
+const APP_VERSION = "1.3.31";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -1071,7 +1071,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     const hasTab = (info.sheets || []).find(s => s.properties.title === CLIENT_PHOTOS_SHEET_NAME);
     if (!hasTab) {
       await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + ":batchUpdate", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ requests: [{ addSheet: { properties: { title: CLIENT_PHOTOS_SHEET_NAME } } }] }) });
-      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_PHOTOS_SHEET_NAME + "'!A1:D1?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [["Client Key", "Client Name", "Photo URL", "Drive File ID"]] }) });
+      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_PHOTOS_SHEET_NAME + "'!A1:E1?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [["Client Key", "Client Name", "Photo URL", "Drive File ID", "Tap Count"]] }) });
     }
   };
 
@@ -1215,14 +1215,15 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       const sheetId = await getOrCreateLogSheet();
       if (!sheetId) return;
       await ensureClientPhotosTab(sheetId);
-      const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_PHOTOS_SHEET_NAME + "'!A:D", { headers: { Authorization: "Bearer " + token } });
+      const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_PHOTOS_SHEET_NAME + "'!A:E", { headers: { Authorization: "Bearer " + token } });
       if (!res.ok) { dbg("❌ Client photos read failed: " + res.status, "error"); return; }
       const data = await res.json();
       const rows = data.values || [];
       const photosByKey = {};
       rows.forEach((r, i) => {
         if (i === 0 || !r[0]) return; // header / blank key
-        photosByKey[r[0]] = { name: r[1] || "", photoUrl: r[2] || "", driveFileId: r[3] || "", _sheetRow: i + 1 };
+        const tapCount = r[4] != null && r[4] !== "" && !isNaN(parseInt(r[4])) ? parseInt(r[4]) : null;
+        photosByKey[r[0]] = { name: r[1] || "", photoUrl: r[2] || "", driveFileId: r[3] || "", tapCount, _sheetRow: i + 1 };
       });
       setClientTapPhotos(photosByKey);
       try { localStorage.setItem("techportal_clientTapPhotos", JSON.stringify(photosByKey)); } catch {}
@@ -1232,31 +1233,31 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     }
   };
 
-  const saveClientTapPhoto = async (clientKey, clientName, photoUrl, driveFileId) => {
+  const saveClientTapPhoto = async (clientKey, clientName, photoUrl, driveFileId, tapCount) => {
     const token = accessTokenRef.current;
     if (!token || !clientKey) return;
     try {
       const sheetId = await getOrCreateLogSheet();
       if (!sheetId) return;
-      const row = [clientKey, clientName, photoUrl, driveFileId];
+      const row = [clientKey, clientName, photoUrl, driveFileId, tapCount != null ? String(tapCount) : ""];
       let sheetRow = clientTapPhotos[clientKey]?._sheetRow;
       if (!sheetRow) {
-        const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_PHOTOS_SHEET_NAME + "'!A:D", { headers: { Authorization: "Bearer " + token } });
+        const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_PHOTOS_SHEET_NAME + "'!A:E", { headers: { Authorization: "Bearer " + token } });
         const data = await res.json();
         const idx = (data.values || []).findIndex(r => r[0] === clientKey);
         if (idx !== -1) sheetRow = idx + 1;
       }
       if (sheetRow) {
-        await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_PHOTOS_SHEET_NAME + "'!A" + sheetRow + ":D" + sheetRow + "?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [row] }) });
+        await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_PHOTOS_SHEET_NAME + "'!A" + sheetRow + ":E" + sheetRow + "?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [row] }) });
       } else {
-        await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_PHOTOS_SHEET_NAME + "'!A:D:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [row] }) });
+        await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_PHOTOS_SHEET_NAME + "'!A:E:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [row] }) });
       }
       setClientTapPhotos(prev => {
-        const next = { ...prev, [clientKey]: { name: clientName, photoUrl, driveFileId, _sheetRow: sheetRow } };
+        const next = { ...prev, [clientKey]: { name: clientName, photoUrl, driveFileId, tapCount: tapCount ?? null, _sheetRow: sheetRow } };
         try { localStorage.setItem("techportal_clientTapPhotos", JSON.stringify(next)); } catch {}
         return next;
       });
-      dbg("📷 Saved tap photo for " + clientName);
+      dbg("📷 Saved tap photo for " + clientName + (tapCount != null ? " (" + tapCount + " taps)" : ""));
     } catch (e) {
       dbg("❌ saveClientTapPhoto failed for " + clientName + ": " + e.message, "error");
     }
@@ -1302,10 +1303,34 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         body: JSON.stringify({ role: "reader", type: "anyone" }),
       });
       const photoUrl = "https://drive.google.com/thumbnail?id=" + uploadData.id + "&sz=w800";
-      await saveClientTapPhoto(key, cleanTitle, photoUrl, uploadData.id);
+      // Asked right here rather than run through an AI vision count — the
+      // tech is already standing there holding the camera and knows the
+      // number faster and more reliably than an image analysis would.
+      // Cancelling (or leaving it blank) keeps whatever count was already
+      // on file instead of wiping it out, since a retake usually means the
+      // photo angle was bad, not that the tap count changed.
+      const countInput = prompt("How many taps on this tower?", clientTapPhotos[key]?.tapCount != null ? String(clientTapPhotos[key].tapCount) : "");
+      const tapCount = countInput != null && countInput.trim() !== "" && !isNaN(parseInt(countInput))
+        ? parseInt(countInput)
+        : (clientTapPhotos[key]?.tapCount ?? null);
+      await saveClientTapPhoto(key, cleanTitle, photoUrl, uploadData.id, tapCount);
     } catch (e) {
       dbg("❌ Tap photo upload error for " + cleanTitle + ": " + e.message, "error");
     }
+  };
+
+  // Lets the tap count be fixed/added without retaking the whole photo —
+  // tapping the count badge on the job card, rather than only being asked
+  // at upload time.
+  const handleUpdateTapCount = (jobTitle) => {
+    const key = clientKeyFor(jobTitle);
+    const existing = clientTapPhotos[key];
+    if (!existing) return;
+    const input = prompt("How many taps on this tower?", existing.tapCount != null ? String(existing.tapCount) : "");
+    if (input === null) return;
+    const tapCount = input.trim() === "" ? null : parseInt(input);
+    if (input.trim() !== "" && (isNaN(tapCount) || tapCount < 0)) { alert("Enter a valid number."); return; }
+    saveClientTapPhoto(key, existing.name, existing.photoUrl, existing.driveFileId, tapCount);
   };
 
   // Auto-discovers a client's website via api/places.js (Google Places —
@@ -3586,6 +3611,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               website: clientWebsites[clientKeyFor(job.title)]?.website || "",
               tapPhotoUrl: clientTapPhotos[clientKeyFor(job.title)]?.photoUrl || "",
               onUploadTapPhoto: (file) => handleUploadClientTapPhoto(job.title, file),
+              tapCount: clientTapPhotos[clientKeyFor(job.title)]?.tapCount ?? null,
+              onUpdateTapCount: () => handleUpdateTapCount(job.title),
             });
           })
         )
