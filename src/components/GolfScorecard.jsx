@@ -1,4 +1,19 @@
 import React, { useState } from "react";
+import albionBoulderMap from "../assets/golf-courses/albion-boulder-map.webp";
+import albionRockGraniteMap from "../assets/golf-courses/albion-rock-granite-map.webp";
+
+// Route maps cropped from Albion Ridges' own printed scorecard
+// (albionridgesgc.com/scorecard). Rock and Granite share one map (their
+// routing overlaps on the same land), so both keys point at the same
+// image; Boulder has its own separate map. There's no clean per-hole
+// breakdown in the source scorecard — the only thing split into 9 boxes is
+// a "today's pin position" number grid, not a picture of each hole — so
+// this shows one whole map per nine instead of a slice per hole.
+const ALBION_NINE_MAPS = {
+  boulder: albionBoulderMap,
+  rock: albionRockGraniteMap,
+  granite: albionRockGraniteMap,
+};
 
 // Course database — edit pars here to match actual scorecards
 const COURSES = {
@@ -291,6 +306,7 @@ export default function GolfScorecard() {
         holes: 18,
         pars: [...front.pars, ...back.pars],
         nineNames: [front.label, back.label],
+        nineKeys: [albionFront, albionBack],
       },
     });
     setShowAlbionPicker(false);
@@ -458,6 +474,8 @@ export default function GolfScorecard() {
   // "Front 9"/"Back 9" label.
   const front9Label = course.nineNames?.[0] ? course.nineNames[0] + " Nine" : "Front 9";
   const back9Label = course.nineNames?.[1] ? course.nineNames[1] + " Nine" : "Back 9";
+  const front9Map = ALBION_NINE_MAPS[course.nineKeys?.[0]] || null;
+  const back9Map = ALBION_NINE_MAPS[course.nineKeys?.[1]] || null;
 
   const holeTotal = (player, from, to) =>
     scores[player].slice(from, to).reduce((a, v) => a + (v === "" ? 0 : parseInt(v)), 0);
@@ -704,6 +722,7 @@ export default function GolfScorecard() {
     // Front 9
     React.createElement("div", { style: styles.tableWrap },
       React.createElement("div", { style: styles.sectionLabel }, front9Label),
+      front9Map && React.createElement("img", { src: front9Map, alt: front9Label + " route map", style: styles.nineMap }),
       React.createElement("table", { style: styles.table },
         React.createElement("thead", null,
           React.createElement("tr", null,
@@ -727,6 +746,7 @@ export default function GolfScorecard() {
     // Back 9
     back9.length > 0 && React.createElement("div", { style: styles.tableWrap },
       React.createElement("div", { style: styles.sectionLabel }, back9Label),
+      back9Map && React.createElement("img", { src: back9Map, alt: back9Label + " route map", style: styles.nineMap }),
       React.createElement("table", { style: styles.table },
         React.createElement("thead", null,
           React.createElement("tr", null,
@@ -782,6 +802,7 @@ const styles = {
   carryBanner: { background: "#FAEEDA", color: "#633806", borderRadius: 8, padding: "8px 12px", fontSize: 13, marginBottom: "1rem" },
   tableWrap: { marginBottom: "1.5rem" },
   sectionLabel: { fontSize: 11, fontWeight: 600, color: "#888", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 },
+  nineMap: { display: "block", maxWidth: 220, width: "100%", borderRadius: 8, border: "0.5px solid #e0e0e0", marginBottom: 8 },
   table: { width: "100%", borderCollapse: "collapse" },
   th: { background: "#185FA5", color: "white", padding: "7px 6px", textAlign: "center", fontSize: 12, fontWeight: 500 },
   tr: { borderBottom: "0.5px solid #e0e0e0" },
