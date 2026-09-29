@@ -240,15 +240,23 @@ export default function JobCard({
             // photo — separate from the small corner badge on the card
             // thumbnail, which stays as the tap-to-edit control; this is
             // purely a readable-at-a-glance number once you've already
-            // opened the photo full-size.
+            // opened the photo full-size. A semi-transparent dark box behind
+            // it guarantees contrast against any photo — plain translucent
+            // text alone washed out against lighter backgrounds.
             tapCount != null && React.createElement("div", {
               style: {
                 position: "absolute", top: "4%", left: "5%",
-                fontSize: "min(24vw, 130px)", fontWeight: 800, color: "rgba(90,90,90,0.75)",
-                textShadow: "0 4px 24px rgba(0,0,0,0.6)", lineHeight: 1, pointerEvents: "none",
-                textAlign: "left", userSelect: "none",
+                background: "rgba(0,0,0,0.55)", borderRadius: "0.15em",
+                padding: "0.05em 0.25em", lineHeight: 1, pointerEvents: "none",
               },
-            }, tapCount)
+            },
+              React.createElement("span", {
+                style: {
+                  fontSize: "min(24vw, 130px)", fontWeight: 800, color: "#ddd",
+                  lineHeight: 1, userSelect: "none",
+                },
+              }, tapCount)
+            )
           ),
           React.createElement("button", {
             onClick: () => setShowTapLightbox(false),
