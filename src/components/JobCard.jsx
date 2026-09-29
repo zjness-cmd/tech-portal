@@ -236,17 +236,17 @@ export default function JobCard({
               src: tapPhotoUrl, alt: "Tap tower",
               style: { maxWidth: "92vw", maxHeight: "85vh", borderRadius: 12, display: "block", boxShadow: "0 12px 40px rgba(0,0,0,0.5)" },
             }),
-            // Large gray tap count overlay, centered on the enlarged photo —
-            // separate from the small corner badge on the card thumbnail,
-            // which stays as the tap-to-edit control; this is purely a
-            // readable-at-a-glance number once you've already opened the
-            // photo full-size.
+            // Large gray tap count overlay, top-left corner of the enlarged
+            // photo — separate from the small corner badge on the card
+            // thumbnail, which stays as the tap-to-edit control; this is
+            // purely a readable-at-a-glance number once you've already
+            // opened the photo full-size.
             tapCount != null && React.createElement("div", {
               style: {
-                position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
-                fontSize: "min(30vw, 160px)", fontWeight: 800, color: "rgba(190,190,190,0.55)",
+                position: "absolute", top: "4%", left: "5%",
+                fontSize: "min(24vw, 130px)", fontWeight: 800, color: "rgba(90,90,90,0.75)",
                 textShadow: "0 4px 24px rgba(0,0,0,0.6)", lineHeight: 1, pointerEvents: "none",
-                textAlign: "center", userSelect: "none",
+                textAlign: "left", userSelect: "none",
               },
             }, tapCount)
           ),
