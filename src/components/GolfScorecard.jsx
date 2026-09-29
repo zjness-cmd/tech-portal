@@ -245,6 +245,19 @@ export default function GolfScorecard() {
     setShowCourseModal(false);
   };
 
+  // Only custom (user-added) courses can be deleted — the built-in COURSES
+  // list is fixed in code, not in this state. Falls back to "custom" if the
+  // course being deleted is the one currently selected.
+  const deleteCustomCourse = (key) => {
+    const next = { ...customCourses };
+    delete next[key];
+    setCustomCourses(next);
+    const nextOverrides = { ...courseParOverrides };
+    delete nextOverrides[key];
+    setCourseParOverrides(nextOverrides);
+    if (selectedCourse === key) selectCourse("custom");
+  };
+
   const saveCustomCourse = () => {
     if (!newCourseName.trim()) return;
     const key = "custom_" + Date.now();
@@ -450,9 +463,16 @@ export default function GolfScorecard() {
           React.createElement("button", { style: styles.modalClose, onClick: () => setShowCourseModal(false) }, "×")
         ),
         Object.entries(allCourses).map(([key, c]) =>
-          React.createElement("div", { key, style: { ...styles.courseRow, ...(key === selectedCourse ? styles.courseRowActive : {}) }, onClick: () => selectCourse(key) },
-            React.createElement("div", { style: styles.courseName }, c.name),
-            React.createElement("div", { style: styles.courseMeta }, (c.location || "") + (c.location ? " · " : "") + c.holes + " holes · Par " + c.pars.slice(0, c.holes).reduce((a, v) => a + v, 0))
+          React.createElement("div", { key, style: { ...styles.courseRow, ...(key === selectedCourse ? styles.courseRowActive : {}), display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }, onClick: () => selectCourse(key) },
+            React.createElement("div", { style: { minWidth: 0 } },
+              React.createElement("div", { style: styles.courseName }, c.name),
+              React.createElement("div", { style: styles.courseMeta }, (c.location || "") + (c.location ? " · " : "") + c.holes + " holes · Par " + c.pars.slice(0, c.holes).reduce((a, v) => a + v, 0))
+            ),
+            customCourses[key] && React.createElement("button", {
+              style: { ...styles.iconBtn, color: "#A32D2D", flexShrink: 0 },
+              title: "Delete this course",
+              onClick: (e) => { e.stopPropagation(); deleteCustomCourse(key); },
+            }, "🗑")
           )
         ),
         React.createElement("div", { style: { padding: "0.75rem 1.25rem", borderTop: "0.5px solid #e0e0e0", display: "flex", gap: 8 } },
