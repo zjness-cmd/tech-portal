@@ -1,11 +1,11 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import { findCourseBackground } from "../clientAssets";
 
 // Bump on every user-visible change to this file, independent of
 // Dashboard.jsx's own APP_VERSION — this page is a standalone feature
 // (see CLAUDE.md) with its own change history. Shown as a small badge next
 // to the page title.
-const GOLF_VERSION = "1.4.0";
+const GOLF_VERSION = "1.5.0";
 
 // Course database — edit pars here to match actual scorecards
 const COURSES = {
@@ -128,6 +128,34 @@ async function searchBgCandidates(courseName) {
   } catch {
     return [];
   }
+}
+
+// Reads a photo picked from the device's own storage/camera roll, scales
+// it down to maxWidth (a full-res phone photo is way more than a
+// background needs and would blow past localStorage's per-origin size
+// cap fast), and returns a compressed JPEG data URL — small enough that
+// several courses' worth can live in bgOverrides at once.
+function resizeImageFile(file, maxWidth) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error);
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = reject;
+      img.onload = () => {
+        const scale = Math.min(1, maxWidth / img.width);
+        const w = Math.round(img.width * scale);
+        const h = Math.round(img.height * scale);
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", 0.82));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 // Runs one Wikimedia Commons image search and returns the first usable
@@ -372,6 +400,26 @@ export default function GolfScorecard() {
     setBgOverrides(next);
     try { localStorage.setItem(BG_OVERRIDE_KEY, JSON.stringify(next)); } catch {}
     setBgPickerCourse(null);
+  };
+
+  // Picking a photo straight from the device (camera roll, downloads,
+  // wherever) — no OS "capture" attribute, so it opens the normal photo
+  // picker rather than jumping straight to the camera. This is the
+  // reliable option when Wikimedia just doesn't have the course.
+  const devicePhotoInputRef = useRef(null);
+  const [devicePhotoLoading, setDevicePhotoLoading] = useState(false);
+  const handleDevicePhotoChange = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // lets the same file be picked again immediately
+    if (!file) return;
+    setDevicePhotoLoading(true);
+    try {
+      const dataUrl = await resizeImageFile(file, 1600);
+      pickBgOverride(dataUrl);
+    } catch {
+      // Leaves the picker open so the user can just try again.
+    }
+    setDevicePhotoLoading(false);
   };
 
   const updatePar = (hole, value) => {
@@ -736,6 +784,15 @@ export default function GolfScorecard() {
           React.createElement("button", { style: styles.modalClose, onClick: () => setBgPickerCourse(null) }, "×")
         ),
         React.createElement("div", { style: { padding: "1rem 1.25rem" } },
+          // Device photo — the reliable option, since Wikimedia just
+          // doesn't have most small local courses.
+          React.createElement("input", { ref: devicePhotoInputRef, type: "file", accept: "image/*", style: { display: "none" }, onChange: handleDevicePhotoChange }),
+          React.createElement("button", {
+            style: { ...styles.btn, width: "100%", textAlign: "center", background: "#185FA5", color: "#fff", border: "none", marginBottom: 4 },
+            disabled: devicePhotoLoading,
+            onClick: () => devicePhotoInputRef.current?.click(),
+          }, devicePhotoLoading ? "Processing..." : "📁 Choose Photo from Device"),
+          React.createElement("div", { style: { textAlign: "center", fontSize: 11, color: "#888", margin: "8px 0" } }, "— or pick from Wikimedia Commons —"),
           bgSearchLoading
             ? React.createElement("div", { style: { textAlign: "center", color: "#888", fontSize: 14, padding: "1.5rem 0" } }, "Searching Wikimedia Commons...")
             : bgCandidates.length === 0
@@ -1075,7 +1132,10 @@ const styles = {
   photoText: { color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,0.75), 0 1px 2px rgba(0,0,0,0.6)" },
   sectionLabel: { fontSize: 11, fontWeight: 700, color: "#fff", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6, textShadow: "0 1px 3px rgba(0,0,0,0.75), 0 1px 2px rgba(0,0,0,0.6)" },
   table: { width: "100%", borderCollapse: "collapse" },
-  th: { background: "#185FA5", color: "white", padding: "7px 6px", textAlign: "center", fontSize: 12, fontWeight: 500 },
+  // textShadow: none overrides the inherited photo-legibility glow — this
+  // sits on a solid, fully-opaque background already, so the glow just
+  // added a blurry halo around white-on-blue text for no reason.
+  th: { background: "#185FA5", color: "white", padding: "7px 6px", textAlign: "center", fontSize: 12, fontWeight: 500, textShadow: "none" },
   tr: { borderBottom: "0.5px solid #e0e0e0" },
   td: { padding: "5px 4px", textAlign: "center", fontSize: 13 },
   holeNum: { fontSize: 12, fontWeight: 600, color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,0.75), 0 1px 2px rgba(0,0,0,0.6)" },
