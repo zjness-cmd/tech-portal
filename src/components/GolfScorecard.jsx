@@ -526,20 +526,23 @@ export default function GolfScorecard() {
       React.createElement("td", { style: styles.td },
         React.createElement("div", { style: styles.scoreCell },
           React.createElement("input", { style: styles.scoreInput, type: "number", min: 1, max: 15, value: scores.p1[i], onChange: e => updateScore("p1", i, e.target.value) }),
-          isPar3 && React.createElement("button", {
+          React.createElement("button", {
             onClick: () => updateGreenie("p1", i),
             title: "Greenie — hit the green from the tee box",
-            style: { ...styles.greenieBtn, ...(greenies.p1[i] ? styles.greenieBtnActive : {}) },
+            // Rendered on every row (not just par 3s) so its reserved
+            // space keeps every score box lined up in the same column —
+            // just invisible and untappable where it doesn't apply.
+            style: { ...styles.greenieBtn, ...(isPar3 ? {} : { visibility: "hidden", pointerEvents: "none" }), ...(greenies.p1[i] ? styles.greenieBtnActive : {}) },
           }, "🟢")
         )
       ),
       React.createElement("td", { style: styles.td },
         React.createElement("div", { style: styles.scoreCell },
           React.createElement("input", { style: styles.scoreInput, type: "number", min: 1, max: 15, value: scores.p2[i], onChange: e => updateScore("p2", i, e.target.value) }),
-          isPar3 && React.createElement("button", {
+          React.createElement("button", {
             onClick: () => updateGreenie("p2", i),
             title: "Greenie — hit the green from the tee box",
-            style: { ...styles.greenieBtn, ...(greenies.p2[i] ? styles.greenieBtnActive : {}) },
+            style: { ...styles.greenieBtn, ...(isPar3 ? {} : { visibility: "hidden", pointerEvents: "none" }), ...(greenies.p2[i] ? styles.greenieBtnActive : {}) },
           }, "🟢")
         )
       ),
