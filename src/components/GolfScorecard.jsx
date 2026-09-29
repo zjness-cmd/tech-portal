@@ -5,7 +5,7 @@ import { findCourseBackground } from "../clientAssets";
 // Dashboard.jsx's own APP_VERSION — this page is a standalone feature
 // (see CLAUDE.md) with its own change history. Shown as a small badge next
 // to the page title.
-const GOLF_VERSION = "1.3.2";
+const GOLF_VERSION = "1.4.0";
 
 // Course database — edit pars here to match actual scorecards
 const COURSES = {
@@ -92,9 +92,42 @@ const CURRENT_KEY = "techportal_golfCurrent";
 const ROUNDS_KEY = "techportal_golfRounds";
 const CUSTOM_COURSES_KEY = "techportal_golfCustomCourses";
 const BG_CACHE_KEY = "techportal_golfBgCache";
+const BG_OVERRIDE_KEY = "techportal_golfBgOverride";
 
 function loadJSON(key, fallback) {
   try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : fallback; } catch { return fallback; }
+}
+
+// Runs one Wikimedia Commons image search and returns every usable image
+// found (up to `limit`), as { thumb, full } — thumb sized for a picker
+// grid, full for actually using as the background.
+async function searchCommonsImages(query, limit) {
+  const params = new URLSearchParams({
+    action: "query", generator: "search", gsrsearch: query,
+    gsrnamespace: "6", gsrlimit: String(limit), prop: "imageinfo", iiprop: "url|mime",
+    iiurlwidth: "500", format: "json", origin: "*",
+  });
+  const res = await fetch("https://commons.wikimedia.org/w/api.php?" + params.toString());
+  const data = await res.json();
+  const pages = data?.query?.pages ? Object.values(data.query.pages) : [];
+  return pages
+    .map(p => p.imageinfo?.[0])
+    .filter(info => info?.mime?.startsWith("image/") && info.mime !== "image/svg+xml")
+    .map(info => ({ thumb: info.thumburl || info.url, full: info.url }));
+}
+
+// Same two-attempt query strategy as fetchCourseBackground below, but
+// returns every candidate instead of picking one automatically — feeds the
+// "🔍 Find photo" picker in the course selector, for when the auto-pick
+// (or no result at all) isn't what you want.
+async function searchBgCandidates(courseName) {
+  try {
+    let results = await searchCommonsImages(courseName + " golf course", 9);
+    if (results.length === 0) results = await searchCommonsImages(courseName, 9);
+    return results;
+  } catch {
+    return [];
+  }
 }
 
 // Runs one Wikimedia Commons image search and returns the first usable
@@ -296,22 +329,50 @@ export default function GolfScorecard() {
   const basePars = courseParOverrides[selectedCourse] || course.pars;
   const pars = basePars.slice(0, holes);
 
-  // Background photo — a hand-picked local image (src/assets/course-
-  // backgrounds/) always wins when one's been added for this course, no
-  // network call at all; otherwise falls back to the live Wikimedia
-  // Commons search (re-fetched, or pulled from cache, whenever the
-  // selected course changes). Guarded with a "still the current course"
-  // check so a slow response for a course you've since switched away from
-  // can't land late and overwrite what's now showing.
+  // Background photo — priority order is: a photo you picked yourself via
+  // the 🔍 Find Photo button (bgOverrides, below) beats a hand-picked
+  // local image bundled into the app (src/assets/course-backgrounds/)
+  // beats the live Wikimedia Commons auto-search (fetchCourseBackground).
+  // The first two are instant/local, no network call; only the auto-
+  // search path is async, guarded with a "still the current course" check
+  // so a slow response for a course you've since switched away from can't
+  // land late and overwrite what's now showing.
+  const [bgOverrides, setBgOverrides] = useState(() => loadJSON(BG_OVERRIDE_KEY, {}));
   const [bgImage, setBgImage] = useState(null);
   React.useEffect(() => {
     let cancelled = false;
+    if (bgOverrides[course.name]) { setBgImage(bgOverrides[course.name]); return; }
     const local = findCourseBackground(course.name);
     if (local) { setBgImage(local); return; }
     setBgImage(null);
     fetchCourseBackground(course.name).then(url => { if (!cancelled) setBgImage(url); });
     return () => { cancelled = true; };
-  }, [course.name]);
+  }, [course.name, bgOverrides]);
+
+  // "🔍 Find Photo" — a per-course search-and-pick UI for when the
+  // automatic Wikimedia search either found nothing or picked something
+  // you don't want. bgPickerCourse holds { key, name } for whichever
+  // course's row you tapped 🔍 on (null when the picker's closed).
+  const [bgPickerCourse, setBgPickerCourse] = useState(null);
+  const [bgCandidates, setBgCandidates] = useState([]);
+  const [bgSearchLoading, setBgSearchLoading] = useState(false);
+
+  const openBgPicker = async (key, name) => {
+    setBgPickerCourse({ key, name });
+    setBgCandidates([]);
+    setBgSearchLoading(true);
+    const results = await searchBgCandidates(name);
+    setBgSearchLoading(false);
+    setBgCandidates(results);
+  };
+
+  const pickBgOverride = (url) => {
+    if (!bgPickerCourse) return;
+    const next = { ...bgOverrides, [bgPickerCourse.name]: url };
+    setBgOverrides(next);
+    try { localStorage.setItem(BG_OVERRIDE_KEY, JSON.stringify(next)); } catch {}
+    setBgPickerCourse(null);
+  };
 
   const updatePar = (hole, value) => {
     const current = courseParOverrides[selectedCourse] || [...course.pars];
@@ -611,7 +672,7 @@ export default function GolfScorecard() {
         )
       ),
       React.createElement("td", { style: { ...styles.td, minWidth: 130 } }, resultEl, greenieEl),
-      React.createElement("td", { style: { ...styles.td, fontSize: 11, color: "#888" } }, "$" + r.pot)
+      React.createElement("td", { style: { ...styles.td, ...styles.photoText, fontSize: 11, fontWeight: 600 } }, "$" + r.pot)
     );
   });
 
@@ -642,6 +703,11 @@ export default function GolfScorecard() {
               React.createElement("div", { style: styles.courseName }, c.name),
               React.createElement("div", { style: styles.courseMeta }, (c.location || "") + (c.location ? " · " : "") + c.holes + " holes · Par " + c.pars.slice(0, c.holes).reduce((a, v) => a + v, 0))
             ),
+            React.createElement("button", {
+              style: { ...styles.iconBtn, color: "#185FA5", flexShrink: 0 },
+              title: "Find a background photo for this course",
+              onClick: (e) => { e.stopPropagation(); openBgPicker(key, c.name); },
+            }, "🔍"),
             customCourses[key] && React.createElement("button", {
               style: { ...styles.iconBtn, color: "#A32D2D", flexShrink: 0 },
               title: "Delete this course",
@@ -652,6 +718,34 @@ export default function GolfScorecard() {
         React.createElement("div", { style: { padding: "0.75rem 1.25rem", borderTop: "0.5px solid #e0e0e0", display: "flex", gap: 8 } },
           React.createElement("button", { style: { ...styles.btn, flex: 1, textAlign: "center", background: "#185FA5", color: "#fff", border: "none" }, onClick: () => { setShowFindCourse(true); setShowCourseModal(false); } }, "🔍 Find Course"),
           React.createElement("button", { style: { ...styles.btn, flex: 1, textAlign: "center" }, onClick: () => { setShowAddCourse(true); setShowCourseModal(false); } }, "+ Add Manually")
+        )
+      )
+    ),
+
+    // Find-photo picker — searches Wikimedia Commons for the course the 🔍
+    // button was tapped on and shows every candidate as a grid, so you can
+    // pick the one you actually want instead of trusting whatever the
+    // automatic single-best-guess search landed on (or getting nothing at
+    // all for a course Commons doesn't have indexed under the obvious
+    // name). Picking one saves it to bgOverrides, which always wins over
+    // both the bundled local image and the automatic search.
+    bgPickerCourse && React.createElement("div", { style: styles.overlay, onClick: () => setBgPickerCourse(null) },
+      React.createElement("div", { style: styles.modal, onClick: e => e.stopPropagation() },
+        React.createElement("div", { style: styles.modalHeader },
+          React.createElement("div", { style: styles.modalTitle }, "Photo for " + bgPickerCourse.name),
+          React.createElement("button", { style: styles.modalClose, onClick: () => setBgPickerCourse(null) }, "×")
+        ),
+        React.createElement("div", { style: { padding: "1rem 1.25rem" } },
+          bgSearchLoading
+            ? React.createElement("div", { style: { textAlign: "center", color: "#888", fontSize: 14, padding: "1.5rem 0" } }, "Searching Wikimedia Commons...")
+            : bgCandidates.length === 0
+              ? React.createElement("div", { style: { textAlign: "center", color: "#888", fontSize: 14, padding: "1.5rem 0" } }, "No photos found for this course on Wikimedia Commons.")
+              : React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 } },
+                  bgCandidates.map((c, i) => React.createElement("img", {
+                    key: i, src: c.thumb, alt: "", onClick: () => pickBgOverride(c.full),
+                    style: { width: "100%", aspectRatio: "1", objectFit: "cover", borderRadius: 8, cursor: "pointer", border: "1px solid #e0e0e0" },
+                  }))
+                )
         )
       )
     ),
