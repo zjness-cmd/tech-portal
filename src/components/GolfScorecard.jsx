@@ -37,6 +37,30 @@ const COURSES = {
     holes: 18,
     pars: [4,3,4,5,4,3,4,5,4,4,3,5,4,4,3,5,4,4], // Par 72 — edit to match scorecard
   },
+  // Albion Ridges is a 27-hole course played as any two of these three
+  // nines — added as three separate 9-hole entries (rather than guessing
+  // which pair to combine into one 18) so any combination can be played.
+  // Pars transcribed directly from the course's own printed scorecard
+  // (albionridgesgc.com/scorecard) rather than pulled from the course
+  // search API, which doesn't have reliable data for this course.
+  albion_boulder: {
+    name: "Albion Ridges - Boulder Nine",
+    location: "Annandale, MN",
+    holes: 9,
+    pars: [4,5,4,3,4,4,5,3,4], // Par 36
+  },
+  albion_rock: {
+    name: "Albion Ridges - Rock Nine",
+    location: "Annandale, MN",
+    holes: 9,
+    pars: [4,5,4,3,4,4,3,5,4], // Par 36
+  },
+  albion_granite: {
+    name: "Albion Ridges - Granite Nine",
+    location: "Annandale, MN",
+    holes: 9,
+    pars: [4,4,3,5,4,3,4,5,4], // Par 36
+  },
 };
 
 // The current in-progress card and the custom-course list used to just be
