@@ -1,5 +1,11 @@
 import React, { useState } from "react";
 
+// Bump on every user-visible change to this file, independent of
+// Dashboard.jsx's own APP_VERSION — this page is a standalone feature
+// (see CLAUDE.md) with its own change history. Shown as a small badge next
+// to the page title.
+const GOLF_VERSION = "1.0.0";
+
 // Course database — edit pars here to match actual scorecards
 const COURSES = {
   custom: {
@@ -722,7 +728,10 @@ export default function GolfScorecard() {
     // Header
     React.createElement("div", { style: styles.header },
       React.createElement("div", null,
-        React.createElement("div", { style: styles.title }, "⛳ Golf Scorecard"),
+        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 4 } },
+          React.createElement("div", { style: { ...styles.title, marginBottom: 0 } }, "⛳ Golf Scorecard"),
+          React.createElement("span", { style: { fontSize: 10, color: "#aaa", background: "#f5f5f3", padding: "2px 6px", borderRadius: 6, fontWeight: 500 } }, "v" + GOLF_VERSION)
+        ),
         React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } },
           React.createElement("button", { style: styles.courseBtn, onClick: () => setShowCourseModal(true) },
             course.name + " ▾"
@@ -737,7 +746,13 @@ export default function GolfScorecard() {
         React.createElement("button", { style: { ...styles.btn, color: "#185FA5" }, onClick: () => shareScorecard(currentSnapshot()) }, "📱 Text"),
         React.createElement("button", { style: { ...styles.btn, color: "#27500A" }, onClick: saveRound }, "💾 Save Round"),
         React.createElement("button", { style: styles.btn, onClick: () => setEditingPars(!editingPars) }, editingPars ? "Done" : "Edit Pars"),
-        React.createElement("button", { style: { ...styles.btn, color: "#A32D2D" }, onClick: resetScores }, "Reset")
+        React.createElement("button", { style: { ...styles.btn, color: "#A32D2D" }, onClick: resetScores }, "Reset"),
+        // Full page reload — separate from Reset (which only clears
+        // scores/greenies). Everything this page needs survives a reload
+        // (localStorage), so this is just a plain, unconditional refresh,
+        // useful for recovering from a stuck UI state or picking up a
+        // just-deployed update.
+        React.createElement("button", { style: styles.btn, title: "Restart the app", onClick: () => window.location.reload() }, "🔄 Restart")
       )
     ),
 
