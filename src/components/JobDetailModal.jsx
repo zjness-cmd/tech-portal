@@ -1,5 +1,10 @@
 import React, { useState, useEffect, useRef } from "react";
 
+// Web Speech API — supported in Chrome/Android (what this app targets),
+// not in every browser, so the dictate button only shows up when it's
+// actually available rather than rendering a control that'll just error.
+const SpeechRecognitionCtor = typeof window !== "undefined" ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
+
 // The Job Log sheet's "Job" column carries a few different suffixes
 // depending on how that row got logged (see appendToLog's callers in
 // Dashboard.jsx) — strips all of them, plus a stale MISSED prefix, down to
@@ -29,6 +34,46 @@ export default function JobDetailModal({
   const fileInputRef = useRef(null);
   const [visitHistory, setVisitHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(true);
+  const [listening, setListening] = useState(false);
+  const recognitionRef = useRef(null);
+  const baseNotesRef = useRef(""); // notes text as of when dictation started
+  const finalTranscriptRef = useRef(""); // accumulated finalized speech this session
+
+  // Stop any in-progress dictation if the modal closes/unmounts mid-recording.
+  useEffect(() => () => { recognitionRef.current?.stop(); }, []);
+
+  const startVoiceNotes = () => {
+    if (!SpeechRecognitionCtor || listening) return;
+    const recognition = new SpeechRecognitionCtor();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+    baseNotesRef.current = notes ? notes.trim() + " " : "";
+    finalTranscriptRef.current = "";
+    recognition.onresult = (event) => {
+      let interim = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) finalTranscriptRef.current += transcript + " ";
+        else interim += transcript;
+      }
+      setNotes(baseNotesRef.current + finalTranscriptRef.current + interim);
+    };
+    recognition.onerror = (event) => {
+      if (event.error !== "no-speech" && event.error !== "aborted") setError("Mic error: " + event.error);
+      setListening(false);
+    };
+    recognition.onend = () => setListening(false);
+    recognitionRef.current = recognition;
+    setError("");
+    setListening(true);
+    recognition.start();
+  };
+
+  const stopVoiceNotes = () => {
+    recognitionRef.current?.stop();
+    setListening(false);
+  };
 
   // Load existing notes and photos when modal opens
   useEffect(() => {
@@ -267,12 +312,28 @@ export default function JobDetailModal({
 
             // Notes
             React.createElement("div", { style: { marginBottom: 16 } },
-              React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 } }, "📝 Notes"),
+              listening && React.createElement("style", null, `
+                @keyframes voiceNotesPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+              `),
+              React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
+                React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "#888", textTransform: "uppercase", letterSpacing: "0.05em" } }, "📝 Notes"),
+                SpeechRecognitionCtor && React.createElement("button", {
+                  onClick: listening ? stopVoiceNotes : startVoiceNotes,
+                  style: {
+                    fontSize: 12, padding: "4px 10px", borderRadius: 20, border: "none", cursor: "pointer",
+                    fontWeight: 600, background: listening ? "#c0392b" : "#185FA5", color: "#fff",
+                    display: "flex", alignItems: "center", gap: 5,
+                  },
+                },
+                  listening && React.createElement("span", { style: { width: 7, height: 7, borderRadius: "50%", background: "#fff", animation: "voiceNotesPulse 1s ease-in-out infinite" } }),
+                  listening ? "Stop" : "🎤 Dictate"
+                )
+              ),
               React.createElement("textarea", {
                 value: notes,
                 onChange: e => setNotes(e.target.value),
                 placeholder: "Add notes — customer info, equipment issues, tap counts, follow-ups...",
-                style: { width: "100%", minHeight: 120, padding: "10px 12px", fontSize: 14, border: "1px solid #ddd", borderRadius: 10, resize: "vertical", fontFamily: "system-ui, sans-serif", boxSizing: "border-box", color: "#1a1a1a" },
+                style: { width: "100%", minHeight: 120, padding: "10px 12px", fontSize: 14, border: listening ? "1px solid #185FA5" : "1px solid #ddd", borderRadius: 10, resize: "vertical", fontFamily: "system-ui, sans-serif", boxSizing: "border-box", color: "#1a1a1a" },
               })
             ),
 
