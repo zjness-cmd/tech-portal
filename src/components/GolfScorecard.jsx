@@ -5,7 +5,7 @@ import { findCourseBackground } from "../clientAssets";
 // Dashboard.jsx's own APP_VERSION — this page is a standalone feature
 // (see CLAUDE.md) with its own change history. Shown as a small badge next
 // to the page title.
-const GOLF_VERSION = "1.3.0";
+const GOLF_VERSION = "1.3.1";
 
 // Course database — edit pars here to match actual scorecards
 const COURSES = {
@@ -792,17 +792,15 @@ export default function GolfScorecard() {
     // saved rounds, text, save, edit pars, reset, restart); the course
     // name itself is the page's H1, in a display font, and is still the
     // "switch course" control — tap it to open the picker, same as the
-    // old small pill button did.
+    // old small pill button did. Hamburger sits on the same row as the
+    // heading, at the right, rather than its own row above it.
     React.createElement("div", { style: styles.header },
-      React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
-        React.createElement("button", { style: styles.hamburgerBtn, onClick: () => setMenuOpen(true) },
-          React.createElement("span", { style: styles.hamburgerLine }),
-          React.createElement("span", { style: styles.hamburgerLine }),
-          React.createElement("span", { style: styles.hamburgerLine })
-        ),
-        React.createElement("span", { style: { fontSize: 10, color: "#aaa", background: "rgba(255,255,255,0.75)", padding: "2px 6px", borderRadius: 6, fontWeight: 500 } }, "v" + GOLF_VERSION)
-      ),
-      React.createElement("h1", { style: styles.courseHeading, onClick: () => setShowCourseModal(true) }, course.name + " ▾")
+      React.createElement("h1", { style: styles.courseHeading, onClick: () => setShowCourseModal(true) }, course.name + " ▾"),
+      React.createElement("button", { style: styles.hamburgerBtn, onClick: () => setMenuOpen(true) },
+        React.createElement("span", { style: styles.hamburgerLine }),
+        React.createElement("span", { style: styles.hamburgerLine }),
+        React.createElement("span", { style: styles.hamburgerLine })
+      )
     ),
 
     // Hamburger nav drawer
@@ -823,7 +821,8 @@ export default function GolfScorecard() {
         // (localStorage), so this is just a plain, unconditional refresh,
         // useful for recovering from a stuck UI state or picking up a
         // just-deployed update.
-        React.createElement("button", { style: styles.menuItem, onClick: () => window.location.reload() }, "🔄 Restart App")
+        React.createElement("button", { style: styles.menuItem, onClick: () => window.location.reload() }, "🔄 Restart App"),
+        React.createElement("div", { style: styles.menuVersion }, "TechPortal Golf v" + GOLF_VERSION)
       )
     ),
 
@@ -946,15 +945,20 @@ const styles = {
   // inside without needing a wash behind them: a soft white glow around
   // dark text keeps it readable regardless of what's directly behind it.
   // Buttons/inputs/tables already carry their own solid backgrounds, so
-  // they're unaffected and stay exactly as legible as before.
-  contentCard: { maxWidth: 680, margin: "0 auto", padding: "1rem", paddingBottom: "3rem", textShadow: "0 0 4px rgba(255,255,255,0.9), 0 0 8px rgba(255,255,255,0.85), 0 1px 2px rgba(255,255,255,0.95)" },
-  header: { marginBottom: "1rem" },
-  // Course name as the page's H1 — Playfair Display (loaded in index.html)
-  // instead of the body's system-ui, so it reads like actual course
-  // signage rather than another line of UI text. Still the tap target for
-  // switching courses, same as the small pill button it replaced.
-  courseHeading: { fontFamily: "'Playfair Display', Georgia, serif", fontSize: "clamp(28px, 8vw, 40px)", fontWeight: 900, color: "#1a1a1a", margin: "6px 0 0", cursor: "pointer", lineHeight: 1.15 },
-  hamburgerBtn: { background: "none", border: "none", cursor: "pointer", padding: "4px 6px", display: "flex", flexDirection: "column", gap: 5, justifyContent: "center" },
+  // they're unaffected and stay exactly as legible as before. Kept
+  // deliberately subtle (low alpha, small blur) — too strong and it reads
+  // as a thick white outline instead of a soft legibility assist.
+  contentCard: { maxWidth: 680, margin: "0 auto", padding: "1rem", paddingBottom: "3rem", textShadow: "0 0 3px rgba(255,255,255,0.55), 0 1px 2px rgba(255,255,255,0.65)" },
+  // Course name (H1) and the hamburger button share this row, heading on
+  // the left and nav on the right, rather than the hamburger getting its
+  // own row above.
+  header: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: "1rem" },
+  // Playfair Display (loaded in index.html) instead of the body's
+  // system-ui, so it reads like actual course signage rather than another
+  // line of UI text. Still the tap target for switching courses, same as
+  // the small pill button it replaced.
+  courseHeading: { fontFamily: "'Playfair Display', Georgia, serif", fontSize: "clamp(24px, 7vw, 36px)", fontWeight: 900, color: "#1a1a1a", margin: 0, cursor: "pointer", lineHeight: 1.15 },
+  hamburgerBtn: { flexShrink: 0, background: "none", border: "none", cursor: "pointer", padding: "4px 6px", display: "flex", flexDirection: "column", gap: 5, justifyContent: "center" },
   hamburgerLine: { display: "block", width: 22, height: 2, background: "#333", borderRadius: 2 },
   menuOverlay: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.4)", zIndex: 2000 },
   menuDrawer: { position: "absolute", top: 0, left: 0, bottom: 0, width: 270, maxWidth: "80vw", background: "#fff", boxShadow: "4px 0 24px rgba(0,0,0,0.15)", display: "flex", flexDirection: "column", overflowY: "auto" },
@@ -962,6 +966,7 @@ const styles = {
   menuTitle: { fontSize: 16, fontWeight: 700, color: "#1a1a1a" },
   menuClose: { fontSize: 24, background: "none", border: "none", cursor: "pointer", color: "#888" },
   menuItem: { display: "block", width: "100%", textAlign: "left", padding: "0.85rem 1.25rem", fontSize: 14, color: "#1a1a1a", background: "none", border: "none", borderBottom: "0.5px solid #f0f0f0", cursor: "pointer", fontFamily: "system-ui, sans-serif", fontWeight: 500 },
+  menuVersion: { padding: "0.85rem 1.25rem", fontSize: 11, color: "#aaa", marginTop: "auto" },
   btn: { fontSize: 12, padding: "6px 12px", borderRadius: 8, border: "0.5px solid #ccc", background: "#fff", cursor: "pointer", color: "#1a1a1a" },
   playerGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: "1rem" },
   playerCard: { background: "#f5f5f3", borderRadius: 12, padding: "12px 16px" },
