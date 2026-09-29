@@ -217,6 +217,14 @@ export default function JobCard({
         React.createElement("style", null, `
           @keyframes tapLightboxFadeIn { from { opacity: 0; } to { opacity: 1; } }
           @keyframes tapLightboxZoomIn { from { transform: scale(0.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+          @keyframes tapCountGlow {
+            0%, 100% { box-shadow: 0 0 0 2px rgba(255,255,255,0.25) inset, 0 0 14px 2px rgba(255,255,255,0.15); }
+            50% { box-shadow: 0 0 0 2px rgba(255,255,255,0.45) inset, 0 0 22px 6px rgba(255,255,255,0.35); }
+          }
+          @keyframes tapCountShine {
+            0% { transform: translate(-60%, -60%) rotate(20deg); }
+            45%, 100% { transform: translate(60%, 60%) rotate(20deg); }
+          }
         `),
         React.createElement("div", {
           style: {
@@ -236,24 +244,35 @@ export default function JobCard({
               src: tapPhotoUrl, alt: "Tap tower",
               style: { maxWidth: "92vw", maxHeight: "85vh", borderRadius: 12, display: "block", boxShadow: "0 12px 40px rgba(0,0,0,0.5)" },
             }),
-            // Large gray tap count overlay, top-left corner of the enlarged
+            // Large tap count overlay, top-left corner of the enlarged
             // photo — separate from the small corner badge on the card
             // thumbnail, which stays as the tap-to-edit control; this is
             // purely a readable-at-a-glance number once you've already
-            // opened the photo full-size. A semi-transparent dark box behind
-            // it guarantees contrast against any photo — plain translucent
-            // text alone washed out against lighter backgrounds.
+            // opened the photo full-size. A circular dark badge guarantees
+            // contrast against any photo, with a pulsing glow + a sweeping
+            // shine pass so it reads as a shiny badge rather than flat text.
             tapCount != null && React.createElement("div", {
               style: {
                 position: "absolute", top: "4%", left: "5%",
-                background: "rgba(0,0,0,0.55)", borderRadius: "0.15em",
-                padding: "0.05em 0.25em", lineHeight: 1, pointerEvents: "none",
+                width: "min(28vw, 150px)", height: "min(28vw, 150px)",
+                borderRadius: "50%", background: "rgba(0,0,0,0.6)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                overflow: "hidden", pointerEvents: "none",
+                animation: "tapCountGlow 2.6s ease-in-out infinite",
               },
             },
+              React.createElement("div", {
+                style: {
+                  position: "absolute", top: "-30%", left: "-30%",
+                  width: "60%", height: "220%",
+                  background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.55), transparent)",
+                  animation: "tapCountShine 2.6s ease-in-out infinite",
+                },
+              }),
               React.createElement("span", {
                 style: {
-                  fontSize: "min(24vw, 130px)", fontWeight: 800, color: "#ddd",
-                  lineHeight: 1, userSelect: "none",
+                  fontSize: "min(14vw, 72px)", fontWeight: 800, color: "#ddd",
+                  lineHeight: 1, userSelect: "none", position: "relative",
                 },
               }, tapCount)
             )
