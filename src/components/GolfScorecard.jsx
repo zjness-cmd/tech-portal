@@ -4,7 +4,7 @@ import React, { useState } from "react";
 // Dashboard.jsx's own APP_VERSION — this page is a standalone feature
 // (see CLAUDE.md) with its own change history. Shown as a small badge next
 // to the page title.
-const GOLF_VERSION = "1.1.0";
+const GOLF_VERSION = "1.1.1";
 
 // Course database — edit pars here to match actual scorecards
 const COURSES = {
@@ -96,30 +96,38 @@ function loadJSON(key, fallback) {
   try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : fallback; } catch { return fallback; }
 }
 
+// Runs one Wikimedia Commons image search and returns the first usable
+// image URL, or null if nothing came back.
+async function searchCommonsImage(query) {
+  const params = new URLSearchParams({
+    action: "query", generator: "search", gsrsearch: query,
+    gsrnamespace: "6", gsrlimit: "5", prop: "imageinfo", iiprop: "url|mime",
+    iiurlwidth: "1600", format: "json", origin: "*",
+  });
+  const res = await fetch("https://commons.wikimedia.org/w/api.php?" + params.toString());
+  const data = await res.json();
+  const pages = data?.query?.pages ? Object.values(data.query.pages) : [];
+  const pick = pages
+    .map(p => p.imageinfo?.[0])
+    .find(info => info?.mime?.startsWith("image/") && info.mime !== "image/svg+xml");
+  return pick?.thumburl || pick?.url || null;
+}
+
 // Looks up a photo for the course name via Wikimedia Commons' public search
 // API — free, no key/signup required, and CORS-enabled for direct
 // browser-side use (the origin=* param is what gets it to send the right
-// CORS header). Not curated for golf specifically, so results vary in
-// relevance/quality, but it's a real photo search with zero setup burden.
-// Results are cached per course name in localStorage (BG_CACHE_KEY) so
-// switching back to an already-seen course doesn't refetch.
+// CORS header). Not curated for golf specifically, and small/local courses
+// often just aren't on Commons at all, so this tries a "<name> golf
+// course" search first and falls back to the bare course name before
+// giving up. Only a successful hit is cached (BG_CACHE_KEY) — a miss is
+// NOT cached, so a course that comes up empty gets retried next time
+// instead of being stuck blank forever.
 async function fetchCourseBackground(courseName) {
   try {
     const cache = loadJSON(BG_CACHE_KEY, {});
-    if (courseName in cache) return cache[courseName];
-    const params = new URLSearchParams({
-      action: "query", generator: "search", gsrsearch: courseName + " golf course",
-      gsrnamespace: "6", gsrlimit: "5", prop: "imageinfo", iiprop: "url|mime",
-      iiurlwidth: "1600", format: "json", origin: "*",
-    });
-    const res = await fetch("https://commons.wikimedia.org/w/api.php?" + params.toString());
-    const data = await res.json();
-    const pages = data?.query?.pages ? Object.values(data.query.pages) : [];
-    const pick = pages
-      .map(p => p.imageinfo?.[0])
-      .find(info => info?.mime?.startsWith("image/") && info.mime !== "image/svg+xml");
-    const url = pick?.thumburl || pick?.url || null;
-    try { localStorage.setItem(BG_CACHE_KEY, JSON.stringify({ ...cache, [courseName]: url })); } catch {}
+    if (cache[courseName]) return cache[courseName];
+    const url = (await searchCommonsImage(courseName + " golf course")) || (await searchCommonsImage(courseName));
+    if (url) { try { localStorage.setItem(BG_CACHE_KEY, JSON.stringify({ ...cache, [courseName]: url })); } catch {} }
     return url;
   } catch {
     return null;
