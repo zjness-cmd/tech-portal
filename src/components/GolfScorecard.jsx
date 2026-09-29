@@ -4,7 +4,7 @@ import React, { useState } from "react";
 // Dashboard.jsx's own APP_VERSION — this page is a standalone feature
 // (see CLAUDE.md) with its own change history. Shown as a small badge next
 // to the page title.
-const GOLF_VERSION = "1.0.0";
+const GOLF_VERSION = "1.1.0";
 
 // Course database — edit pars here to match actual scorecards
 const COURSES = {
@@ -90,9 +90,40 @@ const ALBION_NINES = {
 const CURRENT_KEY = "techportal_golfCurrent";
 const ROUNDS_KEY = "techportal_golfRounds";
 const CUSTOM_COURSES_KEY = "techportal_golfCustomCourses";
+const BG_CACHE_KEY = "techportal_golfBgCache";
 
 function loadJSON(key, fallback) {
   try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : fallback; } catch { return fallback; }
+}
+
+// Looks up a photo for the course name via Wikimedia Commons' public search
+// API — free, no key/signup required, and CORS-enabled for direct
+// browser-side use (the origin=* param is what gets it to send the right
+// CORS header). Not curated for golf specifically, so results vary in
+// relevance/quality, but it's a real photo search with zero setup burden.
+// Results are cached per course name in localStorage (BG_CACHE_KEY) so
+// switching back to an already-seen course doesn't refetch.
+async function fetchCourseBackground(courseName) {
+  try {
+    const cache = loadJSON(BG_CACHE_KEY, {});
+    if (courseName in cache) return cache[courseName];
+    const params = new URLSearchParams({
+      action: "query", generator: "search", gsrsearch: courseName + " golf course",
+      gsrnamespace: "6", gsrlimit: "5", prop: "imageinfo", iiprop: "url|mime",
+      iiurlwidth: "1600", format: "json", origin: "*",
+    });
+    const res = await fetch("https://commons.wikimedia.org/w/api.php?" + params.toString());
+    const data = await res.json();
+    const pages = data?.query?.pages ? Object.values(data.query.pages) : [];
+    const pick = pages
+      .map(p => p.imageinfo?.[0])
+      .find(info => info?.mime?.startsWith("image/") && info.mime !== "image/svg+xml");
+    const url = pick?.thumburl || pick?.url || null;
+    try { localStorage.setItem(BG_CACHE_KEY, JSON.stringify({ ...cache, [courseName]: url })); } catch {}
+    return url;
+  } catch {
+    return null;
+  }
 }
 
 function sumScores(arr, holes) {
@@ -254,6 +285,18 @@ export default function GolfScorecard() {
   const holes = course.holes;
   const basePars = courseParOverrides[selectedCourse] || course.pars;
   const pars = basePars.slice(0, holes);
+
+  // Background photo — re-fetched (or pulled from cache) whenever the
+  // selected course changes. Guarded with a "still the current course"
+  // check so a slow response for a course you've since switched away from
+  // can't land late and overwrite what's now showing.
+  const [bgImage, setBgImage] = useState(null);
+  React.useEffect(() => {
+    let cancelled = false;
+    setBgImage(null);
+    fetchCourseBackground(course.name).then(url => { if (!cancelled) setBgImage(url); });
+    return () => { cancelled = true; };
+  }, [course.name]);
 
   const updatePar = (hole, value) => {
     const current = courseParOverrides[selectedCourse] || [...course.pars];
@@ -557,7 +600,12 @@ export default function GolfScorecard() {
     );
   });
 
-  return React.createElement("div", { style: styles.page },
+  const pageStyle = bgImage
+    ? { ...styles.page, backgroundImage: "url('" + bgImage + "')" }
+    : styles.page;
+
+  return React.createElement("div", { style: pageStyle },
+    React.createElement("div", { style: styles.contentCard },
 
     // Course selector modal
     showCourseModal && React.createElement("div", { style: styles.overlay, onClick: () => setShowCourseModal(false) },
@@ -861,10 +909,15 @@ export default function GolfScorecard() {
         React.createElement("span", { style: styles.summaryVal }, "$" + carryover)
       )
     )
+    )
   );
 }
 const styles = {
-  page: { fontFamily: "system-ui, sans-serif", maxWidth: 680, margin: "0 auto", padding: "1rem", paddingBottom: "3rem" },
+  // Full-bleed background photo (set dynamically per course, see bgImage)
+  // sits behind everything; contentCard below is the opaque surface the
+  // actual UI renders on, so a busy photo never fights with hole-row text.
+  page: { fontFamily: "system-ui, sans-serif", minHeight: "100vh", backgroundColor: "#f5f5f3", backgroundSize: "cover", backgroundPosition: "center", backgroundAttachment: "fixed" },
+  contentCard: { maxWidth: 680, margin: "0 auto", padding: "1rem", paddingBottom: "3rem", background: "rgba(255,255,255,0.94)" },
   header: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1rem", flexWrap: "wrap", gap: 8 },
   title: { fontSize: 20, fontWeight: 500, color: "#1a1a1a", marginBottom: 4 },
   courseBtn: { fontSize: 13, padding: "5px 10px", borderRadius: 8, border: "0.5px solid #185FA5", background: "#f0f4ff", color: "#185FA5", cursor: "pointer", fontWeight: 500 },
