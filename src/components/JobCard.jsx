@@ -226,14 +226,30 @@ export default function JobCard({
           },
           onClick: () => setShowTapLightbox(false),
         },
-          React.createElement("img", {
-            src: tapPhotoUrl, alt: "Tap tower",
+          React.createElement("div", {
             style: {
-              maxWidth: "92vw", maxHeight: "85vh", borderRadius: 12, display: "block",
-              boxShadow: "0 12px 40px rgba(0,0,0,0.5)",
+              position: "relative", display: "inline-block", maxWidth: "92vw", maxHeight: "85vh",
               animation: "tapLightboxZoomIn 0.35s cubic-bezier(0.34, 1.56, 0.64, 1)",
             },
-          }),
+          },
+            React.createElement("img", {
+              src: tapPhotoUrl, alt: "Tap tower",
+              style: { maxWidth: "92vw", maxHeight: "85vh", borderRadius: 12, display: "block", boxShadow: "0 12px 40px rgba(0,0,0,0.5)" },
+            }),
+            // Large gray tap count overlay, centered on the enlarged photo —
+            // separate from the small corner badge on the card thumbnail,
+            // which stays as the tap-to-edit control; this is purely a
+            // readable-at-a-glance number once you've already opened the
+            // photo full-size.
+            tapCount != null && React.createElement("div", {
+              style: {
+                position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
+                fontSize: "min(30vw, 160px)", fontWeight: 800, color: "rgba(190,190,190,0.55)",
+                textShadow: "0 4px 24px rgba(0,0,0,0.6)", lineHeight: 1, pointerEvents: "none",
+                textAlign: "center", userSelect: "none",
+              },
+            }, tapCount)
+          ),
           React.createElement("button", {
             onClick: () => setShowTapLightbox(false),
             style: {
