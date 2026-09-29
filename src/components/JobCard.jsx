@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import JobDetailModal from "./JobDetailModal";
 import { findClientLogo, findClientTapPhoto } from "../clientAssets";
 
@@ -79,10 +79,13 @@ export default function JobCard({
   onCheckIn, onCheckOut, onComplete, onNavigate, onUndo, onInvoice, onTextInvoice, onMissed,
   isNearby, isAmbiguous, accessToken, onTimeUpdated, onNotesSaved, logSheetId,
   paymentStatus, paymentMethod, onTogglePaid, website, onReschedule,
+  tapPhotoUrl: dynamicTapPhotoUrl, onUploadTapPhoto,
 }) {
   const [imgFailed, setImgFailed] = useState(false);
   const [imgChecked, setImgChecked] = useState(false);
   const [imgExists, setImgExists] = useState(false);
+  const [uploadingTapPhoto, setUploadingTapPhoto] = useState(false);
+  const tapFileInputRef = useRef(null);
   const [logoFailed, setLogoFailed] = useState(false);
   const [showCompleteChoice, setShowCompleteChoice] = useState(false);
   const [showTimeEdit, setShowTimeEdit] = useState(false);
@@ -121,11 +124,14 @@ export default function JobCard({
   // logo, not a best-effort guess from a domain.
   const logoUrl = findClientLogo(job.title) || getLogoUrl(website);
   const showLogo = logoUrl && !logoFailed;
-  // A reference photo of the client's actual tap tower/lines
-  // (src/assets/client-taps/) — shown alongside Street View, not instead of
-  // it: Street View is for finding the building, this is for what's on tap
-  // once you're there.
-  const tapPhotoUrl = findClientTapPhoto(job.title);
+  // A reference photo of the client's actual tap tower/lines — shown
+  // alongside Street View, not instead of it: Street View is for finding
+  // the building, this is for what's on tap once you're there. A photo
+  // taken in the field (dynamicTapPhotoUrl, stored per-client in Sheets —
+  // see Dashboard's handleUploadClientTapPhoto) always wins over one
+  // dropped into src/assets/client-taps/ at build time, since it's the
+  // more current, self-service source.
+  const tapPhotoUrl = dynamicTapPhotoUrl || findClientTapPhoto(job.title);
 
   React.useEffect(() => { setLogoFailed(false); }, [website, job.title]);
 
@@ -186,6 +192,18 @@ export default function JobCard({
       setTimeError("Error: " + e.message);
     }
     setTimeSaving(false);
+  };
+
+  const handleTapPhotoFileChange = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // lets the same/another file be picked again immediately (e.g. retake)
+    if (!file || !onUploadTapPhoto) return;
+    setUploadingTapPhoto(true);
+    try {
+      await onUploadTapPhoto(file);
+    } finally {
+      setUploadingTapPhoto(false);
+    }
   };
 
   return (
@@ -293,7 +311,11 @@ export default function JobCard({
       job.location && React.createElement("div", { style: s.cardMeta }, "📍 " + job.location),
 
       // ── Street View + tap tower photos ───────────────────────────────────
-      (showImage || tapPhotoUrl) && React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 8 } },
+      onUploadTapPhoto && React.createElement("input", {
+        type: "file", accept: "image/*", capture: "environment", ref: tapFileInputRef,
+        style: { display: "none" }, onChange: handleTapPhotoFileChange,
+      }),
+      (showImage || tapPhotoUrl || onUploadTapPhoto) && React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 8 } },
         showImage && React.createElement("a", {
           href: job.calendarLink || "#", target: "_blank", rel: "noreferrer",
           style: { display: "block", flex: 1, minWidth: 0 },
@@ -304,11 +326,38 @@ export default function JobCard({
             onError: () => setImgFailed(true),
           })
         ),
-        tapPhotoUrl && React.createElement("img", {
-          src: tapPhotoUrl, alt: "Tap tower",
-          style: { flex: 1, minWidth: 0, width: showImage ? undefined : "100%", height: 110, objectFit: "cover", borderRadius: 8, display: "block", cursor: "zoom-in" },
-          onClick: (e) => { e.stopPropagation(); setShowTapLightbox(true); },
-        })
+        tapPhotoUrl
+          ? React.createElement("div", { style: { position: "relative", flex: 1, minWidth: 0, width: showImage ? undefined : "100%" } },
+              React.createElement("img", {
+                src: tapPhotoUrl, alt: "Tap tower",
+                style: { width: "100%", height: 110, objectFit: "cover", borderRadius: 8, display: "block", cursor: "zoom-in" },
+                onClick: (e) => { e.stopPropagation(); setShowTapLightbox(true); },
+              }),
+              // Retake — separate tap target from the photo itself (which
+              // opens the lightbox), same as a camera app's "retake" corner
+              // button.
+              onUploadTapPhoto && React.createElement("button", {
+                onClick: (e) => { e.stopPropagation(); tapFileInputRef.current?.click(); },
+                title: "Retake tap photo",
+                disabled: uploadingTapPhoto,
+                style: {
+                  position: "absolute", bottom: 4, right: 4, fontSize: 13, width: 26, height: 26, borderRadius: "50%",
+                  background: "rgba(0,0,0,0.55)", color: "#fff", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                },
+              }, uploadingTapPhoto ? "…" : "📷")
+            )
+          : onUploadTapPhoto && React.createElement("button", {
+              onClick: (e) => { e.stopPropagation(); tapFileInputRef.current?.click(); },
+              disabled: uploadingTapPhoto,
+              style: {
+                flex: 1, minWidth: 0, width: showImage ? undefined : "100%", height: 110, borderRadius: 8,
+                border: "1.5px dashed #ccc", background: "#fafafa", color: "#888", cursor: "pointer",
+                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, fontSize: 12,
+              },
+            },
+              React.createElement("span", { style: { fontSize: 20 } }, uploadingTapPhoto ? "⏳" : "📷"),
+              uploadingTapPhoto ? "Uploading..." : "Add tap photo"
+            )
       ),
 
       // ── Description ─────────────────────────────────────────────────────

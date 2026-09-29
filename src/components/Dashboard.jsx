@@ -12,6 +12,7 @@ const LOG_SHEET_NAME = "TechPortal Job Log 2026";
 const STATUS_SHEET_NAME = "Job Status";
 const AR_SHEET_NAME = "Accounts Receivable";
 const CLIENT_SITES_SHEET_NAME = "Client Websites";
+const CLIENT_PHOTOS_SHEET_NAME = "Client Photos";
 const JOB_STATUS_CACHE_KEY = "techportal_jobStatus_";
 const PENDING_SAVES_KEY = "techportal_pendingSaves";
 const GEOFENCE_RADIUS_MILES = 0.12;
@@ -59,7 +60,7 @@ const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
 // (merged B20:C20, navy, two-line real link), checks-payable bar and
 // Total amount recolored navy to match the logo, thin outer border
 // added around the item table, footer line added under Total.
-const APP_VERSION = "1.3.29";
+const APP_VERSION = "1.3.30";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -418,6 +419,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [clientWebsites, setClientWebsites] = useState(() => {
     try { const s = localStorage.getItem("techportal_clientWebsites"); return s ? JSON.parse(s) : {}; } catch { return {}; }
   });
+  // Same shape/reasoning as clientWebsites, for a photo of the client's tap
+  // tower taken in the field (rather than one dropped into the repo at
+  // build time — see src/clientAssets.js for that, still used as a
+  // fallback when there's no photo here yet).
+  const [clientTapPhotos, setClientTapPhotos] = useState(() => {
+    try { const s = localStorage.getItem("techportal_clientTapPhotos"); return s ? JSON.parse(s) : {}; } catch { return {}; }
+  });
 
   const startPosRef = useRef((() => { try { const s = localStorage.getItem("techportal_startPos"); return s ? JSON.parse(s) : null; } catch { return null; } })());
   const lastPositionRef = useRef((() => { try { const s = localStorage.getItem("techportal_lastPos"); return s ? JSON.parse(s) : null; } catch { return null; } })());
@@ -430,6 +438,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const jobCoordsRef = useRef({});
   const arLoadedRef = useRef(false);
   const clientSitesLoadedRef = useRef(false);
+  const clientPhotosLoadedRef = useRef(false);
   const websiteLookupAttemptedRef = useRef({});
   const geofenceDwellRef = useRef({});
   const departureDwellRef = useRef({});
@@ -918,6 +927,11 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     clientSitesLoadedRef.current = true;
     loadClientWebsites();
   }, [accessToken]);
+  useEffect(() => {
+    if (!accessToken || clientPhotosLoadedRef.current) return;
+    clientPhotosLoadedRef.current = true;
+    loadClientTapPhotos();
+  }, [accessToken]);
   useEffect(() => { if (!accessToken || loading) return; loadJobStatuses(); }, [accessToken, selectedDate, loading]);
   // Gated on `loading` flipping to false rather than on `jobs` itself —
   // `jobs` is a new array reference every render, which would otherwise
@@ -1047,6 +1061,17 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     if (!hasTab) {
       await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + ":batchUpdate", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ requests: [{ addSheet: { properties: { title: CLIENT_SITES_SHEET_NAME } } }] }) });
       await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_SITES_SHEET_NAME + "'!A1:C1?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [["Client Key", "Client Name", "Website"]] }) });
+    }
+  };
+
+  const ensureClientPhotosTab = async (sheetId) => {
+    const token = accessTokenRef.current;
+    const infoRes = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "?fields=sheets.properties", { headers: { Authorization: "Bearer " + token } });
+    const info = await infoRes.json();
+    const hasTab = (info.sheets || []).find(s => s.properties.title === CLIENT_PHOTOS_SHEET_NAME);
+    if (!hasTab) {
+      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + ":batchUpdate", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ requests: [{ addSheet: { properties: { title: CLIENT_PHOTOS_SHEET_NAME } } }] }) });
+      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_PHOTOS_SHEET_NAME + "'!A1:D1?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [["Client Key", "Client Name", "Photo URL", "Drive File ID"]] }) });
     }
   };
 
@@ -1180,6 +1205,106 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       dbg("🌐 Saved website for " + clientName + ": " + website);
     } catch (e) {
       dbg("❌ saveClientWebsite failed for " + clientName + ": " + e.message, "error");
+    }
+  };
+
+  const loadClientTapPhotos = async () => {
+    const token = accessTokenRef.current;
+    if (!token) return;
+    try {
+      const sheetId = await getOrCreateLogSheet();
+      if (!sheetId) return;
+      await ensureClientPhotosTab(sheetId);
+      const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_PHOTOS_SHEET_NAME + "'!A:D", { headers: { Authorization: "Bearer " + token } });
+      if (!res.ok) { dbg("❌ Client photos read failed: " + res.status, "error"); return; }
+      const data = await res.json();
+      const rows = data.values || [];
+      const photosByKey = {};
+      rows.forEach((r, i) => {
+        if (i === 0 || !r[0]) return; // header / blank key
+        photosByKey[r[0]] = { name: r[1] || "", photoUrl: r[2] || "", driveFileId: r[3] || "", _sheetRow: i + 1 };
+      });
+      setClientTapPhotos(photosByKey);
+      try { localStorage.setItem("techportal_clientTapPhotos", JSON.stringify(photosByKey)); } catch {}
+      dbg("📷 Loaded " + Object.keys(photosByKey).length + " client tap photo(s)");
+    } catch (e) {
+      dbg("❌ loadClientTapPhotos error: " + e.message, "error");
+    }
+  };
+
+  const saveClientTapPhoto = async (clientKey, clientName, photoUrl, driveFileId) => {
+    const token = accessTokenRef.current;
+    if (!token || !clientKey) return;
+    try {
+      const sheetId = await getOrCreateLogSheet();
+      if (!sheetId) return;
+      const row = [clientKey, clientName, photoUrl, driveFileId];
+      let sheetRow = clientTapPhotos[clientKey]?._sheetRow;
+      if (!sheetRow) {
+        const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_PHOTOS_SHEET_NAME + "'!A:D", { headers: { Authorization: "Bearer " + token } });
+        const data = await res.json();
+        const idx = (data.values || []).findIndex(r => r[0] === clientKey);
+        if (idx !== -1) sheetRow = idx + 1;
+      }
+      if (sheetRow) {
+        await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_PHOTOS_SHEET_NAME + "'!A" + sheetRow + ":D" + sheetRow + "?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [row] }) });
+      } else {
+        await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_PHOTOS_SHEET_NAME + "'!A:D:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [row] }) });
+      }
+      setClientTapPhotos(prev => {
+        const next = { ...prev, [clientKey]: { name: clientName, photoUrl, driveFileId, _sheetRow: sheetRow } };
+        try { localStorage.setItem("techportal_clientTapPhotos", JSON.stringify(next)); } catch {}
+        return next;
+      });
+      dbg("📷 Saved tap photo for " + clientName);
+    } catch (e) {
+      dbg("❌ saveClientTapPhoto failed for " + clientName + ": " + e.message, "error");
+    }
+  };
+
+  // Uploads a tap-tower photo taken/picked in the field to Drive (same
+  // "TechPortal Photos" folder + public-read pattern JobDetailModal already
+  // uses for per-job photos), then links it to this client permanently via
+  // saveClientTapPhoto — so unlike a per-job photo, it shows up again on
+  // every future visit to the same account, not just today's job card.
+  const handleUploadClientTapPhoto = async (jobTitle, file) => {
+    const token = accessTokenRef.current;
+    if (!token || !file) return;
+    const cleanTitle = jobTitle.replace(/^(⚠️ MISSED - )+/, "").trim();
+    const key = clientKeyFor(jobTitle);
+    if (!key) return;
+    dbg("📷 Uploading tap photo for " + cleanTitle + "...");
+    try {
+      const folderRes = await fetch(
+        "https://www.googleapis.com/drive/v3/files?q=name='TechPortal Photos'+and+mimeType='application/vnd.google-apps.folder'&fields=files(id)",
+        { headers: { Authorization: "Bearer " + token } }
+      );
+      const folderData = await folderRes.json();
+      let folderId = folderData.files?.[0]?.id;
+      if (!folderId) {
+        const createRes = await fetch("https://www.googleapis.com/drive/v3/files", {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+          body: JSON.stringify({ name: "TechPortal Photos", mimeType: "application/vnd.google-apps.folder" }),
+        });
+        folderId = (await createRes.json()).id;
+      }
+      const metadata = { name: cleanTitle + " - tap tower - " + new Date().toLocaleDateString(), parents: [folderId] };
+      const form = new FormData();
+      form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
+      form.append("file", file);
+      const uploadRes = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id", {
+        method: "POST", headers: { Authorization: "Bearer " + token }, body: form,
+      });
+      const uploadData = await uploadRes.json();
+      if (!uploadData.id) { dbg("❌ Tap photo upload failed for " + cleanTitle, "error"); return; }
+      await fetch("https://www.googleapis.com/drive/v3/files/" + uploadData.id + "/permissions", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({ role: "reader", type: "anyone" }),
+      });
+      const photoUrl = "https://drive.google.com/thumbnail?id=" + uploadData.id + "&sz=w800";
+      await saveClientTapPhoto(key, cleanTitle, photoUrl, uploadData.id);
+    } catch (e) {
+      dbg("❌ Tap photo upload error for " + cleanTitle + ": " + e.message, "error");
     }
   };
 
@@ -3459,6 +3584,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               },
               onTogglePaid: () => handleTogglePaid(nid, job.title),
               website: clientWebsites[clientKeyFor(job.title)]?.website || "",
+              tapPhotoUrl: clientTapPhotos[clientKeyFor(job.title)]?.photoUrl || "",
+              onUploadTapPhoto: (file) => handleUploadClientTapPhoto(job.title, file),
             });
           })
         )
