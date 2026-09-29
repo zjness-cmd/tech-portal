@@ -63,3 +63,14 @@ const clientTapPhotos = buildAssetMap(tapModules);
 export function findClientTapPhoto(jobTitle) {
   return matchClientAsset(clientTapPhotos, jobTitle);
 }
+
+// src/assets/course-backgrounds/*.{png,jpg,jpeg,webp} — a hand-picked photo
+// for a golf course's background in GolfScorecard.jsx, checked before that
+// page's live Wikimedia Commons search (see fetchCourseBackground there) —
+// a course with a file here always wins over the live search, no live
+// search is even attempted for it.
+const courseBgModules = import.meta.glob("./assets/course-backgrounds/*.{png,jpg,jpeg,webp}", { eager: true, import: "default" });
+const courseBackgrounds = buildAssetMap(courseBgModules);
+export function findCourseBackground(courseName) {
+  return matchClientAsset(courseBackgrounds, courseName);
+}

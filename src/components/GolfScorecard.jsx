@@ -1,10 +1,11 @@
 import React, { useState } from "react";
+import { findCourseBackground } from "../clientAssets";
 
 // Bump on every user-visible change to this file, independent of
 // Dashboard.jsx's own APP_VERSION — this page is a standalone feature
 // (see CLAUDE.md) with its own change history. Shown as a small badge next
 // to the page title.
-const GOLF_VERSION = "1.1.1";
+const GOLF_VERSION = "1.2.0";
 
 // Course database — edit pars here to match actual scorecards
 const COURSES = {
@@ -294,13 +295,18 @@ export default function GolfScorecard() {
   const basePars = courseParOverrides[selectedCourse] || course.pars;
   const pars = basePars.slice(0, holes);
 
-  // Background photo — re-fetched (or pulled from cache) whenever the
-  // selected course changes. Guarded with a "still the current course"
+  // Background photo — a hand-picked local image (src/assets/course-
+  // backgrounds/) always wins when one's been added for this course, no
+  // network call at all; otherwise falls back to the live Wikimedia
+  // Commons search (re-fetched, or pulled from cache, whenever the
+  // selected course changes). Guarded with a "still the current course"
   // check so a slow response for a course you've since switched away from
   // can't land late and overwrite what's now showing.
   const [bgImage, setBgImage] = useState(null);
   React.useEffect(() => {
     let cancelled = false;
+    const local = findCourseBackground(course.name);
+    if (local) { setBgImage(local); return; }
     setBgImage(null);
     fetchCourseBackground(course.name).then(url => { if (!cancelled) setBgImage(url); });
     return () => { cancelled = true; };
