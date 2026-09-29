@@ -5,7 +5,7 @@ import { findCourseBackground } from "../clientAssets";
 // Dashboard.jsx's own APP_VERSION — this page is a standalone feature
 // (see CLAUDE.md) with its own change history. Shown as a small badge next
 // to the page title.
-const GOLF_VERSION = "1.2.1";
+const GOLF_VERSION = "1.2.2";
 
 // Course database — edit pars here to match actual scorecards
 const COURSES = {
@@ -928,16 +928,17 @@ export default function GolfScorecard() {
 }
 const styles = {
   // Full-bleed background photo (set dynamically per course, see bgImage)
-  // sits behind everything; contentCard below is the opaque surface the
-  // actual UI renders on, so a busy photo never fights with hole-row text.
+  // sits behind everything, shown at full brightness/clarity — no tint, no
+  // blur, no dimming overlay.
   page: { fontFamily: "system-ui, sans-serif", minHeight: "100vh", backgroundColor: "#f5f5f3", backgroundSize: "cover", backgroundPosition: "center", backgroundAttachment: "fixed" },
-  // Translucent + blurred ("frosted glass") rather than the near-opaque
-  // white this used to be — at 0.94 opacity the card was effectively
-  // covering the whole viewport on a phone (maxWidth is wider than any
-  // phone screen), so the background photo was never actually visible.
-  // The blur keeps text crisp against the photo without needing every
-  // individual row/cell to carry its own solid background.
-  contentCard: { maxWidth: 680, margin: "0 auto", padding: "1rem", paddingBottom: "3rem", background: "rgba(255,255,255,0.72)", backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)" },
+  // No background of its own — just layout (width/margin/padding).
+  // Legibility over the untouched photo comes from textShadow here, which
+  // (being an inherited CSS property) cascades to every plain text node
+  // inside without needing a wash behind them: a soft white glow around
+  // dark text keeps it readable regardless of what's directly behind it.
+  // Buttons/inputs/tables already carry their own solid backgrounds, so
+  // they're unaffected and stay exactly as legible as before.
+  contentCard: { maxWidth: 680, margin: "0 auto", padding: "1rem", paddingBottom: "3rem", textShadow: "0 0 4px rgba(255,255,255,0.9), 0 0 8px rgba(255,255,255,0.85), 0 1px 2px rgba(255,255,255,0.95)" },
   header: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1rem", flexWrap: "wrap", gap: 8 },
   title: { fontSize: 20, fontWeight: 500, color: "#1a1a1a", marginBottom: 4 },
   courseBtn: { fontSize: 13, padding: "5px 10px", borderRadius: 8, border: "0.5px solid #185FA5", background: "#f0f4ff", color: "#185FA5", cursor: "pointer", fontWeight: 500 },
