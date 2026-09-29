@@ -1,5 +1,20 @@
 import React, { useState, useEffect, useRef } from "react";
 
+// The Job Log sheet's "Job" column carries a few different suffixes
+// depending on how that row got logged (see appendToLog's callers in
+// Dashboard.jsx) — strips all of them, plus a stale MISSED prefix, down to
+// the same clean client name used everywhere else (client logos/websites),
+// so every row for the same account groups together regardless of which
+// visit it came from.
+function normalizeLogTitle(raw) {
+  return (raw || "")
+    .replace(/^(⚠️ MISSED - )+/, "")
+    .replace(/\s*\(check-out( auto)?\)\s*$/i, "")
+    .replace(/\s*\(auto\)\s*$/i, "")
+    .trim()
+    .toLowerCase();
+}
+
 export default function JobDetailModal({
   job, accessToken, checkedIn, checkedOut, completed, onClose, onNotesSaved, logSheetId,
   onUndo, onInvoice, onTextInvoice, invoiceUrl, paymentStatus, paymentMethod, onTogglePaid,
@@ -12,11 +27,48 @@ export default function JobDetailModal({
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
   const fileInputRef = useRef(null);
+  const [visitHistory, setVisitHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
 
   // Load existing notes and photos when modal opens
   useEffect(() => {
     loadNotesAndPhotos();
+    loadVisitHistory();
   }, []);
+
+  // Every previous visit to this same account, pulled from the Job Log
+  // sheet (append-only, never pruned, so this covers the whole history —
+  // not just the current month like the revenue-detail view does). Grouped
+  // by date since check-in and check-out each get their own logged row.
+  const loadVisitHistory = async () => {
+    setHistoryLoading(true);
+    try {
+      if (logSheetId) {
+        const res = await fetch(
+          "https://sheets.googleapis.com/v4/spreadsheets/" + logSheetId + "/values/'Job Log'!A2:F5000",
+          { headers: { Authorization: "Bearer " + accessToken } }
+        );
+        const data = await res.json();
+        const rows = data.values || [];
+        const key = normalizeLogTitle(job.title);
+        const byDate = {};
+        rows.forEach(r => {
+          if (normalizeLogTitle(r[1]) !== key) return;
+          const date = r[0];
+          if (!date) return;
+          const isCheckout = /\(check-out/i.test(r[1] || "");
+          if (!byDate[date]) byDate[date] = { date, checkIn: null, checkOut: null, miles: null };
+          if (isCheckout) byDate[date].checkOut = r[2] || null;
+          else { byDate[date].checkIn = r[2] || null; if (r[3]) byDate[date].miles = r[3]; }
+        });
+        const list = Object.values(byDate).sort((a, b) => new Date(b.date) - new Date(a.date));
+        setVisitHistory(list);
+      }
+    } catch (e) {
+      console.warn("Could not load visit history:", e);
+    }
+    setHistoryLoading(false);
+  };
 
   const loadNotesAndPhotos = async () => {
     setLoading(true);
@@ -190,6 +242,27 @@ export default function JobDetailModal({
                   style: { fontSize: 13, padding: "8px 12px", borderRadius: 10, background: "#F0F4FF", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 500 },
                 }, "📱 Text Invoice")
               )
+            ),
+
+            // Previous Visits — every past visit to this same account, from
+            // the Job Log sheet (see loadVisitHistory's comment above).
+            React.createElement("div", { style: { marginBottom: 16 } },
+              React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 } }, "📋 Previous Visits" + (visitHistory.length > 0 ? " (" + visitHistory.length + ")" : "")),
+              historyLoading
+                ? React.createElement("div", { style: { fontSize: 13, color: "#888" } }, "Loading...")
+                : visitHistory.length === 0
+                  ? React.createElement("div", { style: { fontSize: 13, color: "#bbb", fontStyle: "italic" } }, "No previous visits found in the Job Log.")
+                  : React.createElement("div", { style: { maxHeight: 160, overflowY: "auto", border: "0.5px solid #eee", borderRadius: 10 } },
+                      visitHistory.map((v, i) => React.createElement("div", {
+                        key: v.date + i,
+                        style: { padding: "8px 12px", borderBottom: i < visitHistory.length - 1 ? "0.5px solid #f0f0f0" : "none", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13 },
+                      },
+                        React.createElement("span", { style: { color: "#1a1a1a" } }, v.date),
+                        React.createElement("span", { style: { color: "#888", fontSize: 12 } },
+                          (v.checkIn ? "🟢 " + v.checkIn : "") + (v.checkOut ? "  🔴 " + v.checkOut : "") + (v.miles ? "  · " + v.miles + " mi" : "")
+                        )
+                      ))
+                    )
             ),
 
             // Notes
