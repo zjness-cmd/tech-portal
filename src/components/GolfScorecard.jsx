@@ -63,6 +63,18 @@ const COURSES = {
   },
 };
 
+// Same three nines as the COURSES.albion_* entries above, keyed for the
+// front/back picker below — playing 18 holes at Albion Ridges means
+// picking any two of these three, so rather than pre-building all six
+// possible 18-hole combos as static entries, the picker builds the pars
+// array on the fly (front nine's 9 pars + back nine's 9 pars) and saves it
+// as a one-off custom course.
+const ALBION_NINES = {
+  boulder: { label: "Boulder", pars: [4,5,4,3,4,4,5,3,4] },
+  rock: { label: "Rock", pars: [4,5,4,3,4,4,3,5,4] },
+  granite: { label: "Granite", pars: [4,4,3,5,4,3,4,5,4] },
+};
+
 // The current in-progress card and the custom-course list used to just be
 // plain useState with no persistence — closing the PWA (or the phone just
 // backgrounding it long enough to get reclaimed) silently threw away
@@ -201,6 +213,10 @@ export default function GolfScorecard() {
   const [findLoading, setFindLoading] = useState(false);
   const [findError, setFindError] = useState("");
 
+  const [showAlbionPicker, setShowAlbionPicker] = useState(false);
+  const [albionFront, setAlbionFront] = useState("boulder");
+  const [albionBack, setAlbionBack] = useState("rock");
+
   // Persist the in-progress card on every change so a reload resumes
   // exactly where it left off — this is separate from "Save Round" below,
   // which snapshots a finished round into history.
@@ -256,6 +272,28 @@ export default function GolfScorecard() {
     delete nextOverrides[key];
     setCourseParOverrides(nextOverrides);
     if (selectedCourse === key) selectCourse("custom");
+  };
+
+  // Builds an 18-hole course from any two of Albion Ridges' three nines
+  // (front 9 pars + back 9 pars) and saves it as a custom course — same
+  // mechanism as "Add Manually", so the result is editable (Edit Pars) and
+  // deletable (🗑 in the course list) exactly like any other custom course.
+  const confirmAlbionCombo = () => {
+    if (albionFront === albionBack) return;
+    const front = ALBION_NINES[albionFront];
+    const back = ALBION_NINES[albionBack];
+    const key = "albion_" + albionFront + "_" + albionBack;
+    setCustomCourses({
+      ...customCourses,
+      [key]: {
+        name: "Albion Ridges (" + front.label + " + " + back.label + ")",
+        location: "Annandale, MN",
+        holes: 18,
+        pars: [...front.pars, ...back.pars],
+      },
+    });
+    setShowAlbionPicker(false);
+    selectCourse(key);
   };
 
   const saveCustomCourse = () => {
@@ -462,6 +500,13 @@ export default function GolfScorecard() {
           React.createElement("div", { style: styles.modalTitle }, "Select Course"),
           React.createElement("button", { style: styles.modalClose, onClick: () => setShowCourseModal(false) }, "×")
         ),
+        React.createElement("div", {
+          style: { ...styles.courseRow, background: "#FFF8E8" },
+          onClick: () => { setShowAlbionPicker(true); setShowCourseModal(false); },
+        },
+          React.createElement("div", { style: styles.courseName }, "⛳ Albion Ridges — pick 2 nines"),
+          React.createElement("div", { style: styles.courseMeta }, "27-hole course — choose which 2 of Boulder/Rock/Granite for an 18-hole round")
+        ),
         Object.entries(allCourses).map(([key, c]) =>
           React.createElement("div", { key, style: { ...styles.courseRow, ...(key === selectedCourse ? styles.courseRowActive : {}), display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }, onClick: () => selectCourse(key) },
             React.createElement("div", { style: { minWidth: 0 } },
@@ -478,6 +523,38 @@ export default function GolfScorecard() {
         React.createElement("div", { style: { padding: "0.75rem 1.25rem", borderTop: "0.5px solid #e0e0e0", display: "flex", gap: 8 } },
           React.createElement("button", { style: { ...styles.btn, flex: 1, textAlign: "center", background: "#185FA5", color: "#fff", border: "none" }, onClick: () => { setShowFindCourse(true); setShowCourseModal(false); } }, "🔍 Find Course"),
           React.createElement("button", { style: { ...styles.btn, flex: 1, textAlign: "center" }, onClick: () => { setShowAddCourse(true); setShowCourseModal(false); } }, "+ Add Manually")
+        )
+      )
+    ),
+
+    // Albion Ridges nine-picker — builds an 18-hole course from any two of
+    // its three nines (see confirmAlbionCombo) rather than pre-listing all
+    // six possible combos as separate rows in the main course list.
+    showAlbionPicker && React.createElement("div", { style: styles.overlay, onClick: () => setShowAlbionPicker(false) },
+      React.createElement("div", { style: styles.modal, onClick: e => e.stopPropagation() },
+        React.createElement("div", { style: styles.modalHeader },
+          React.createElement("div", { style: styles.modalTitle }, "Albion Ridges — Pick 2 Nines"),
+          React.createElement("button", { style: styles.modalClose, onClick: () => setShowAlbionPicker(false) }, "×")
+        ),
+        React.createElement("div", { style: { padding: "1rem 1.25rem" } },
+          React.createElement("div", { style: styles.fieldGroup },
+            React.createElement("label", { style: styles.fieldLabel }, "Front 9"),
+            React.createElement("select", { style: styles.input, value: albionFront, onChange: e => setAlbionFront(e.target.value) },
+              Object.entries(ALBION_NINES).map(([k, n]) => React.createElement("option", { key: k, value: k }, n.label + " Nine"))
+            )
+          ),
+          React.createElement("div", { style: styles.fieldGroup },
+            React.createElement("label", { style: styles.fieldLabel }, "Back 9"),
+            React.createElement("select", { style: styles.input, value: albionBack, onChange: e => setAlbionBack(e.target.value) },
+              Object.entries(ALBION_NINES).map(([k, n]) => React.createElement("option", { key: k, value: k }, n.label + " Nine"))
+            )
+          ),
+          albionFront === albionBack && React.createElement("div", { style: { fontSize: 12, color: "#A32D2D", marginBottom: 8 } }, "Front and back must be different nines."),
+          React.createElement("button", {
+            style: { ...styles.btn, background: albionFront === albionBack ? "#ccc" : "#185FA5", color: "#fff", border: "none", width: "100%", textAlign: "center" },
+            disabled: albionFront === albionBack,
+            onClick: confirmAlbionCombo,
+          }, "Play This Combo")
         )
       )
     ),
