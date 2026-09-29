@@ -113,6 +113,8 @@ function buildScorecardText(r) {
     if (res?.winner === 1) tag = " → " + r.p1name + " +$" + res.amount;
     else if (res?.winner === 2) tag = " → " + r.p2name + " +$" + res.amount;
     else if (res?.winner === 0 && res.carryover > 0) tag = " → push";
+    if (res?.greenieWinner === 1) tag += " · 🟢 " + r.p1name + " +$" + res.greenieAmt;
+    else if (res?.greenieWinner === 2) tag += " · 🟢 " + r.p2name + " +$" + res.greenieAmt;
     lines.push("Hole " + (i + 1) + " (par " + r.pars[i] + "): " + s1 + " / " + s2 + tag);
   }
   lines.push("");
@@ -201,6 +203,16 @@ export default function GolfScorecard() {
   const [p2name, setP2name] = useState(() => loadJSON(CURRENT_KEY, {}).p2name || "Player 2");
   const [scores, setScores] = useState(() => loadJSON(CURRENT_KEY, {}).scores || { p1: Array(18).fill(""), p2: Array(18).fill("") });
   const [betPerHole, setBetPerHole] = useState(() => loadJSON(CURRENT_KEY, {}).betPerHole || 1);
+  // Par/birdie bonuses used to be a fixed 2x/4x multiple of betPerHole —
+  // now independently settable amounts (see showBetSettings) so raising
+  // the base bet doesn't silently drag the bonuses up with it. Greenie is
+  // a new side bet: whoever's tee shot finishes on the green on a par 3,
+  // tracked per player per hole in `greenies` below.
+  const [parBonus, setParBonus] = useState(() => loadJSON(CURRENT_KEY, {}).parBonus ?? 2);
+  const [birdieBonus, setBirdieBonus] = useState(() => loadJSON(CURRENT_KEY, {}).birdieBonus ?? 4);
+  const [greenieBonus, setGreenieBonus] = useState(() => loadJSON(CURRENT_KEY, {}).greenieBonus ?? 2);
+  const [greenies, setGreenies] = useState(() => loadJSON(CURRENT_KEY, {}).greenies || { p1: Array(18).fill(false), p2: Array(18).fill(false) });
+  const [showBetSettings, setShowBetSettings] = useState(false);
   const [editingPars, setEditingPars] = useState(false);
   const [courseParOverrides, setCourseParOverrides] = useState(() => loadJSON(CURRENT_KEY, {}).courseParOverrides || {});
   const [savedRounds, setSavedRounds] = useState(() => loadJSON(ROUNDS_KEY, []));
@@ -221,8 +233,8 @@ export default function GolfScorecard() {
   // exactly where it left off — this is separate from "Save Round" below,
   // which snapshots a finished round into history.
   React.useEffect(() => {
-    try { localStorage.setItem(CURRENT_KEY, JSON.stringify({ selectedCourse, p1name, p2name, scores, courseParOverrides, betPerHole })); } catch {}
-  }, [selectedCourse, p1name, p2name, scores, courseParOverrides, betPerHole]);
+    try { localStorage.setItem(CURRENT_KEY, JSON.stringify({ selectedCourse, p1name, p2name, scores, courseParOverrides, betPerHole, parBonus, birdieBonus, greenieBonus, greenies })); } catch {}
+  }, [selectedCourse, p1name, p2name, scores, courseParOverrides, betPerHole, parBonus, birdieBonus, greenieBonus, greenies]);
   React.useEffect(() => {
     try { localStorage.setItem(CUSTOM_COURSES_KEY, JSON.stringify(customCourses)); } catch {}
   }, [customCourses]);
@@ -255,9 +267,16 @@ export default function GolfScorecard() {
     setScores(newScores);
   };
 
+  const updateGreenie = (player, hole) => {
+    const next = { ...greenies, [player]: [...greenies[player]] };
+    next[player][hole] = !next[player][hole];
+    setGreenies(next);
+  };
+
   const selectCourse = (key) => {
     setSelectedCourse(key);
     setScores({ p1: Array(18).fill(""), p2: Array(18).fill("") });
+    setGreenies({ p1: Array(18).fill(false), p2: Array(18).fill(false) });
     setShowCourseModal(false);
   };
 
@@ -368,12 +387,6 @@ export default function GolfScorecard() {
     let p1wins = 0;
     let p2wins = 0;
     let results = [];
-    // Birdie-or-better and par bonuses were originally flat $4/$2 on top of
-    // a fixed $1 base bet — i.e. 4x/2x the base. Scaling them by betPerHole
-    // keeps that same ratio at any bet size instead of freezing them at $1
-    // rates once the base bet becomes configurable.
-    const birdieBonus = 4 * betPerHole;
-    const parBonus = 2 * betPerHole;
 
     for (let i = 0; i < holes; i++) {
       const s1 = getScore("p1", i);
@@ -381,8 +394,21 @@ export default function GolfScorecard() {
       const par = pars[i];
       const pot = betPerHole + carryover;
 
+      // Greenie — a par-3-only side bet for whoever's tee shot actually
+      // finished on the green, independent of the hole's final score
+      // below. Only pays if exactly one player got it; both (or neither)
+      // is a push, same as any other tie, and it's evaluated regardless of
+      // whether scores have been entered yet since it's marked right after
+      // the tee shot, before the hole is finished.
+      let greenieWinner = null, greenieAmt = 0;
+      if (par === 3) {
+        const g1 = !!greenies.p1[i], g2 = !!greenies.p2[i];
+        if (g1 && !g2) { greenieWinner = 1; greenieAmt = greenieBonus; p1money += greenieAmt; p2money -= greenieAmt; }
+        else if (g2 && !g1) { greenieWinner = 2; greenieAmt = greenieBonus; p2money += greenieAmt; p1money -= greenieAmt; }
+      }
+
       if (s1 === null || s2 === null) {
-        results.push({ winner: null, pot, carryover });
+        results.push({ winner: null, pot, carryover, par, greenieWinner, greenieAmt });
         continue;
       }
 
@@ -394,7 +420,7 @@ export default function GolfScorecard() {
         p1money += winAmount;
         p2money -= winAmount;
         p1wins++;
-        results.push({ winner: 1, amount: winAmount, pot, carryover, bonus, s1, s2, par });
+        results.push({ winner: 1, amount: winAmount, pot, carryover, bonus, s1, s2, par, greenieWinner, greenieAmt });
         carryover = 0;
       } else if (s2 < s1) {
         let bonus = 0;
@@ -404,18 +430,21 @@ export default function GolfScorecard() {
         p2money += winAmount;
         p1money -= winAmount;
         p2wins++;
-        results.push({ winner: 2, amount: winAmount, pot, carryover, bonus, s1, s2, par });
+        results.push({ winner: 2, amount: winAmount, pot, carryover, bonus, s1, s2, par, greenieWinner, greenieAmt });
         carryover = 0;
       } else {
         carryover += betPerHole;
-        results.push({ winner: 0, pot, carryover, s1, s2, par });
+        results.push({ winner: 0, pot, carryover, s1, s2, par, greenieWinner, greenieAmt });
       }
     }
 
     return { p1money, p2money, p1wins, p2wins, results, carryover };
   };
 
-  const resetScores = () => setScores({ p1: Array(18).fill(""), p2: Array(18).fill("") });
+  const resetScores = () => {
+    setScores({ p1: Array(18).fill(""), p2: Array(18).fill("") });
+    setGreenies({ p1: Array(18).fill(false), p2: Array(18).fill(false) });
+  };
 
   const { p1money, p2money, p1wins, p2wins, results, carryover } = calcBetting();
   const moneyColor = v => v > 0 ? "#27500A" : v < 0 ? "#A32D2D" : "#888";
@@ -430,9 +459,10 @@ export default function GolfScorecard() {
     id: null,
     date: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
     courseName: course.name,
-    holes, pars, betPerHole,
+    holes, pars, betPerHole, parBonus, birdieBonus, greenieBonus,
     p1name, p2name,
     scores: { p1: scores.p1.slice(0, holes), p2: scores.p2.slice(0, holes) },
+    greenies: { p1: greenies.p1.slice(0, holes), p2: greenies.p2.slice(0, holes) },
     results: results.slice(0, holes),
     p1money, p2money, p1wins, p2wins, carryover,
   });
@@ -465,6 +495,7 @@ export default function GolfScorecard() {
 
   const renderHoleRows = (holeIndices) => holeIndices.map(i => {
     const r = results[i] || { winner: null, pot: 1, carryover: 0 };
+    const isPar3 = pars[i] === 3;
     let resultEl = null;
     if (r.winner === 1) {
       resultEl = React.createElement("span", { style: { ...styles.badge, background: "#EAF3DE", color: "#27500A" } },
@@ -479,6 +510,12 @@ export default function GolfScorecard() {
         "Carry →$" + r.carryover
       );
     }
+    let greenieEl = null;
+    if (r.greenieWinner === 1) {
+      greenieEl = React.createElement("div", { style: { fontSize: 10, color: "#27500A", marginTop: 3 } }, "🟢 " + p1name + " +$" + r.greenieAmt);
+    } else if (r.greenieWinner === 2) {
+      greenieEl = React.createElement("div", { style: { fontSize: 10, color: "#27500A", marginTop: 3 } }, "🟢 " + p2name + " +$" + r.greenieAmt);
+    }
     return React.createElement("tr", { key: i, style: styles.tr },
       React.createElement("td", { style: styles.td }, React.createElement("span", { style: styles.holeNum }, i + 1)),
       React.createElement("td", { style: styles.td },
@@ -487,12 +524,22 @@ export default function GolfScorecard() {
           : React.createElement("span", { style: { color: "#888", fontSize: 13 } }, pars[i])
       ),
       React.createElement("td", { style: styles.td },
-        React.createElement("input", { style: styles.scoreInput, type: "number", min: 1, max: 15, value: scores.p1[i], onChange: e => updateScore("p1", i, e.target.value) })
+        React.createElement("input", { style: styles.scoreInput, type: "number", min: 1, max: 15, value: scores.p1[i], onChange: e => updateScore("p1", i, e.target.value) }),
+        isPar3 && React.createElement("button", {
+          onClick: () => updateGreenie("p1", i),
+          title: "Greenie — hit the green from the tee box",
+          style: { ...styles.greenieBtn, ...(greenies.p1[i] ? styles.greenieBtnActive : {}) },
+        }, "🟢")
       ),
       React.createElement("td", { style: styles.td },
-        React.createElement("input", { style: styles.scoreInput, type: "number", min: 1, max: 15, value: scores.p2[i], onChange: e => updateScore("p2", i, e.target.value) })
+        React.createElement("input", { style: styles.scoreInput, type: "number", min: 1, max: 15, value: scores.p2[i], onChange: e => updateScore("p2", i, e.target.value) }),
+        isPar3 && React.createElement("button", {
+          onClick: () => updateGreenie("p2", i),
+          title: "Greenie — hit the green from the tee box",
+          style: { ...styles.greenieBtn, ...(greenies.p2[i] ? styles.greenieBtnActive : {}) },
+        }, "🟢")
       ),
-      React.createElement("td", { style: { ...styles.td, minWidth: 130 } }, resultEl),
+      React.createElement("td", { style: { ...styles.td, minWidth: 130 } }, resultEl, greenieEl),
       React.createElement("td", { style: { ...styles.td, fontSize: 11, color: "#888" } }, "$" + r.pot)
     );
   });
@@ -561,6 +608,37 @@ export default function GolfScorecard() {
             disabled: albionFront === albionBack,
             onClick: confirmAlbionCombo,
           }, "Play This Combo")
+        )
+      )
+    ),
+
+    // Bet settings — $/hole plus the par/birdie/greenie bonus amounts.
+    // These used to be fixed multiples of betPerHole (2x/4x); now they're
+    // independently settable so raising the base bet doesn't drag them up.
+    showBetSettings && React.createElement("div", { style: styles.overlay, onClick: () => setShowBetSettings(false) },
+      React.createElement("div", { style: styles.modal, onClick: e => e.stopPropagation() },
+        React.createElement("div", { style: styles.modalHeader },
+          React.createElement("div", { style: styles.modalTitle }, "Bet Settings"),
+          React.createElement("button", { style: styles.modalClose, onClick: () => setShowBetSettings(false) }, "×")
+        ),
+        React.createElement("div", { style: { padding: "1rem 1.25rem" } },
+          React.createElement("div", { style: styles.fieldGroup },
+            React.createElement("label", { style: styles.fieldLabel }, "$ per hole"),
+            React.createElement("input", { style: styles.input, type: "number", min: 0, step: 1, value: betPerHole, onChange: e => setBetPerHole(Math.max(0, parseInt(e.target.value) || 0)) })
+          ),
+          React.createElement("div", { style: styles.fieldGroup },
+            React.createElement("label", { style: styles.fieldLabel }, "$ bonus for winning with par"),
+            React.createElement("input", { style: styles.input, type: "number", min: 0, step: 1, value: parBonus, onChange: e => setParBonus(Math.max(0, parseInt(e.target.value) || 0)) })
+          ),
+          React.createElement("div", { style: styles.fieldGroup },
+            React.createElement("label", { style: styles.fieldLabel }, "$ bonus for winning with birdie or better"),
+            React.createElement("input", { style: styles.input, type: "number", min: 0, step: 1, value: birdieBonus, onChange: e => setBirdieBonus(Math.max(0, parseInt(e.target.value) || 0)) })
+          ),
+          React.createElement("div", { style: styles.fieldGroup },
+            React.createElement("label", { style: styles.fieldLabel }, "$ for a greenie (tee shot on the green, par 3s only)"),
+            React.createElement("input", { style: styles.input, type: "number", min: 0, step: 1, value: greenieBonus, onChange: e => setGreenieBonus(Math.max(0, parseInt(e.target.value) || 0)) })
+          ),
+          React.createElement("button", { style: { ...styles.btn, background: "#185FA5", color: "#fff", width: "100%", textAlign: "center", marginTop: 4 }, onClick: () => setShowBetSettings(false) }, "Done")
         )
       )
     ),
@@ -642,13 +720,8 @@ export default function GolfScorecard() {
           React.createElement("button", { style: styles.courseBtn, onClick: () => setShowCourseModal(true) },
             course.name + " ▾"
           ),
-          React.createElement("div", { style: styles.betInputWrap },
-            React.createElement("span", { style: { color: "#888" } }, "$"),
-            React.createElement("input", {
-              style: styles.betInput, type: "number", min: 1, step: 1, value: betPerHole,
-              onChange: e => setBetPerHole(Math.max(1, parseInt(e.target.value) || 1)),
-            }),
-            React.createElement("span", { style: { color: "#888" } }, "/ hole")
+          React.createElement("button", { style: styles.courseBtn, onClick: () => setShowBetSettings(true) },
+            "⚙️ $" + betPerHole + "/hole"
           )
         )
       ),
@@ -773,8 +846,6 @@ const styles = {
   header: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1rem", flexWrap: "wrap", gap: 8 },
   title: { fontSize: 20, fontWeight: 500, color: "#1a1a1a", marginBottom: 4 },
   courseBtn: { fontSize: 13, padding: "5px 10px", borderRadius: 8, border: "0.5px solid #185FA5", background: "#f0f4ff", color: "#185FA5", cursor: "pointer", fontWeight: 500 },
-  betInputWrap: { display: "flex", alignItems: "center", gap: 4, fontSize: 13, padding: "5px 10px", borderRadius: 8, border: "0.5px solid #ccc", background: "#fff" },
-  betInput: { width: 32, border: "none", outline: "none", fontSize: 13, fontWeight: 500, color: "#1a1a1a", textAlign: "center", padding: 0 },
   btn: { fontSize: 12, padding: "6px 12px", borderRadius: 8, border: "0.5px solid #ccc", background: "#fff", cursor: "pointer", color: "#1a1a1a" },
   playerGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: "1rem" },
   playerCard: { background: "#f5f5f3", borderRadius: 12, padding: "12px 16px" },
@@ -788,6 +859,8 @@ const styles = {
   td: { padding: "5px 4px", textAlign: "center", fontSize: 13 },
   holeNum: { fontSize: 12, color: "#888", fontWeight: 500 },
   scoreInput: { width: 40, height: 32, textAlign: "center", fontSize: 14, fontWeight: 500, border: "0.5px solid #ccc", borderRadius: 6, background: "#fff", color: "#1a1a1a" },
+  greenieBtn: { display: "block", margin: "3px auto 0", width: 24, height: 24, fontSize: 12, lineHeight: "22px", padding: 0, borderRadius: "50%", border: "1px solid #ccc", background: "#fff", opacity: 0.4, cursor: "pointer" },
+  greenieBtnActive: { opacity: 1, border: "1px solid #27500A", background: "#EAF3DE" },
   badge: { fontSize: 11, fontWeight: 500, padding: "3px 8px", borderRadius: 20, whiteSpace: "nowrap" },
   summary: { background: "#f5f5f3", borderRadius: 12, padding: "1rem" },
   summaryRow: { display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0" },
