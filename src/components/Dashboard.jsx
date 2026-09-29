@@ -60,7 +60,7 @@ const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
 // (merged B20:C20, navy, two-line real link), checks-payable bar and
 // Total amount recolored navy to match the logo, thin outer border
 // added around the item table, footer line added under Total.
-const APP_VERSION = "1.3.39";
+const APP_VERSION = "1.3.40";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -2012,7 +2012,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         }
       } catch {}
     }
-    saveMileage([{ jobId: "__home__", jobTitle: "🚗 " + startLabel, from: "", miles: 0, time, checkIn: time }]);
+    saveMileage([{ jobId: "__home__", jobTitle: "🚗 " + startLabel, from: "", miles: 0, time, checkIn: time, location: livePos ? livePos.lat + "," + livePos.lng : null }]);
     await appendToLog([date, "🚗 Start Day (" + startLabel + ")", time, "0", "", "Departed"]);
     setPending("__DAY_STARTED__", { status: "started", extra: time });
     await flushStatusSaves();
@@ -2058,7 +2058,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     }
     saveMileage(prev => {
       if (prev.some(m => m.jobId === "__finish__")) return prev; // already has finish leg
-      return [...prev, { jobId: "__finish__", jobTitle: "🏁 " + finishLabel, from: prev.length > 0 ? prev[prev.length - 1].jobTitle : "Start", miles: finishMiles, time, checkIn: time }];
+      return [...prev, { jobId: "__finish__", jobTitle: "🏁 " + finishLabel, from: prev.length > 0 ? prev[prev.length - 1].jobTitle : "Start", miles: finishMiles, time, checkIn: time, location: currentPos.lat + "," + currentPos.lng }];
     });
     const todayDateStr = selectedDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
     const scheduledJobs = jobs.filter(j => getStatus(j) === "Scheduled");
@@ -3473,9 +3473,12 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               // Street View photo of the destination address, behind the row,
               // so each stop is visually recognizable at a glance — same
               // Street View source JobCard uses, matched here by jobId since
-              // mileage legs don't carry their own address.
+              // mileage legs don't carry their own address. Start/Finish legs
+              // (__home__/__finish__) aren't real jobs, so they carry their
+              // own `location` (lat,lng captured when the day was
+              // started/finished) instead of being looked up by jobId.
               const legJob = jobs.find(j => normalizeId(j.id) === m.jobId);
-              const bgUrl = getMileageRowBgUrl(legJob?.location);
+              const bgUrl = getMileageRowBgUrl(legJob?.location || m.location);
               const rowStyle = bgUrl
                 ? { ...styles.mileageRow, padding: "10px 12px", borderRadius: 8, marginBottom: 4, border: "none", color: "#fff", background: "linear-gradient(rgba(0,0,0,0.55), rgba(0,0,0,0.55)), url('" + bgUrl + "') center/cover" }
                 : styles.mileageRow;
