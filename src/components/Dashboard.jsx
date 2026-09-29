@@ -60,7 +60,7 @@ const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
 // (merged B20:C20, navy, two-line real link), checks-payable bar and
 // Total amount recolored navy to match the logo, thin outer border
 // added around the item table, footer line added under Total.
-const APP_VERSION = "1.3.38";
+const APP_VERSION = "1.3.39";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -216,6 +216,16 @@ async function geocodeAddress(address, dbgFn) {
 function normalizeId(id) {
   if (!id) return id;
   return id.replace(/_\d{8}T\d{6}Z$/, "").replace(/_[a-z0-9]{26}$/, "");
+}
+
+// Street View Static image for a job's address, used as a background photo
+// behind its mileage-log row — same API/key JobCard uses for its own
+// Street View preview, just a wider/shorter crop to fit a row.
+function getMileageRowBgUrl(location) {
+  if (!location || !MAPS_API_KEY) return null;
+  return "https://maps.googleapis.com/maps/api/streetview?" + new URLSearchParams({
+    location, size: "500x100", scale: "2", fov: "90", pitch: "0", key: MAPS_API_KEY,
+  });
 }
 
 // Personal/non-job calendar entries live on the SAME calendar as real jobs
@@ -3460,15 +3470,24 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
                 const diff = Math.round((parseTime(m.checkOut) - parseTime(m.checkIn)) / 60000);
                 if (diff > 0) duration = diff >= 60 ? Math.floor(diff/60) + "h " + (diff%60) + "m" : diff + "m";
               }
-              return React.createElement("div", { key: i, style: styles.mileageRow },
+              // Street View photo of the destination address, behind the row,
+              // so each stop is visually recognizable at a glance — same
+              // Street View source JobCard uses, matched here by jobId since
+              // mileage legs don't carry their own address.
+              const legJob = jobs.find(j => normalizeId(j.id) === m.jobId);
+              const bgUrl = getMileageRowBgUrl(legJob?.location);
+              const rowStyle = bgUrl
+                ? { ...styles.mileageRow, padding: "10px 12px", borderRadius: 8, marginBottom: 4, border: "none", color: "#fff", background: "linear-gradient(rgba(0,0,0,0.55), rgba(0,0,0,0.55)), url('" + bgUrl + "') center/cover" }
+                : styles.mileageRow;
+              return React.createElement("div", { key: i, style: rowStyle },
                 React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 1, flex: 1 } },
-                  React.createElement("span", { style: { fontSize: 11, color: "#aaa" } }, (m.from || "Start").replace(/^(⚠️ MISSED - )+/, "") + " →"),
-                  React.createElement("span", null, (m.jobTitle || "").replace(/^(⚠️ MISSED - )+/, "")),
-                  m.checkIn && React.createElement("span", { style: { fontSize: 11, color: "#888" } }, "⏱ " + m.checkIn + (m.checkOut ? " – " + m.checkOut : "") + (duration ? " (" + duration + ")" : ""))
+                  React.createElement("span", { style: { fontSize: 11, color: bgUrl ? "rgba(255,255,255,0.75)" : "#aaa" } }, (m.from || "Start").replace(/^(⚠️ MISSED - )+/, "") + " →"),
+                  React.createElement("span", { style: bgUrl ? { fontWeight: 600, textShadow: "0 1px 3px rgba(0,0,0,0.6)" } : null }, (m.jobTitle || "").replace(/^(⚠️ MISSED - )+/, "")),
+                  m.checkIn && React.createElement("span", { style: { fontSize: 11, color: bgUrl ? "rgba(255,255,255,0.85)" : "#888" } }, "⏱ " + m.checkIn + (m.checkOut ? " – " + m.checkOut : "") + (duration ? " (" + duration + ")" : ""))
                 ),
                 React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
-                  React.createElement("span", { style: styles.mileageVal }, m.miles > 0 ? m.miles + " mi" : "—"),
-                  m.jobId !== "__home__" && m.jobId !== "__finish__" && React.createElement("button", { onClick: () => saveMileage(prev => prev.filter((_, idx) => idx !== i)), style: { fontSize: 14, color: "#c0392b", background: "none", border: "none", cursor: "pointer", padding: "2px 6px", fontWeight: 700, lineHeight: 1 }, title: "Remove this leg" }, "✕")
+                  React.createElement("span", { style: bgUrl ? { ...styles.mileageVal, color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,0.6)" } : styles.mileageVal }, m.miles > 0 ? m.miles + " mi" : "—"),
+                  m.jobId !== "__home__" && m.jobId !== "__finish__" && React.createElement("button", { onClick: () => saveMileage(prev => prev.filter((_, idx) => idx !== i)), style: { fontSize: 14, color: bgUrl ? "#ff8a80" : "#c0392b", background: "none", border: "none", cursor: "pointer", padding: "2px 6px", fontWeight: 700, lineHeight: 1 }, title: "Remove this leg" }, "✕")
                 )
               );
             }),
