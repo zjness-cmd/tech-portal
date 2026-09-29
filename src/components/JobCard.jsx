@@ -254,7 +254,7 @@ export default function JobCard({
             tapCount != null && React.createElement("div", {
               style: {
                 position: "absolute", top: "4%", left: "5%",
-                width: "min(28vw, 150px)", height: "min(28vw, 150px)",
+                width: "min(14vw, 75px)", height: "min(14vw, 75px)",
                 borderRadius: "50%", background: "rgba(0,0,0,0.6)",
                 display: "flex", alignItems: "center", justifyContent: "center",
                 overflow: "hidden", pointerEvents: "none",
@@ -271,7 +271,7 @@ export default function JobCard({
               }),
               React.createElement("span", {
                 style: {
-                  fontSize: "min(14vw, 72px)", fontWeight: 800, color: "#ddd",
+                  fontSize: "min(7vw, 36px)", fontWeight: 800, color: "#ddd",
                   lineHeight: 1, userSelect: "none", position: "relative",
                 },
               }, tapCount)
