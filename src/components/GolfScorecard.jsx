@@ -5,7 +5,7 @@ import { findCourseBackground } from "../clientAssets";
 // Dashboard.jsx's own APP_VERSION — this page is a standalone feature
 // (see CLAUDE.md) with its own change history. Shown as a small badge next
 // to the page title.
-const GOLF_VERSION = "1.3.1";
+const GOLF_VERSION = "1.3.2";
 
 // Course database — edit pars here to match actual scorecards
 const COURSES = {
@@ -585,7 +585,7 @@ export default function GolfScorecard() {
       React.createElement("td", { style: styles.td },
         editingPars
           ? React.createElement("input", { style: { ...styles.scoreInput, width: 36 }, type: "number", min: 3, max: 6, value: pars[i], onChange: e => updatePar(i, e.target.value) })
-          : React.createElement("span", { style: { color: "#888", fontSize: 13 } }, pars[i])
+          : React.createElement("span", { style: { ...styles.photoText, fontSize: 13, fontWeight: 600 } }, pars[i])
       ),
       React.createElement("td", { style: styles.td },
         React.createElement("div", { style: styles.scoreCell },
@@ -973,12 +973,18 @@ const styles = {
   nameInput: { background: "none", border: "none", borderBottom: "0.5px solid #ccc", fontSize: 14, fontWeight: 500, color: "#1a1a1a", width: "100%", outline: "none", marginBottom: 6, padding: "2px 0" },
   carryBanner: { background: "#FAEEDA", color: "#633806", borderRadius: 8, padding: "8px 12px", fontSize: 13, marginBottom: "1rem" },
   tableWrap: { marginBottom: "1.5rem" },
-  sectionLabel: { fontSize: 11, fontWeight: 600, color: "#888", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 },
+  // Gray text with only the light glow (inherited from contentCard) was
+  // unreadable directly on the photo — switched to white with its own
+  // dark shadow instead. A light glow can't help white text (there's
+  // nothing to contrast against on light parts of the photo), so this
+  // overrides the inherited textShadow rather than stacking onto it.
+  photoText: { color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,0.75), 0 1px 2px rgba(0,0,0,0.6)" },
+  sectionLabel: { fontSize: 11, fontWeight: 700, color: "#fff", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6, textShadow: "0 1px 3px rgba(0,0,0,0.75), 0 1px 2px rgba(0,0,0,0.6)" },
   table: { width: "100%", borderCollapse: "collapse" },
   th: { background: "#185FA5", color: "white", padding: "7px 6px", textAlign: "center", fontSize: 12, fontWeight: 500 },
   tr: { borderBottom: "0.5px solid #e0e0e0" },
   td: { padding: "5px 4px", textAlign: "center", fontSize: 13 },
-  holeNum: { fontSize: 12, color: "#888", fontWeight: 500 },
+  holeNum: { fontSize: 12, fontWeight: 600, color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,0.75), 0 1px 2px rgba(0,0,0,0.6)" },
   scoreInput: { width: 40, height: 32, textAlign: "center", fontSize: 14, fontWeight: 500, border: "0.5px solid #ccc", borderRadius: 6, background: "#fff", color: "#1a1a1a" },
   scoreCell: { display: "flex", alignItems: "center", justifyContent: "center", gap: 4 },
   greenieBtn: { flexShrink: 0, width: 22, height: 22, fontSize: 11, lineHeight: "20px", padding: 0, borderRadius: "50%", border: "1px solid #ccc", background: "#fff", opacity: 0.4, cursor: "pointer" },
