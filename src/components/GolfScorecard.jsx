@@ -290,6 +290,7 @@ export default function GolfScorecard() {
         location: "Annandale, MN",
         holes: 18,
         pars: [...front.pars, ...back.pars],
+        nineNames: [front.label, back.label],
       },
     });
     setShowAlbionPicker(false);
@@ -452,6 +453,11 @@ export default function GolfScorecard() {
 
   const front9 = Array.from({ length: Math.min(9, holes) }, (_, i) => i);
   const back9 = holes > 9 ? Array.from({ length: holes - 9 }, (_, i) => i + 9) : [];
+  // A combo course built by the Albion picker (or any future course with
+  // named nines) shows the actual nine name here instead of the generic
+  // "Front 9"/"Back 9" label.
+  const front9Label = course.nineNames?.[0] ? course.nineNames[0] + " Nine" : "Front 9";
+  const back9Label = course.nineNames?.[1] ? course.nineNames[1] + " Nine" : "Back 9";
 
   const holeTotal = (player, from, to) =>
     scores[player].slice(from, to).reduce((a, v) => a + (v === "" ? 0 : parseInt(v)), 0);
@@ -697,7 +703,7 @@ export default function GolfScorecard() {
 
     // Front 9
     React.createElement("div", { style: styles.tableWrap },
-      React.createElement("div", { style: styles.sectionLabel }, "Front 9"),
+      React.createElement("div", { style: styles.sectionLabel }, front9Label),
       React.createElement("table", { style: styles.table },
         React.createElement("thead", null,
           React.createElement("tr", null,
@@ -720,7 +726,7 @@ export default function GolfScorecard() {
 
     // Back 9
     back9.length > 0 && React.createElement("div", { style: styles.tableWrap },
-      React.createElement("div", { style: styles.sectionLabel }, "Back 9"),
+      React.createElement("div", { style: styles.sectionLabel }, back9Label),
       React.createElement("table", { style: styles.table },
         React.createElement("thead", null,
           React.createElement("tr", null,
