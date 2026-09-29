@@ -5,7 +5,7 @@ import { findCourseBackground } from "../clientAssets";
 // Dashboard.jsx's own APP_VERSION — this page is a standalone feature
 // (see CLAUDE.md) with its own change history. Shown as a small badge next
 // to the page title.
-const GOLF_VERSION = "1.2.2";
+const GOLF_VERSION = "1.3.0";
 
 // Course database — edit pars here to match actual scorecards
 const COURSES = {
@@ -239,6 +239,7 @@ function parseHolesResponse(payload, fallbackName) {
 export default function GolfScorecard() {
   const [selectedCourse, setSelectedCourse] = useState(() => loadJSON(CURRENT_KEY, {}).selectedCourse || "custom");
   const [showCourseModal, setShowCourseModal] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [showAddCourse, setShowAddCourse] = useState(false);
   const [customCourses, setCustomCourses] = useState(() => loadJSON(CUSTOM_COURSES_KEY, {}));
   const [newCourseName, setNewCourseName] = useState("");
@@ -787,34 +788,42 @@ export default function GolfScorecard() {
       )
     ),
 
-    // Header
+    // Header — hamburger nav holds every action button (bet settings,
+    // saved rounds, text, save, edit pars, reset, restart); the course
+    // name itself is the page's H1, in a display font, and is still the
+    // "switch course" control — tap it to open the picker, same as the
+    // old small pill button did.
     React.createElement("div", { style: styles.header },
-      React.createElement("div", null,
-        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 4 } },
-          React.createElement("div", { style: { ...styles.title, marginBottom: 0 } }, "⛳ Golf Scorecard"),
-          React.createElement("span", { style: { fontSize: 10, color: "#aaa", background: "#f5f5f3", padding: "2px 6px", borderRadius: 6, fontWeight: 500 } }, "v" + GOLF_VERSION)
+      React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+        React.createElement("button", { style: styles.hamburgerBtn, onClick: () => setMenuOpen(true) },
+          React.createElement("span", { style: styles.hamburgerLine }),
+          React.createElement("span", { style: styles.hamburgerLine }),
+          React.createElement("span", { style: styles.hamburgerLine })
         ),
-        React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } },
-          React.createElement("button", { style: styles.courseBtn, onClick: () => setShowCourseModal(true) },
-            course.name + " ▾"
-          ),
-          React.createElement("button", { style: styles.courseBtn, onClick: () => setShowBetSettings(true) },
-            "⚙️ $" + betPerHole + "/hole"
-          )
-        )
+        React.createElement("span", { style: { fontSize: 10, color: "#aaa", background: "rgba(255,255,255,0.75)", padding: "2px 6px", borderRadius: 6, fontWeight: 500 } }, "v" + GOLF_VERSION)
       ),
-      React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
-        React.createElement("button", { style: { ...styles.btn, color: "#185FA5" }, onClick: () => setShowSavedRounds(true) }, "📋 Saved (" + savedRounds.length + ")"),
-        React.createElement("button", { style: { ...styles.btn, color: "#185FA5" }, onClick: () => shareScorecard(currentSnapshot()) }, "📱 Text"),
-        React.createElement("button", { style: { ...styles.btn, color: "#27500A" }, onClick: saveRound }, "💾 Save Round"),
-        React.createElement("button", { style: styles.btn, onClick: () => setEditingPars(!editingPars) }, editingPars ? "Done" : "Edit Pars"),
-        React.createElement("button", { style: { ...styles.btn, color: "#A32D2D" }, onClick: resetScores }, "Reset"),
+      React.createElement("h1", { style: styles.courseHeading, onClick: () => setShowCourseModal(true) }, course.name + " ▾")
+    ),
+
+    // Hamburger nav drawer
+    menuOpen && React.createElement("div", { style: styles.menuOverlay, onClick: () => setMenuOpen(false) },
+      React.createElement("div", { style: styles.menuDrawer, onClick: e => e.stopPropagation() },
+        React.createElement("div", { style: styles.menuHeader },
+          React.createElement("div", { style: styles.menuTitle }, "Menu"),
+          React.createElement("button", { style: styles.menuClose, onClick: () => setMenuOpen(false) }, "×")
+        ),
+        React.createElement("button", { style: styles.menuItem, onClick: () => { setMenuOpen(false); setShowBetSettings(true); } }, "⚙️ Bet Settings — $" + betPerHole + "/hole"),
+        React.createElement("button", { style: styles.menuItem, onClick: () => { setMenuOpen(false); setShowSavedRounds(true); } }, "📋 Saved Rounds (" + savedRounds.length + ")"),
+        React.createElement("button", { style: styles.menuItem, onClick: () => { setMenuOpen(false); shareScorecard(currentSnapshot()); } }, "📱 Text Scorecard"),
+        React.createElement("button", { style: styles.menuItem, onClick: () => { setMenuOpen(false); saveRound(); } }, "💾 Save Round"),
+        React.createElement("button", { style: styles.menuItem, onClick: () => { setMenuOpen(false); setEditingPars(!editingPars); } }, editingPars ? "✓ Done Editing Pars" : "✏️ Edit Pars"),
+        React.createElement("button", { style: { ...styles.menuItem, color: "#A32D2D" }, onClick: () => { setMenuOpen(false); resetScores(); } }, "↺ Reset Scores"),
         // Full page reload — separate from Reset (which only clears
         // scores/greenies). Everything this page needs survives a reload
         // (localStorage), so this is just a plain, unconditional refresh,
         // useful for recovering from a stuck UI state or picking up a
         // just-deployed update.
-        React.createElement("button", { style: styles.btn, title: "Restart the app", onClick: () => window.location.reload() }, "🔄 Restart")
+        React.createElement("button", { style: styles.menuItem, onClick: () => window.location.reload() }, "🔄 Restart App")
       )
     ),
 
@@ -939,9 +948,20 @@ const styles = {
   // Buttons/inputs/tables already carry their own solid backgrounds, so
   // they're unaffected and stay exactly as legible as before.
   contentCard: { maxWidth: 680, margin: "0 auto", padding: "1rem", paddingBottom: "3rem", textShadow: "0 0 4px rgba(255,255,255,0.9), 0 0 8px rgba(255,255,255,0.85), 0 1px 2px rgba(255,255,255,0.95)" },
-  header: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1rem", flexWrap: "wrap", gap: 8 },
-  title: { fontSize: 20, fontWeight: 500, color: "#1a1a1a", marginBottom: 4 },
-  courseBtn: { fontSize: 13, padding: "5px 10px", borderRadius: 8, border: "0.5px solid #185FA5", background: "#f0f4ff", color: "#185FA5", cursor: "pointer", fontWeight: 500 },
+  header: { marginBottom: "1rem" },
+  // Course name as the page's H1 — Playfair Display (loaded in index.html)
+  // instead of the body's system-ui, so it reads like actual course
+  // signage rather than another line of UI text. Still the tap target for
+  // switching courses, same as the small pill button it replaced.
+  courseHeading: { fontFamily: "'Playfair Display', Georgia, serif", fontSize: "clamp(28px, 8vw, 40px)", fontWeight: 900, color: "#1a1a1a", margin: "6px 0 0", cursor: "pointer", lineHeight: 1.15 },
+  hamburgerBtn: { background: "none", border: "none", cursor: "pointer", padding: "4px 6px", display: "flex", flexDirection: "column", gap: 5, justifyContent: "center" },
+  hamburgerLine: { display: "block", width: 22, height: 2, background: "#333", borderRadius: 2 },
+  menuOverlay: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.4)", zIndex: 2000 },
+  menuDrawer: { position: "absolute", top: 0, left: 0, bottom: 0, width: 270, maxWidth: "80vw", background: "#fff", boxShadow: "4px 0 24px rgba(0,0,0,0.15)", display: "flex", flexDirection: "column", overflowY: "auto" },
+  menuHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "1.25rem 1.25rem 1rem", borderBottom: "0.5px solid #e0e0e0" },
+  menuTitle: { fontSize: 16, fontWeight: 700, color: "#1a1a1a" },
+  menuClose: { fontSize: 24, background: "none", border: "none", cursor: "pointer", color: "#888" },
+  menuItem: { display: "block", width: "100%", textAlign: "left", padding: "0.85rem 1.25rem", fontSize: 14, color: "#1a1a1a", background: "none", border: "none", borderBottom: "0.5px solid #f0f0f0", cursor: "pointer", fontFamily: "system-ui, sans-serif", fontWeight: 500 },
   btn: { fontSize: 12, padding: "6px 12px", borderRadius: 8, border: "0.5px solid #ccc", background: "#fff", cursor: "pointer", color: "#1a1a1a" },
   playerGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: "1rem" },
   playerCard: { background: "#f5f5f3", borderRadius: 12, padding: "12px 16px" },
