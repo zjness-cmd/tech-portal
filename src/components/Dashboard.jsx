@@ -5,7 +5,9 @@ import JobCard from "./JobCard";
 import RescheduleModal from "./RescheduleModal";
 import DriveMode from "./DriveMode";
 import EtsyStats from "./EtsyStats";
+import QuoteGenerator from "./QuoteGenerator";
 import CalendarMonthView from "./CalendarMonthView";
+import { loadMapsApi, calcMiles, getDrivingMiles } from "../mapsUtils";
 
 const HOME = { lat: 45.292159, lng: -93.683355 };
 const LOG_SHEET_NAME = "TechPortal Job Log 2026";
@@ -60,7 +62,7 @@ const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
 // (merged B20:C20, navy, two-line real link), checks-payable bar and
 // Total amount recolored navy to match the logo, thin outer border
 // added around the item table, footer line added under Total.
-const APP_VERSION = "1.3.64";
+const APP_VERSION = "1.3.65";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -111,49 +113,6 @@ function shareInvoiceText(title, text) {
 }
 
 const MAPS_API_KEY = import.meta.env.VITE_MAPS_API_KEY;
-
-let mapsApiLoaded = false;
-function loadMapsApi() {
-  if (mapsApiLoaded || window.google?.maps) { mapsApiLoaded = true; return Promise.resolve(); }
-  return new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = "https://maps.googleapis.com/maps/api/js?key=" + MAPS_API_KEY + "&libraries=geometry";
-    script.async = true;
-    script.onload = () => { mapsApiLoaded = true; resolve(); };
-    script.onerror = reject;
-    document.head.appendChild(script);
-  });
-}
-
-function calcMiles(lat1, lng1, lat2, lng2) {
-  const R = 3958.8;
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLng = (lng2 - lng1) * Math.PI / 180;
-  const a = Math.sin(dLat/2)*Math.sin(dLat/2) + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)*Math.sin(dLng/2);
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-}
-
-async function getDrivingMiles(fromLat, fromLng, toLat, toLng) {
-  const straightLine = Math.round(calcMiles(fromLat, fromLng, toLat, toLng) * 10) / 10;
-  try {
-    await loadMapsApi();
-    if (!window.google?.maps?.DistanceMatrixService) return straightLine;
-    return await new Promise((resolve) => {
-      const service = new window.google.maps.DistanceMatrixService();
-      service.getDistanceMatrix({
-        origins: [new window.google.maps.LatLng(fromLat, fromLng)],
-        destinations: [new window.google.maps.LatLng(toLat, toLng)],
-        travelMode: window.google.maps.TravelMode.DRIVING,
-        unitSystem: window.google.maps.UnitSystem.IMPERIAL,
-      }, (res, status) => {
-        if (status === "OK" && res.rows[0].elements[0].status === "OK") {
-          const meters = res.rows[0].elements[0].distance.value;
-          resolve(Math.round((meters / 1609.344) * 10) / 10);
-        } else { resolve(straightLine); }
-      });
-    });
-  } catch (e) { return straightLine; }
-}
 
 const GEOCODE_CACHE_KEY = "techportal_geocodeCache";
 // Client addresses churn slowly but the tech's book of business does turn
@@ -391,6 +350,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
   const [showDebug, setShowDebug] = useState(false);
   const [driveMode, setDriveMode] = useState(false);
   const [showEtsy, setShowEtsy] = useState(false);
+  const [showQuoteGenerator, setShowQuoteGenerator] = useState(false);
   const [showMonthView, setShowMonthView] = useState(false);
   const [showUnpaidPage, setShowUnpaidPage] = useState(false);
   // Two-step "From job" picker: null when closed, {step:"pick"} showing a
@@ -3081,6 +3041,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     React.createElement("div", { style: styles.page },
       invoiceJob && React.createElement(InvoiceModal, { job: invoiceJob, accessToken, onClose: handleInvoiceClose, onInvoiceCreated: handleInvoiceCreated, onPaymentStatusSaved: handlePaymentStatusSaved }),
       showEtsy && React.createElement(EtsyStats, { onClose: () => setShowEtsy(false) }),
+      showQuoteGenerator && React.createElement(QuoteGenerator, { onClose: () => setShowQuoteGenerator(false) }),
       showMonthView && React.createElement(CalendarMonthView, {
         accessToken,
         initialDate: selectedDate,
@@ -3157,6 +3118,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
             React.createElement("button", { style: { ...styles.menuItem, background: "none", border: "none", width: "100%", textAlign: "left", cursor: "pointer", fontFamily: "system-ui, sans-serif" }, onClick: () => { setMenuOpen(false); setShowUnpaidPage(true); } }, "💳 Unpaid Accounts"),
             React.createElement("button", { style: { ...styles.menuItem, background: "none", border: "none", width: "100%", textAlign: "left", cursor: "pointer", fontFamily: "system-ui, sans-serif" }, onClick: () => { setMenuOpen(false); setShowDebug(true); } }, "🔧 Debug Log (" + debugLog.length + ")")
           ),
+          React.createElement("div", { style: styles.menuSection }, React.createElement("div", { style: styles.menuSectionLabel }, "🧮 Sales"), React.createElement("button", { style: { ...styles.menuItem, background: "none", border: "none", width: "100%", textAlign: "left", cursor: "pointer", fontFamily: "system-ui, sans-serif" }, onClick: () => { setMenuOpen(false); setShowQuoteGenerator(true); } }, "🧮 Quote Generator")),
           React.createElement("div", { style: styles.menuSection }, React.createElement("div", { style: styles.menuSectionLabel }, "⛳ Golf"), React.createElement("a", { href: "/golf", style: styles.menuItem, onClick: () => setMenuOpen(false) }, "⛳ Golf Scorecard")),
           React.createElement("div", { style: styles.menuSection }, React.createElement("div", { style: styles.menuSectionLabel }, "🛍️ Etsy"), React.createElement("button", { style: { ...styles.menuItem, background: "none", border: "none", width: "100%", textAlign: "left", cursor: "pointer", fontFamily: "system-ui, sans-serif" }, onClick: () => { setMenuOpen(false); setShowEtsy(true); } }, "🛍️ Etsy Shop Stats")),
           React.createElement("div", { style: styles.menuSection }, React.createElement("div", { style: styles.menuSectionLabel }, "📅 Calendar"), React.createElement("a", { href: "https://calendar.google.com/calendar/r", target: "_blank", rel: "noreferrer", style: styles.menuItem, onClick: () => setMenuOpen(false) }, "📆 Google Calendar")),
