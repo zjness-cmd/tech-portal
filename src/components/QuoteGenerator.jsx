@@ -8,8 +8,10 @@ const HOME_ZIP = "55362";
 const HOME_COORDS_KEY = "techportal_quoteHomeCoords";
 
 // Pricing rules (confirmed with the user, not guessed):
-// - Travel: $5 per 10 miles of driving distance from HOME_ZIP, rounded UP
-//   to the next full 10-mile increment (e.g. 24 mi -> 3 increments -> $15).
+// - Travel: $10 per 10 miles of ROUND-TRIP driving distance from HOME_ZIP
+//   (there and back — getDrivingMiles only gives one-way, so it's doubled
+//   here), rounded UP to the next full 10-mile increment (e.g. 24 mi
+//   one-way -> 48 mi round trip -> 5 increments -> $50).
 // - Taps: flat-tier, not graduated — whichever band the total tap count
 //   falls into sets the rate for ALL of their taps, not just the taps
 //   past the previous threshold.
@@ -22,8 +24,8 @@ function tapRate(taps) {
   return 10;
 }
 
-function travelFee(miles) {
-  return Math.ceil(miles / 10) * 5;
+function travelFee(oneWayMiles) {
+  return Math.ceil((oneWayMiles * 2) / 10) * 10;
 }
 
 const QUOTES_KEY = "techportal_savedQuotes";
@@ -87,11 +89,12 @@ export default function QuoteGenerator({ onClose }) {
     try {
       const [home, dest] = await Promise.all([getHomeCoords(), geocode(addressInput.trim())]);
       const miles = await getDrivingMiles(home.lat, home.lng, dest.lat, dest.lng);
+      const roundTripMiles = Math.round(miles * 2 * 10) / 10;
       const rate = tapRate(tapCount);
       const tapSubtotal = Math.round(tapCount * rate * 100) / 100;
       const travel = travelFee(miles);
       const total = Math.round((tapSubtotal + travel) * 100) / 100;
-      setResult({ miles, matchedAddress: dest.formatted, taps: tapCount, rate, tapSubtotal, travel, total });
+      setResult({ miles, roundTripMiles, matchedAddress: dest.formatted, taps: tapCount, rate, tapSubtotal, travel, total });
     } catch (e) {
       setError(e.message || "Could not calculate quote");
     }
@@ -103,7 +106,7 @@ export default function QuoteGenerator({ onClose }) {
     const lines = [];
     lines.push("⛳ Beer Line Cleaning Quote" + (customerName.trim() ? " — " + customerName.trim() : ""));
     lines.push(result.taps + " taps @ " + fmt(result.rate) + "/tap = " + fmt(result.tapSubtotal));
-    lines.push("Travel (" + result.miles + " mi) = " + fmt(result.travel));
+    lines.push("Travel (" + result.roundTripMiles + " mi round trip) = " + fmt(result.travel));
     lines.push("Total: " + fmt(result.total));
     return lines.join("\n");
   };
@@ -171,7 +174,7 @@ export default function QuoteGenerator({ onClose }) {
             React.createElement("span", null, fmt(result.tapSubtotal))
           ),
           React.createElement("div", { style: styles.resultRow },
-            React.createElement("span", null, "Travel — " + result.miles + " mi (" + HOME_ZIP + ")"),
+            React.createElement("span", null, "Travel — " + result.roundTripMiles + " mi round trip (" + HOME_ZIP + ")"),
             React.createElement("span", null, fmt(result.travel))
           ),
           React.createElement("div", { style: { ...styles.resultRow, ...styles.resultTotal } },
@@ -192,19 +195,25 @@ export default function QuoteGenerator({ onClose }) {
           showSaved && (
             savedQuotes.length === 0
               ? React.createElement("div", { style: styles.empty }, "No saved quotes yet.")
-              : savedQuotes.map(q => React.createElement("div", { key: q.id, style: styles.savedRow },
+              : savedQuotes.map(q => {
+                  // Older saved quotes predate roundTripMiles (they stored
+                  // one-way miles) — fall back to doubling so old entries
+                  // still display sensibly instead of showing "undefined".
+                  const rtMiles = q.roundTripMiles != null ? q.roundTripMiles : Math.round(q.miles * 2 * 10) / 10;
+                  return React.createElement("div", { key: q.id, style: styles.savedRow },
                   React.createElement("div", { style: { flex: 1, minWidth: 0 } },
                     React.createElement("div", { style: styles.savedName }, q.customerName),
-                    React.createElement("div", { style: styles.savedSub }, q.date + " · " + q.taps + " taps · " + q.miles + " mi · " + fmt(q.total))
+                    React.createElement("div", { style: styles.savedSub }, q.date + " · " + q.taps + " taps · " + rtMiles + " mi RT · " + fmt(q.total))
                   ),
                   React.createElement("button", { style: styles.iconBtn, title: "Text this quote", onClick: () => shareQuote(
                     "⛳ Beer Line Cleaning Quote — " + q.customerName + "\n" +
                     q.taps + " taps @ " + fmt(q.rate) + "/tap = " + fmt(q.tapSubtotal) + "\n" +
-                    "Travel (" + q.miles + " mi) = " + fmt(q.travel) + "\n" +
+                    "Travel (" + rtMiles + " mi round trip) = " + fmt(q.travel) + "\n" +
                     "Total: " + fmt(q.total)
                   ) }, "📱"),
                   React.createElement("button", { style: { ...styles.iconBtn, color: "#A32D2D" }, title: "Delete", onClick: () => deleteQuote(q.id) }, "🗑")
-                ))
+                  );
+                })
           )
         )
       )
