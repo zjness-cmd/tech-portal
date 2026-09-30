@@ -5,7 +5,7 @@ import { findCourseBackground } from "../clientAssets";
 // Dashboard.jsx's own APP_VERSION — this page is a standalone feature
 // (see CLAUDE.md) with its own change history. Shown as a small badge next
 // to the page title.
-const GOLF_VERSION = "1.5.0";
+const GOLF_VERSION = "2.0.0";
 
 // Course database — edit pars here to match actual scorecards
 const COURSES = {
@@ -93,6 +93,49 @@ const ROUNDS_KEY = "techportal_golfRounds";
 const CUSTOM_COURSES_KEY = "techportal_golfCustomCourses";
 const BG_CACHE_KEY = "techportal_golfBgCache";
 const BG_OVERRIDE_KEY = "techportal_golfBgOverride";
+const ROOM_KEY = "techportal_golfRoom";
+
+// Live sync between two phones needs *some* shared storage, and this app
+// has no backend of its own for the golf page (it's pure client-side —
+// see CLAUDE.md). jsonblob.com is a free, keyless JSON store built for
+// exactly this — no signup, no API key, CORS-enabled for direct browser
+// use. The tradeoff: it's a small community-run service with no SLA, and
+// anyone who has the room id can read/write it (same trust model as
+// "anyone with the link" on a Google Doc — fine for a casual round
+// between friends, not something to rely on for anything sensitive).
+// Couldn't verify this live from this sandbox (outbound network here is
+// allowlisted and blocks it) — it's shipped best-effort; if it doesn't
+// behave as documented, sharing will visibly fail with an error rather
+// than silently doing nothing.
+const JSONBLOB_BASE = "https://jsonblob.com/api/jsonBlob";
+
+async function createSyncRoom(payload) {
+  const res = await fetch(JSONBLOB_BASE, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error("Could not create share room (" + res.status + ")");
+  const location = res.headers.get("Location") || res.headers.get("location");
+  const id = location ? location.split("/").filter(Boolean).pop() : null;
+  if (!id) throw new Error("Room created but couldn't read its id back");
+  return id;
+}
+
+async function fetchSyncRoom(roomId) {
+  const res = await fetch(JSONBLOB_BASE + "/" + roomId);
+  if (!res.ok) throw new Error("Room not found (" + res.status + ")");
+  return res.json();
+}
+
+async function pushSyncRoom(roomId, payload) {
+  const res = await fetch(JSONBLOB_BASE + "/" + roomId, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error("Could not update room (" + res.status + ")");
+}
 
 function loadJSON(key, fallback) {
   try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : fallback; } catch { return fallback; }
@@ -337,6 +380,39 @@ export default function GolfScorecard() {
   const [albionFront, setAlbionFront] = useState("boulder");
   const [albionBack, setAlbionBack] = useState("rock");
 
+  // Live sync — room holds { id, role: "host"|"guest" } for the shared
+  // scorecard this device is in, or null if not sharing/joined. A device
+  // that opens a link with ?room=<id> auto-joins as a guest (see the
+  // effect below); the device that tapped "Share Scorecard" is the host.
+  // Both roles can edit scores/greenies, which sync both ways; only the
+  // host can change the course, pars, or bet settings — the menu below
+  // hides those items entirely when isGuest.
+  const [room, setRoom] = useState(() => loadJSON(ROOM_KEY, null));
+  const [roomCourseInfo, setRoomCourseInfo] = useState(null);
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [shareLoading, setShareLoading] = useState(false);
+  const [shareError, setShareError] = useState("");
+  const [syncStatus, setSyncStatus] = useState(""); // "" | "syncing" | "synced" | "error"
+  const isGuest = room?.role === "guest";
+  // Timestamp of the last remote state actually applied locally — a poll
+  // result older than this is our own echo (or stale), not a real update.
+  const lastAppliedRemoteRef = useRef(0);
+  // True for one tick right after applying a remote update, so the
+  // debounced push effect (below) doesn't immediately re-push what was
+  // just pulled as if it were a fresh local edit.
+  const applyingRemoteRef = useRef(false);
+
+  // Auto-join a shared scorecard from a ?room=<id> link. Only acts once
+  // per distinct room id (not on every render) — joining doesn't need to
+  // re-fire just because other state changed.
+  React.useEffect(() => {
+    const urlRoom = new URLSearchParams(window.location.search).get("room");
+    if (!urlRoom || room?.id === urlRoom) return;
+    const next = { id: urlRoom, role: "guest" };
+    setRoom(next);
+    try { localStorage.setItem(ROOM_KEY, JSON.stringify(next)); } catch {}
+  }, []);
+
   // Persist the in-progress card on every change so a reload resumes
   // exactly where it left off — this is separate from "Save Round" below,
   // which snapshots a finished round into history.
@@ -351,10 +427,13 @@ export default function GolfScorecard() {
   // Falls back to the built-in Custom Course if the restored selectedCourse
   // points at a custom course that's no longer in customCourses (e.g. its
   // own localStorage entry got cleared independently) — otherwise course
-  // would be undefined and every field below would throw.
-  const course = allCourses[selectedCourse] || allCourses.custom;
+  // would be undefined and every field below would throw. A guest in a
+  // shared round uses the host's synced course info instead of its own
+  // local selectedCourse/allCourses lookup — the host might be playing a
+  // custom or Albion-combo course the guest's device never created.
+  const course = (isGuest && roomCourseInfo) ? roomCourseInfo : (allCourses[selectedCourse] || allCourses.custom);
   const holes = course.holes;
-  const basePars = courseParOverrides[selectedCourse] || course.pars;
+  const basePars = isGuest ? course.pars : (courseParOverrides[selectedCourse] || course.pars);
   const pars = basePars.slice(0, holes);
 
   // Background photo — priority order is: a photo you picked yourself via
@@ -420,6 +499,116 @@ export default function GolfScorecard() {
       // Leaves the picker open so the user can just try again.
     }
     setDevicePhotoLoading(false);
+  };
+
+  // Applies a room's remote state to local state — used both when a poll
+  // finds something newer and (implicitly, via the same shape) whenever a
+  // room is first joined/started. applyingRemoteRef guards the push effect
+  // below from immediately re-pushing this as if it were a fresh local
+  // edit — cleared on the next tick, after React has applied the state
+  // updates.
+  const applyRoomState = (data) => {
+    applyingRemoteRef.current = true;
+    setRoomCourseInfo({ name: data.courseName, holes: data.holes, pars: data.pars, nineNames: data.nineNames || null });
+    setP1name(data.p1name ?? "Player 1");
+    setP2name(data.p2name ?? "Player 2");
+    setScores(data.scores || { p1: Array(data.holes).fill(""), p2: Array(data.holes).fill("") });
+    setGreenies(data.greenies || { p1: Array(data.holes).fill(false), p2: Array(data.holes).fill(false) });
+    if (data.betPerHole != null) setBetPerHole(data.betPerHole);
+    if (data.parBonus != null) setParBonus(data.parBonus);
+    if (data.birdieBonus != null) setBirdieBonus(data.birdieBonus);
+    if (data.greenieBonus != null) setGreenieBonus(data.greenieBonus);
+    lastAppliedRemoteRef.current = data.updatedAt || Date.now();
+    setTimeout(() => { applyingRemoteRef.current = false; }, 0);
+  };
+
+  // Polls the room every 4s and applies whatever's there if it's newer
+  // than the last thing we applied (which includes our own pushes — see
+  // pushSyncRoom below setting lastAppliedRemoteRef itself). This is
+  // poll-based, not true realtime — a few seconds of lag is the tradeoff
+  // for not needing a websocket/push infrastructure this app doesn't have.
+  React.useEffect(() => {
+    if (!room) return;
+    let cancelled = false;
+    const poll = () => {
+      fetchSyncRoom(room.id)
+        .then(data => {
+          if (cancelled) return;
+          if (data?.updatedAt && data.updatedAt > lastAppliedRemoteRef.current) applyRoomState(data);
+          setSyncStatus("synced");
+        })
+        .catch(() => { if (!cancelled) setSyncStatus("error"); });
+    };
+    poll();
+    const interval = setInterval(poll, 4000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [room?.id]);
+
+  // Pushes local state to the room ~700ms after the last edit (debounced
+  // so a fast run of score taps doesn't fire a request per keystroke).
+  // Skipped while applyingRemoteRef is set, so applying an incoming
+  // update doesn't immediately bounce right back out as an "edit".
+  React.useEffect(() => {
+    if (!room || applyingRemoteRef.current) return;
+    const t = setTimeout(() => {
+      const payload = {
+        courseName: course.name, holes, pars, nineNames: course.nineNames || null,
+        p1name, p2name, scores, greenies,
+        betPerHole, parBonus, birdieBonus, greenieBonus,
+        updatedAt: Date.now(),
+      };
+      setSyncStatus("syncing");
+      pushSyncRoom(room.id, payload)
+        .then(() => { lastAppliedRemoteRef.current = payload.updatedAt; setSyncStatus("synced"); })
+        .catch(() => setSyncStatus("error"));
+    }, 700);
+    return () => clearTimeout(t);
+  }, [room, selectedCourse, courseParOverrides, p1name, p2name, scores, greenies, betPerHole, parBonus, birdieBonus, greenieBonus]);
+
+  const startSharing = async () => {
+    setShareLoading(true);
+    setShareError("");
+    try {
+      const payload = {
+        courseName: course.name, holes, pars, nineNames: course.nineNames || null,
+        p1name, p2name, scores, greenies,
+        betPerHole, parBonus, birdieBonus, greenieBonus,
+        updatedAt: Date.now(),
+      };
+      const id = await createSyncRoom(payload);
+      const next = { id, role: "host" };
+      setRoom(next);
+      try { localStorage.setItem(ROOM_KEY, JSON.stringify(next)); } catch {}
+      lastAppliedRemoteRef.current = payload.updatedAt;
+      setSyncStatus("synced");
+    } catch (e) {
+      setShareError(e.message || "Couldn't start sharing — try again.");
+    }
+    setShareLoading(false);
+  };
+
+  // Leaves the shared round without deleting it — the other device (if
+  // any) keeps syncing fine; this device just stops. Also strips ?room=
+  // from the URL so a reload doesn't immediately rejoin.
+  const stopSharing = () => {
+    setRoom(null);
+    setRoomCourseInfo(null);
+    setSyncStatus("");
+    try { localStorage.removeItem(ROOM_KEY); } catch {}
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("room");
+      window.history.replaceState({}, "", url.toString());
+    } catch {}
+  };
+
+  const shareUrl = room ? window.location.origin + "/golf?room=" + room.id : "";
+  const shareLink = () => {
+    if (navigator.share) {
+      navigator.share({ title: "⛳ Join my scorecard", text: "Join my live golf scorecard", url: shareUrl }).catch(() => {});
+    } else if (navigator.clipboard) {
+      navigator.clipboard.writeText(shareUrl).catch(() => {});
+    }
   };
 
   const updatePar = (hole, value) => {
@@ -946,7 +1135,10 @@ export default function GolfScorecard() {
     // old small pill button did. Hamburger sits on the same row as the
     // heading, at the right, rather than its own row above it.
     React.createElement("div", { style: styles.header },
-      React.createElement("h1", { style: styles.courseHeading, onClick: () => setShowCourseModal(true) }, course.name + " ▾"),
+      React.createElement("h1", {
+        style: isGuest ? { ...styles.courseHeading, cursor: "default" } : styles.courseHeading,
+        onClick: () => { if (!isGuest) setShowCourseModal(true); },
+      }, course.name + (isGuest ? "" : " ▾")),
       React.createElement("button", { style: styles.hamburgerBtn, onClick: () => setMenuOpen(true) },
         React.createElement("span", { style: styles.hamburgerLine }),
         React.createElement("span", { style: styles.hamburgerLine }),
@@ -954,19 +1146,26 @@ export default function GolfScorecard() {
       )
     ),
 
-    // Hamburger nav drawer
+    // Hamburger nav drawer — a guest in a shared round doesn't get
+    // Bet Settings or Edit Pars (those stay under the host's control so
+    // two devices can't fork the round's setup out from under each
+    // other); everything else, including entering scores, is the same
+    // either way.
     menuOpen && React.createElement("div", { style: styles.menuOverlay, onClick: () => setMenuOpen(false) },
       React.createElement("div", { style: styles.menuDrawer, onClick: e => e.stopPropagation() },
         React.createElement("div", { style: styles.menuHeader },
           React.createElement("div", { style: styles.menuTitle }, "Menu"),
           React.createElement("button", { style: styles.menuClose, onClick: () => setMenuOpen(false) }, "×")
         ),
-        React.createElement("button", { style: styles.menuItem, onClick: () => { setMenuOpen(false); setShowBetSettings(true); } }, "⚙️ Bet Settings — $" + betPerHole + "/hole"),
+        React.createElement("button", { style: styles.menuItem, onClick: () => { setMenuOpen(false); setShowShareModal(true); } },
+          "📤 Share Scorecard" + (room ? (isGuest ? " (joined)" : " (sharing)") : "")
+        ),
+        !isGuest && React.createElement("button", { style: styles.menuItem, onClick: () => { setMenuOpen(false); setShowBetSettings(true); } }, "⚙️ Bet Settings — $" + betPerHole + "/hole"),
         React.createElement("button", { style: styles.menuItem, onClick: () => { setMenuOpen(false); setShowSavedRounds(true); } }, "📋 Saved Rounds (" + savedRounds.length + ")"),
         React.createElement("button", { style: styles.menuItem, onClick: () => { setMenuOpen(false); shareScorecard(currentSnapshot()); } }, "📱 Text Scorecard"),
         React.createElement("button", { style: styles.menuItem, onClick: () => { setMenuOpen(false); saveRound(); } }, "💾 Save Round"),
-        React.createElement("button", { style: styles.menuItem, onClick: () => { setMenuOpen(false); setEditingPars(!editingPars); } }, editingPars ? "✓ Done Editing Pars" : "✏️ Edit Pars"),
-        React.createElement("button", { style: { ...styles.menuItem, color: "#A32D2D" }, onClick: () => { setMenuOpen(false); resetScores(); } }, "↺ Reset Scores"),
+        !isGuest && React.createElement("button", { style: styles.menuItem, onClick: () => { setMenuOpen(false); setEditingPars(!editingPars); } }, editingPars ? "✓ Done Editing Pars" : "✏️ Edit Pars"),
+        !isGuest && React.createElement("button", { style: { ...styles.menuItem, color: "#A32D2D" }, onClick: () => { setMenuOpen(false); resetScores(); } }, "↺ Reset Scores"),
         // Full page reload — separate from Reset (which only clears
         // scores/greenies). Everything this page needs survives a reload
         // (localStorage), so this is just a plain, unconditional refresh,
@@ -974,6 +1173,48 @@ export default function GolfScorecard() {
         // just-deployed update.
         React.createElement("button", { style: styles.menuItem, onClick: () => window.location.reload() }, "🔄 Restart App"),
         React.createElement("div", { style: styles.menuVersion }, "TechPortal Golf v" + GOLF_VERSION)
+      )
+    ),
+
+    // Share Scorecard modal — starting a share (host) creates a room and
+    // opens the native share sheet with the join link; joining a room
+    // (guest, via that link) skips straight to the "already sharing" view.
+    // Sync status line reflects the poll/push loop above.
+    showShareModal && React.createElement("div", { style: styles.overlay, onClick: () => setShowShareModal(false) },
+      React.createElement("div", { style: styles.modal, onClick: e => e.stopPropagation() },
+        React.createElement("div", { style: styles.modalHeader },
+          React.createElement("div", { style: styles.modalTitle }, "Share Scorecard"),
+          React.createElement("button", { style: styles.modalClose, onClick: () => setShowShareModal(false) }, "×")
+        ),
+        React.createElement("div", { style: { padding: "1rem 1.25rem" } },
+          !room
+            ? React.createElement(React.Fragment, null,
+                React.createElement("div", { style: { fontSize: 13, color: "#666", marginBottom: 12, lineHeight: 1.5 } },
+                  "Share a live link with the player you're playing with — scores and greenies sync between both phones as you play (a few seconds of lag, not instant). They can enter scores too; the course and bet settings stay under your control."
+                ),
+                shareError && React.createElement("div", { style: { fontSize: 13, color: "#A32D2D", marginBottom: 8 } }, shareError),
+                React.createElement("button", {
+                  style: { ...styles.btn, width: "100%", textAlign: "center", background: "#185FA5", color: "#fff", border: "none" },
+                  disabled: shareLoading, onClick: startSharing,
+                }, shareLoading ? "Starting..." : "Start Sharing")
+              )
+            : React.createElement(React.Fragment, null,
+                React.createElement("div", { style: { fontSize: 13, color: "#666", marginBottom: 4 } },
+                  isGuest ? "You've joined a shared scorecard." : "Sharing this scorecard."
+                ),
+                React.createElement("div", { style: { fontSize: 12, color: syncStatus === "error" ? "#A32D2D" : "#27500A", marginBottom: 12 } },
+                  syncStatus === "error" ? "⚠ Sync error — will keep retrying" : syncStatus === "syncing" ? "Syncing..." : "🟢 Synced"
+                ),
+                !isGuest && React.createElement(React.Fragment, null,
+                  React.createElement("div", { style: { ...styles.input, marginBottom: 8, wordBreak: "break-all", fontSize: 12, color: "#666" } }, shareUrl),
+                  React.createElement("button", { style: { ...styles.btn, width: "100%", textAlign: "center", background: "#185FA5", color: "#fff", border: "none", marginBottom: 8 }, onClick: shareLink }, "📤 Share Link")
+                ),
+                React.createElement("button", {
+                  style: { ...styles.btn, width: "100%", textAlign: "center", color: "#A32D2D" },
+                  onClick: () => { stopSharing(); setShowShareModal(false); },
+                }, isGuest ? "Leave Shared Scorecard" : "Stop Sharing")
+              )
+        )
       )
     ),
 
