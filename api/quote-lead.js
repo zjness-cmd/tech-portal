@@ -160,6 +160,13 @@ export default async function handler(req, res) {
   const geocodeKey = process.env.GOOGLE_GEOCODE_KEY;
   const resendKey = process.env.RESEND_API_KEY;
   const toEmail = process.env.QUOTE_LEAD_EMAIL_TO;
+  // Pushing the lead into Firebase (so it shows up in QuoteGenerator.jsx's
+  // "Website Leads" list) is optional — if these aren't set yet, the
+  // endpoint still works in email-only mode rather than hard-failing, so
+  // this doesn't break an already-working deployment while the Firebase
+  // side is still being set up.
+  const firebaseDbUrl = process.env.VITE_FIREBASE_DB_URL;
+  const firebaseSecret = process.env.FIREBASE_DB_SECRET;
   if (!geocodeKey) return res.status(500).json({ error: "GOOGLE_GEOCODE_KEY not set in Vercel env vars." });
   if (!resendKey || !toEmail) return res.status(500).json({ error: "RESEND_API_KEY and/or QUOTE_LEAD_EMAIL_TO not set in Vercel env vars." });
 
@@ -182,6 +189,20 @@ export default async function handler(req, res) {
       lead: { name, email, phone, notes },
       quote,
     });
+
+    if (firebaseDbUrl && firebaseSecret) {
+      try {
+        await fetch(firebaseDbUrl + "/quoteLeads.json?auth=" + firebaseSecret, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, email: email || null, phone: phone || null, notes: notes || null, quote, receivedAt: Date.now() }),
+        });
+      } catch (e) {
+        // Don't fail the whole request over this — the email already went
+        // out, which is the part the shop owner actually needs to not miss.
+        console.error("[quote-lead] Firebase push failed:", e.message);
+      }
+    }
 
     res.status(200).json({ ok: true, quote });
   } catch (e) {

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { getDrivingMiles } from "../mapsUtils";
 
 // The business's own zip — every quote's travel fee is driving distance
@@ -71,6 +71,37 @@ export default function QuoteGenerator({ onClose }) {
   const [result, setResult] = useState(null); // { miles, matchedAddress, ... }
   const [savedQuotes, setSavedQuotes] = useState(() => loadJSON(QUOTES_KEY, []));
   const [showSaved, setShowSaved] = useState(false);
+  // Leads from the tapbeercleaning.com website's quote form — pushed by
+  // api/quote-lead.js into Firebase, fetched here via api/quote-leads.js
+  // (the browser never touches Firebase directly / never sees the DB
+  // secret for this path, unlike GolfScorecard's open golfRooms).
+  const [websiteLeads, setWebsiteLeads] = useState([]);
+  const [loadingLeads, setLoadingLeads] = useState(true);
+  const [showLeads, setShowLeads] = useState(true);
+
+  const loadLeads = () => {
+    setLoadingLeads(true);
+    fetch("/api/quote-leads")
+      .then(r => r.json())
+      .then(d => setWebsiteLeads(d.leads || []))
+      .catch(() => {})
+      .finally(() => setLoadingLeads(false));
+  };
+
+  useEffect(() => { loadLeads(); }, []);
+
+  const useLead = (lead) => {
+    setCustomerName(lead.name || "");
+    setAddressInput(lead.quote.matchedAddress || "");
+    setTaps(String(lead.quote.taps));
+    setResult(lead.quote);
+    setError("");
+  };
+
+  const dismissLead = (id) => {
+    setWebsiteLeads(prev => prev.filter(l => l.id !== id));
+    fetch("/api/quote-leads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) }).catch(() => {});
+  };
 
   const geocode = async (address) => {
     const r = await fetch("/api/geocode?" + new URLSearchParams({ address }));
@@ -157,6 +188,33 @@ export default function QuoteGenerator({ onClose }) {
       ),
 
       React.createElement("div", { style: styles.body },
+
+        // Website leads — incoming requests from the tapbeercleaning.com quote form
+        React.createElement("div", { style: { marginBottom: 20 } },
+          React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
+            React.createElement("button", {
+              style: styles.sectionToggle, onClick: () => setShowLeads(!showLeads),
+            }, (showLeads ? "▾" : "▸") + " Website Leads (" + websiteLeads.length + ")"),
+            React.createElement("button", { style: styles.refreshBtn, onClick: loadLeads, title: "Check for new leads" }, "↻")
+          ),
+          showLeads && (
+            loadingLeads
+              ? React.createElement("div", { style: styles.empty }, "Checking for leads...")
+              : websiteLeads.length === 0
+                ? React.createElement("div", { style: styles.empty }, "No new leads from the website.")
+                : websiteLeads.map(lead => React.createElement("div", { key: lead.id, style: styles.savedRow },
+                    React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                      React.createElement("div", { style: styles.savedName }, lead.name),
+                      React.createElement("div", { style: styles.savedSub }, [lead.email, lead.phone].filter(Boolean).join(" · ") || "No contact info"),
+                      React.createElement("div", { style: styles.savedSub }, lead.quote.taps + " taps · " + lead.quote.matchedAddress + " · " + fmt(lead.quote.total)),
+                      lead.notes && React.createElement("div", { style: styles.savedSub }, lead.notes)
+                    ),
+                    React.createElement("button", { style: styles.iconBtn, title: "Use this lead", onClick: () => useLead(lead) }, "➡️"),
+                    React.createElement("button", { style: { ...styles.iconBtn, color: "#A32D2D" }, title: "Dismiss", onClick: () => dismissLead(lead.id) }, "🗑")
+                  ))
+          )
+        ),
+
         React.createElement("div", { style: styles.fieldGroup },
           React.createElement("label", { style: styles.fieldLabel }, "Customer name (optional)"),
           React.createElement("input", { style: styles.input, type: "text", value: customerName, onChange: e => setCustomerName(e.target.value) })
@@ -255,6 +313,7 @@ const styles = {
   resultRow: { display: "flex", justifyContent: "space-between", fontSize: 13, color: "#444", padding: "4px 0" },
   resultTotal: { fontWeight: 700, fontSize: 16, color: "#1a1a1a", borderTop: "0.5px solid #e0e0e0", marginTop: 6, paddingTop: 8 },
   sectionToggle: { background: "none", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600, color: "#888", padding: 0, marginBottom: 8 },
+  refreshBtn: { background: "none", border: "none", cursor: "pointer", fontSize: 15, color: "#185FA5", padding: "2px 6px" },
   empty: { fontSize: 13, color: "#888", fontStyle: "italic" },
   savedRow: { display: "flex", alignItems: "center", gap: 8, padding: "0.6rem 0", borderBottom: "0.5px solid #f0f0f0" },
   savedName: { fontSize: 13, fontWeight: 600, color: "#1a1a1a" },
