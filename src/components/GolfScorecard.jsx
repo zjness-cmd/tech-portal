@@ -5,7 +5,7 @@ import { findCourseBackground } from "../clientAssets";
 // Dashboard.jsx's own APP_VERSION — this page is a standalone feature
 // (see CLAUDE.md) with its own change history. Shown as a small badge next
 // to the page title.
-const GOLF_VERSION = "2.0.0";
+const GOLF_VERSION = "2.0.1";
 
 // Course database — edit pars here to match actual scorecards
 const COURSES = {
@@ -97,39 +97,43 @@ const ROOM_KEY = "techportal_golfRoom";
 
 // Live sync between two phones needs *some* shared storage, and this app
 // has no backend of its own for the golf page (it's pure client-side —
-// see CLAUDE.md). jsonblob.com is a free, keyless JSON store built for
-// exactly this — no signup, no API key, CORS-enabled for direct browser
-// use. The tradeoff: it's a small community-run service with no SLA, and
-// anyone who has the room id can read/write it (same trust model as
-// "anyone with the link" on a Google Doc — fine for a casual round
-// between friends, not something to rely on for anything sensitive).
-// Couldn't verify this live from this sandbox (outbound network here is
-// allowlisted and blocks it) — it's shipped best-effort; if it doesn't
-// behave as documented, sharing will visibly fail with an error rather
-// than silently doing nothing.
-const JSONBLOB_BASE = "https://jsonblob.com/api/jsonBlob";
+// see CLAUDE.md). Talks directly to a Firebase Realtime Database via its
+// plain REST API (no Firebase SDK, no npm dependency — just fetch()),
+// scoped to the /golfRooms path, whose security rules are set to open
+// read/write for anyone who has the room id (same trust model as "anyone
+// with the link" on a Google Doc — fine for a casual round between
+// friends, not something to rely on for anything sensitive). Room ids are
+// generated client-side (genRoomId below) rather than assigned by the
+// server, so there's no response-parsing step that can silently break —
+// the first attempt at this (jsonblob.com) failed exactly that way.
+const FIREBASE_DB_URL = import.meta.env.VITE_FIREBASE_DB_URL;
+
+function genRoomId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function roomUrl(roomId) {
+  return FIREBASE_DB_URL.replace(/\/$/, "") + "/golfRooms/" + roomId + ".json";
+}
 
 async function createSyncRoom(payload) {
-  const res = await fetch(JSONBLOB_BASE, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) throw new Error("Could not create share room (" + res.status + ")");
-  const location = res.headers.get("Location") || res.headers.get("location");
-  const id = location ? location.split("/").filter(Boolean).pop() : null;
-  if (!id) throw new Error("Room created but couldn't read its id back");
+  if (!FIREBASE_DB_URL) throw new Error("Live sync isn't configured yet (missing VITE_FIREBASE_DB_URL).");
+  const id = genRoomId();
+  await pushSyncRoom(id, payload);
   return id;
 }
 
 async function fetchSyncRoom(roomId) {
-  const res = await fetch(JSONBLOB_BASE + "/" + roomId);
+  const res = await fetch(roomUrl(roomId));
   if (!res.ok) throw new Error("Room not found (" + res.status + ")");
-  return res.json();
+  const data = await res.json();
+  if (data == null) throw new Error("Room not found");
+  return data;
 }
 
 async function pushSyncRoom(roomId, payload) {
-  const res = await fetch(JSONBLOB_BASE + "/" + roomId, {
+  if (!FIREBASE_DB_URL) throw new Error("Live sync isn't configured yet (missing VITE_FIREBASE_DB_URL).");
+  const res = await fetch(roomUrl(roomId), {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

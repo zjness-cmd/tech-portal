@@ -22,7 +22,7 @@ Deployment is via Vercel (`vercel.json` present, `.vercel/` linked). `api/*.js` 
 
 Split between client-exposed (Vite, must be prefixed `VITE_`) and server-only (Vercel functions, `process.env`, never bundled to the client):
 
-- Client: `VITE_MAPS_API_KEY` (Google Maps JS API + Street View + Distance Matrix — used in `Dashboard.jsx` and `JobCard.jsx`)
+- Client: `VITE_MAPS_API_KEY` (Google Maps JS API + Street View + Distance Matrix — used in `Dashboard.jsx` and `JobCard.jsx`), `VITE_FIREBASE_DB_URL` (Firebase Realtime Database URL — `GolfScorecard.jsx`'s live scorecard sync, called via plain REST/fetch, no Firebase SDK)
 - Server (`api/*.js`): `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (OAuth token exchange/refresh), `GOOGLE_GEOCODE_KEY` (geocoding proxy), `ETSY_API_KEY`, `ETSY_SHARED_SECRET` (Etsy shop stats), `SQUARE_TOKEN`, `SQUARE_LOCATION` (invoicing)
 
 The Google OAuth client ID for the frontend login button is hardcoded in `src/main.jsx`, not read from env.
@@ -83,5 +83,5 @@ When a job's actual check-in time drifts meaningfully from its scheduled time, `
 
 - `APP_VERSION` in `Dashboard.jsx` is a manually maintained version string shown in the UI/debug export — bump it when making user-visible changes, following existing commit message conventions (`vX.Y.Z` in the message).
 - `GolfScorecard.jsx` keeps its own separate `GOLF_VERSION` constant (shown as a badge next to its page title) — bump it on user-visible changes to that file specifically, independent of `APP_VERSION`, since it's a standalone feature with its own change history.
-- `GolfScorecard.jsx`'s "Share Scorecard" live-sync feature calls jsonblob.com directly from the client (a free, keyless JSON store — no server proxy, no env var) to share round state between two phones via a `?room=<id>` link. It's poll-based (~4s), last-write-wins, and depends on a small community-run service with no SLA — treat sync failures there as a real possibility, not a bug in this app's own code.
+- `GolfScorecard.jsx`'s "Share Scorecard" live-sync feature talks directly to a Firebase Realtime Database (`VITE_FIREBASE_DB_URL`) via its plain REST API — no Firebase SDK/npm dependency, just `fetch()` against `<dbUrl>/golfRooms/<roomId>.json`. Security rules on that project scope `/golfRooms/{roomId}` to open read/write (anyone with the room id — same trust model as "anyone with the link"). Room ids are generated client-side (`genRoomId`), not server-assigned. It's poll-based (~4s), last-write-wins — a first attempt at this used jsonblob.com (a free keyless JSON store) but its response shape didn't behave as documented from the client, so it was swapped for Firebase.
 - Comments in `Dashboard.jsx` and `App.jsx` frequently document *why* a piece of defensive logic exists (specific field-observed bugs/races) — read them before "simplifying" that code, the edge cases are usually the point.
