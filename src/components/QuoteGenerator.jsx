@@ -18,11 +18,16 @@ const HOME_COORDS_KEY = "techportal_quoteHomeCoords";
 //     1-10 taps  -> $15.00/tap
 //     11-20 taps -> $12.50/tap
 //     21+ taps   -> $10.00/tap (floor — stays here past 30, doesn't keep dropping)
+// - Minimum: the tap/service charge alone has a $75 floor (e.g. 3 taps @
+//   $15 = $45 -> bumped to $75). Travel fee is a separate line added on
+//   top of whichever is larger, not folded into the minimum.
 function tapRate(taps) {
   if (taps <= 10) return 15;
   if (taps <= 20) return 12.5;
   return 10;
 }
+
+const MIN_SERVICE_CHARGE = 75;
 
 function travelFee(oneWayMiles) {
   return Math.ceil((oneWayMiles * 2) / 10) * 10;
@@ -35,6 +40,15 @@ function loadJSON(key, fallback) {
 
 function fmt(n) {
   return "$" + n.toFixed(2);
+}
+
+// Shared by the on-screen result, the text-quote message, and saved-quote
+// re-share — a quote hit by the $75 minimum shows "Minimum service charge"
+// instead of the per-tap math, since "3 taps @ $15/tap = $75" would be
+// misleading (that's not what $75 actually breaks down to).
+function tapLineText(taps, rate, tapSubtotal, minimumApplied) {
+  if (minimumApplied) return "Minimum service charge = " + fmt(tapSubtotal);
+  return taps + " taps @ " + fmt(rate) + "/tap = " + fmt(tapSubtotal);
 }
 
 // Prefers the native share sheet, falls back to opening Messages directly
@@ -91,10 +105,12 @@ export default function QuoteGenerator({ onClose }) {
       const miles = await getDrivingMiles(home.lat, home.lng, dest.lat, dest.lng);
       const roundTripMiles = Math.round(miles * 2 * 10) / 10;
       const rate = tapRate(tapCount);
-      const tapSubtotal = Math.round(tapCount * rate * 100) / 100;
+      const rawTapSubtotal = Math.round(tapCount * rate * 100) / 100;
+      const minimumApplied = rawTapSubtotal < MIN_SERVICE_CHARGE;
+      const tapSubtotal = minimumApplied ? MIN_SERVICE_CHARGE : rawTapSubtotal;
       const travel = travelFee(miles);
       const total = Math.round((tapSubtotal + travel) * 100) / 100;
-      setResult({ miles, roundTripMiles, matchedAddress: dest.formatted, taps: tapCount, rate, tapSubtotal, travel, total });
+      setResult({ miles, roundTripMiles, matchedAddress: dest.formatted, taps: tapCount, rate, tapSubtotal, minimumApplied, travel, total });
     } catch (e) {
       setError(e.message || "Could not calculate quote");
     }
@@ -105,7 +121,7 @@ export default function QuoteGenerator({ onClose }) {
     if (!result) return "";
     const lines = [];
     lines.push("⛳ Beer Line Cleaning Quote" + (customerName.trim() ? " — " + customerName.trim() : ""));
-    lines.push(result.taps + " taps @ " + fmt(result.rate) + "/tap = " + fmt(result.tapSubtotal));
+    lines.push(tapLineText(result.taps, result.rate, result.tapSubtotal, result.minimumApplied));
     lines.push("Travel (" + result.roundTripMiles + " mi round trip) = " + fmt(result.travel));
     lines.push("Total: " + fmt(result.total));
     return lines.join("\n");
@@ -170,7 +186,7 @@ export default function QuoteGenerator({ onClose }) {
         result && React.createElement("div", { style: styles.resultBox },
           React.createElement("div", { style: styles.resultAddress }, "📍 " + result.matchedAddress),
           React.createElement("div", { style: styles.resultRow },
-            React.createElement("span", null, result.taps + " taps @ " + fmt(result.rate) + "/tap"),
+            React.createElement("span", null, result.minimumApplied ? "Minimum service charge (" + result.taps + " taps)" : result.taps + " taps @ " + fmt(result.rate) + "/tap"),
             React.createElement("span", null, fmt(result.tapSubtotal))
           ),
           React.createElement("div", { style: styles.resultRow },
@@ -207,7 +223,7 @@ export default function QuoteGenerator({ onClose }) {
                   ),
                   React.createElement("button", { style: styles.iconBtn, title: "Text this quote", onClick: () => shareQuote(
                     "⛳ Beer Line Cleaning Quote — " + q.customerName + "\n" +
-                    q.taps + " taps @ " + fmt(q.rate) + "/tap = " + fmt(q.tapSubtotal) + "\n" +
+                    tapLineText(q.taps, q.rate, q.tapSubtotal, q.minimumApplied) + "\n" +
                     "Travel (" + rtMiles + " mi round trip) = " + fmt(q.travel) + "\n" +
                     "Total: " + fmt(q.total)
                   ) }, "📱"),
