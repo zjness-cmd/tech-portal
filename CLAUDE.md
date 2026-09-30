@@ -23,7 +23,7 @@ Deployment is via Vercel (`vercel.json` present, `.vercel/` linked). `api/*.js` 
 Split between client-exposed (Vite, must be prefixed `VITE_`) and server-only (Vercel functions, `process.env`, never bundled to the client):
 
 - Client: `VITE_MAPS_API_KEY` (Google Maps JS API + Street View + Distance Matrix — used in `Dashboard.jsx` and `JobCard.jsx`), `VITE_FIREBASE_DB_URL` (Firebase Realtime Database URL — `GolfScorecard.jsx`'s live scorecard sync, called via plain REST/fetch, no Firebase SDK)
-- Server (`api/*.js`): `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (OAuth token exchange/refresh), `GOOGLE_GEOCODE_KEY` (geocoding proxy), `ETSY_API_KEY`, `ETSY_SHARED_SECRET` (Etsy shop stats), `SQUARE_TOKEN`, `SQUARE_LOCATION` (invoicing)
+- Server (`api/*.js`): `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (OAuth token exchange/refresh), `GOOGLE_GEOCODE_KEY` (geocoding proxy, also reused server-side by `api/quote-lead.js` for geocoding + Distance Matrix), `ETSY_API_KEY`, `ETSY_SHARED_SECRET` (Etsy shop stats), `SQUARE_TOKEN`, `SQUARE_LOCATION` (invoicing), `RESEND_API_KEY` (email sending for `api/quote-lead.js`), `QUOTE_LEAD_EMAIL_TO` (where website quote-request leads get emailed), `QUOTE_LEAD_EMAIL_FROM` (optional — defaults to Resend's unverified sandbox sender, which can only deliver to the Resend account's own verified email; set this to a verified-domain address once one exists)
 
 The Google OAuth client ID for the frontend login button is hardcoded in `src/main.jsx`, not read from env.
 
@@ -73,7 +73,8 @@ When a job's actual check-in time drifts meaningfully from its scheduled time, `
 - `JobCard.jsx` / `JobDetailModal.jsx` — per-job UI, Street View preview
 - `InvoiceModal.jsx` — Square invoice creation (via `api/invoice.js` handing back client credentials for the client-side Square SDK)
 - `RescheduleModal.jsx`, `DriveMode.jsx` (turn-by-turn-style nav view), `EtsyStats.jsx` (separate Etsy shop dashboard panel), `GolfScorecard.jsx` (standalone page, unrelated feature sharing this app's auth/deploy)
-- `api/*.js` — thin Vercel serverless proxies; keep secrets server-side here rather than moving calls to the client
+- `QuoteGenerator.jsx` — in-app quote calculator (menu-triggered modal, localStorage-only, no Sheets). Shares Google Maps distance logic with `Dashboard.jsx` via `src/mapsUtils.js` (kept as its own module specifically to avoid a circular import between the two, since `Dashboard.jsx` renders `QuoteGenerator.jsx`)
+- `api/*.js` — thin Vercel serverless proxies; keep secrets server-side here rather than moving calls to the client. `api/quote-lead.js` is the one exception to "proxy for this app's own client": it's a public endpoint meant to be called cross-origin from the separate tapbeercleaning.com website's quote-request form, so it does its own CORS allowlisting (`ALLOWED_ORIGINS`) and honeypot spam check rather than assuming a trusted same-origin caller. It duplicates `QuoteGenerator.jsx`'s pricing math (different module system — can't import a browser ESM component from a serverless function) — update both if pricing rules change. On success it emails the computed quote + lead contact info to the shop owner via Resend.
 
 ### PWA / service worker
 
