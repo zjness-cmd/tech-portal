@@ -5,7 +5,7 @@ import { findCourseBackground } from "../clientAssets";
 // Dashboard.jsx's own APP_VERSION — this page is a standalone feature
 // (see CLAUDE.md) with its own change history. Shown as a small badge next
 // to the page title.
-const GOLF_VERSION = "2.0.1";
+const GOLF_VERSION = "2.1.0";
 
 // Course database — edit pars here to match actual scorecards
 const COURSES = {
@@ -859,6 +859,19 @@ export default function GolfScorecard() {
     scores[player].slice(from, to).reduce((a, v) => a + (v === "" ? 0 : parseInt(v)), 0);
   const parTotal = (from, to) => pars.slice(from, to).reduce((a, v) => a + v, 0);
 
+  // Total strokes so far (only holes with a score entered) plus that same
+  // total shown relative to par — the two numbers golfers actually care
+  // about, as opposed to the $ money total the rest of this card is built
+  // around. "E" for even, otherwise a signed number, same convention as a
+  // TV golf leaderboard.
+  const playerTotalScore = (player) => holeTotal(player, 0, holes);
+  const playerPlayedPar = (player) =>
+    pars.reduce((sum, par, i) => sum + (scores[player][i] !== "" ? par : 0), 0);
+  const relToPar = (player) => {
+    const diff = playerTotalScore(player) - playerPlayedPar(player);
+    return diff === 0 ? "E" : diff > 0 ? "+" + diff : String(diff);
+  };
+
   const renderHoleRows = (holeIndices) => holeIndices.map(i => {
     const r = results[i] || { winner: null, pot: 1, carryover: 0 };
     const isPar3 = pars[i] === 3;
@@ -1249,11 +1262,13 @@ export default function GolfScorecard() {
       React.createElement("div", { style: styles.playerCard },
         React.createElement("input", { style: styles.nameInput, value: p1name, onChange: e => setP1name(e.target.value) }),
         React.createElement("div", { style: { fontSize: 28, fontWeight: 500, color: moneyColor(p1money) } }, fmt(p1money)),
+        playerTotalScore("p1") > 0 && React.createElement("div", { style: styles.totalScore }, playerTotalScore("p1") + " (" + relToPar("p1") + ")"),
         React.createElement("div", { style: { fontSize: 11, color: "#888", marginTop: 2 } }, p1wins + " hole" + (p1wins !== 1 ? "s" : "") + " won")
       ),
       React.createElement("div", { style: styles.playerCard },
         React.createElement("input", { style: styles.nameInput, value: p2name, onChange: e => setP2name(e.target.value) }),
         React.createElement("div", { style: { fontSize: 28, fontWeight: 500, color: moneyColor(p2money) } }, fmt(p2money)),
+        playerTotalScore("p2") > 0 && React.createElement("div", { style: styles.totalScore }, playerTotalScore("p2") + " (" + relToPar("p2") + ")"),
         React.createElement("div", { style: { fontSize: 11, color: "#888", marginTop: 2 } }, p2wins + " hole" + (p2wins !== 1 ? "s" : "") + " won")
       )
     ),
@@ -1315,11 +1330,11 @@ export default function GolfScorecard() {
         React.createElement("span", { style: styles.summaryVal }, playedHoles + " / " + holes)
       ),
       React.createElement("div", { style: { ...styles.summaryRow, borderTop: "0.5px solid #e0e0e0", paddingTop: 8, marginTop: 4 } },
-        React.createElement("span", { style: styles.summaryLabel }, p1name),
+        React.createElement("span", { style: styles.summaryLabel }, p1name + (playerTotalScore("p1") > 0 ? " — " + playerTotalScore("p1") + " (" + relToPar("p1") + ")" : "")),
         React.createElement("span", { style: { fontWeight: 500, color: moneyColor(p1money) } }, fmt(p1money))
       ),
       React.createElement("div", { style: styles.summaryRow },
-        React.createElement("span", { style: styles.summaryLabel }, p2name),
+        React.createElement("span", { style: styles.summaryLabel }, p2name + (playerTotalScore("p2") > 0 ? " — " + playerTotalScore("p2") + " (" + relToPar("p2") + ")" : "")),
         React.createElement("span", { style: { fontWeight: 500, color: moneyColor(p2money) } }, fmt(p2money))
       ),
       carryover > 0 && React.createElement("div", { style: styles.summaryRow },
@@ -1366,6 +1381,7 @@ const styles = {
   btn: { fontSize: 12, padding: "6px 12px", borderRadius: 8, border: "0.5px solid #ccc", background: "#fff", cursor: "pointer", color: "#1a1a1a" },
   playerGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: "1rem" },
   playerCard: { background: "#f5f5f3", borderRadius: 12, padding: "12px 16px" },
+  totalScore: { fontSize: 13, fontWeight: 500, color: "#1a1a1a", marginTop: 4 },
   nameInput: { background: "none", border: "none", borderBottom: "0.5px solid #ccc", fontSize: 14, fontWeight: 500, color: "#1a1a1a", width: "100%", outline: "none", marginBottom: 6, padding: "2px 0" },
   carryBanner: { background: "#FAEEDA", color: "#633806", borderRadius: 8, padding: "8px 12px", fontSize: 13, marginBottom: "1rem" },
   tableWrap: { marginBottom: "1.5rem" },
