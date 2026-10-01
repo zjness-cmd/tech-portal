@@ -62,7 +62,7 @@ const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
 // (merged B20:C20, navy, two-line real link), checks-payable bar and
 // Total amount recolored navy to match the logo, thin outer border
 // added around the item table, footer line added under Total.
-const APP_VERSION = "1.3.69";
+const APP_VERSION = "1.3.70";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -3041,7 +3041,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     React.createElement("div", { style: styles.page },
       invoiceJob && React.createElement(InvoiceModal, { job: invoiceJob, accessToken, onClose: handleInvoiceClose, onInvoiceCreated: handleInvoiceCreated, onPaymentStatusSaved: handlePaymentStatusSaved }),
       showEtsy && React.createElement(EtsyStats, { onClose: () => setShowEtsy(false) }),
-      showQuoteGenerator && React.createElement(QuoteGenerator, { onClose: () => setShowQuoteGenerator(false) }),
+      showQuoteGenerator && React.createElement(QuoteGenerator, { accessToken, onClose: () => setShowQuoteGenerator(false) }),
       showMonthView && React.createElement(CalendarMonthView, {
         accessToken,
         initialDate: selectedDate,

@@ -92,21 +92,57 @@ function shareQuote(text, phone) {
   window.location.href = "sms:" + sep + "body=" + encodeURIComponent(text);
 }
 
-// Opens the device's default mail app (Gmail/Outlook on a phone) with the
-// customer, subject and body filled in — sends from whichever account that
-// app is set to, so check the From line before sending.
+// Base64url of a UTF-8 string (Gmail API "raw" format, and RFC 2047 headers).
+function b64utf8(str, url) {
+  const bytes = new TextEncoder().encode(str);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  const b64 = btoa(bin);
+  return url ? b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") : b64;
+}
+
+// Sends straight from the signed-in Gmail account via the Gmail API (no
+// mail app). Needs the gmail.send scope — a 401/403 here almost always
+// means this session signed in before that scope was added.
+async function sendQuoteEmail(accessToken, to, text) {
+  const mime = [
+    "To: " + to,
+    "Subject: =?UTF-8?B?" + b64utf8(REPLY_SUBJECT) + "?=",
+    "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    b64utf8(text).replace(/.{76}/g, "$&\r\n"),
+  ].join("\r\n");
+  const r = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + accessToken, "Content-Type": "application/json" },
+    body: JSON.stringify({ raw: b64utf8(mime, true) }),
+  });
+  if (r.status === 401 || r.status === 403) {
+    const err = new Error("needs-permission");
+    err.detail = (await r.json().catch(() => ({})))?.error?.message || "";
+    throw err;
+  }
+  if (!r.ok) throw new Error("Gmail send failed (" + r.status + ")");
+}
+
+// Fallback: opens the device's default mail app with the customer, subject
+// and body filled in — sends from whichever account that app is set to.
 function emailQuote(text, email) {
   window.location.href = "mailto:" + encodeURIComponent((email || "").trim()) +
     "?subject=" + encodeURIComponent(REPLY_SUBJECT) +
     "&body=" + encodeURIComponent(text);
 }
 
-export default function QuoteGenerator({ onClose }) {
+export default function QuoteGenerator({ accessToken, onClose }) {
   const [customerName, setCustomerName] = useState("");
   const [customerEmail, setCustomerEmail] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   // Editable customer reply; regenerated whenever the quote or name changes.
   const [replyMsg, setReplyMsg] = useState("");
+  // "" | "sending" | "sent" | "needs-permission" | "error:<message>"
+  const [emailStatus, setEmailStatus] = useState("");
   const [addressInput, setAddressInput] = useState("");
   const [taps, setTaps] = useState("");
   const [loading, setLoading] = useState(false);
@@ -135,7 +171,22 @@ export default function QuoteGenerator({ onClose }) {
 
   useEffect(() => {
     setReplyMsg(result ? buildReply({ ...result, name: customerName }) : "");
+    setEmailStatus("");
   }, [result, customerName]);
+
+  const sendEmail = async () => {
+    const to = customerEmail.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) { setEmailStatus("error:Add the customer's email address first."); return; }
+    // Sends immediately (no mail app to review in), so confirm first.
+    if (!window.confirm("Send this quote to " + to + " from your Gmail?")) return;
+    setEmailStatus("sending");
+    try {
+      await sendQuoteEmail(accessToken, to, replyMsg);
+      setEmailStatus("sent");
+    } catch (e) {
+      setEmailStatus(e.message === "needs-permission" ? "needs-permission" : "error:" + (e.message || "Couldn't send"));
+    }
+  };
 
   const useLead = (lead) => {
     setCustomerName(lead.name || "");
@@ -317,10 +368,20 @@ export default function QuoteGenerator({ onClose }) {
               title: customerPhone ? "Text " + customerPhone : "No phone — opens Messages without a recipient",
             }, "📱 Text"),
             React.createElement("button", {
-              style: { ...styles.btnSecondary, flex: 1 }, onClick: () => emailQuote(replyMsg, customerEmail),
-              title: customerEmail ? "Email " + customerEmail : "No email — opens a blank-recipient email",
-            }, "✉️ Email"),
+              style: { ...styles.btnSecondary, flex: 1, opacity: emailStatus === "sending" ? 0.6 : 1 },
+              disabled: emailStatus === "sending", onClick: sendEmail,
+              title: customerEmail ? "Send to " + customerEmail + " from your Gmail" : "Add the customer's email first",
+            }, emailStatus === "sending" ? "Sending…" : emailStatus === "sent" ? "✅ Sent" : "✉️ Email"),
             React.createElement("button", { style: { ...styles.btnSecondary, flex: 1 }, onClick: saveQuote }, "💾 Save")
+          ),
+          emailStatus === "sent" && React.createElement("div", { style: styles.okBox }, "Sent to " + customerEmail.trim() + " — it's in your Gmail Sent folder."),
+          emailStatus === "needs-permission" && React.createElement("div", { style: styles.errorBox },
+            "TechPortal needs permission to send email. Sign out of TechPortal and sign back in, and approve sending email. ",
+            React.createElement("button", { style: styles.linkBtn, onClick: () => emailQuote(replyMsg, customerEmail) }, "Open in mail app instead")
+          ),
+          emailStatus.startsWith("error:") && React.createElement("div", { style: styles.errorBox },
+            emailStatus.slice(6) + " ",
+            React.createElement("button", { style: styles.linkBtn, onClick: () => emailQuote(replyMsg, customerEmail) }, "Open in mail app instead")
           )
         ),
 
@@ -367,6 +428,8 @@ const styles = {
   fieldLabel: { fontSize: 12, color: "#888", display: "block", marginBottom: 4 },
   input: { width: "100%", padding: "9px 12px", fontSize: 14, border: "0.5px solid #ccc", borderRadius: 8, background: "#fff", color: "#1a1a1a", boxSizing: "border-box" },
   errorBox: { fontSize: 13, color: "#c0392b", background: "#fef0f0", padding: "8px 12px", borderRadius: 8, marginBottom: 10 },
+  okBox: { fontSize: 13, color: "#1e7a46", background: "#eefaf2", padding: "8px 12px", borderRadius: 8, marginTop: 8 },
+  linkBtn: { background: "none", border: "none", padding: 0, color: "#185FA5", textDecoration: "underline", cursor: "pointer", fontSize: 13 },
   btnPrimary: { padding: "12px", borderRadius: 10, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontSize: 15 },
   btnSecondary: { padding: "10px", borderRadius: 8, background: "#f0f4ff", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 600, fontSize: 13 },
   replyBox: { width: "100%", padding: "9px 12px", fontSize: 13, lineHeight: 1.45, border: "0.5px solid #ccc", borderRadius: 8, background: "#fff", color: "#1a1a1a", boxSizing: "border-box", fontFamily: "inherit", resize: "vertical" },

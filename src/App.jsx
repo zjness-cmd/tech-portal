@@ -10,6 +10,11 @@ const SCOPES = [
   "https://www.googleapis.com/auth/calendar",
   "https://www.googleapis.com/auth/spreadsheets",
   "https://www.googleapis.com/auth/drive",
+  // Send-only (can't read the inbox) — lets the Quote Generator email a
+  // quote straight from the signed-in Gmail account instead of handing off
+  // to a mailto: link. Sessions that signed in before this scope was added
+  // need to sign out/in once to grant it.
+  "https://www.googleapis.com/auth/gmail.send",
   "profile",
   "email",
 ].join(" ");
