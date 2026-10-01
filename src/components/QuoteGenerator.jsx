@@ -51,19 +51,62 @@ function tapLineText(taps, rate, tapSubtotal, minimumApplied) {
   return taps + " taps @ " + fmt(rate) + "/tap = " + fmt(tapSubtotal);
 }
 
-// Prefers the native share sheet, falls back to opening Messages directly
-// — same pattern used for texting scorecards/invoices elsewhere in the app.
-function shareQuote(text) {
+const BUSINESS_PHONE = "612-293-9459";
+const BOOKING_URL = "https://calendar.app.google/mJrbNarX5ptwfCE17";
+const REPLY_SUBJECT = "Your beer line cleaning quote — Ness Draft Beer Service";
+
+const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+
+// Customer-facing reply for a quote — pre-filled into the editable message
+// box, then sent by text or email. Greets by first name when there is one.
+function buildReply({ name, taps, rate, tapSubtotal, minimumApplied, roundTripMiles, travel, total }) {
+  const first = (name || "").trim().split(/\s+/)[0];
+  return [
+    (first ? "Hi " + first + "," : "Hi,") + " thanks for reaching out to Ness Draft Beer Service! Here's your quote for beer line cleaning (" + taps + " taps):",
+    "",
+    tapLineText(taps, rate, tapSubtotal, minimumApplied),
+    "Travel (" + roundTripMiles + " mi round trip) = " + fmt(travel),
+    "Total: " + fmt(total),
+    "",
+    "Want to get on the schedule? Just reply here, call/text " + BUSINESS_PHONE + ", or book online: " + BOOKING_URL,
+    "",
+    "– Zach, Ness Draft Beer Service",
+  ].join("\n");
+}
+
+// With a phone number, opens Messages addressed to that customer (the share
+// sheet can't pre-fill a recipient). Without one, prefers the native share
+// sheet, falling back to a blank-recipient Messages — same pattern used for
+// texting scorecards/invoices elsewhere in the app.
+function shareQuote(text, phone) {
+  const sep = isIOS() ? "&" : "?";
+  const to = (phone || "").replace(/[^\d+]/g, "");
+  if (to) {
+    window.location.href = "sms:" + to + sep + "body=" + encodeURIComponent(text);
+    return;
+  }
   if (navigator.share) {
     navigator.share({ title: "Quote", text }).catch(() => {});
     return;
   }
-  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-  window.location.href = "sms:" + (isIOS ? "&" : "?") + "body=" + encodeURIComponent(text);
+  window.location.href = "sms:" + sep + "body=" + encodeURIComponent(text);
+}
+
+// Opens the device's default mail app (Gmail/Outlook on a phone) with the
+// customer, subject and body filled in — sends from whichever account that
+// app is set to, so check the From line before sending.
+function emailQuote(text, email) {
+  window.location.href = "mailto:" + encodeURIComponent((email || "").trim()) +
+    "?subject=" + encodeURIComponent(REPLY_SUBJECT) +
+    "&body=" + encodeURIComponent(text);
 }
 
 export default function QuoteGenerator({ onClose }) {
   const [customerName, setCustomerName] = useState("");
+  const [customerEmail, setCustomerEmail] = useState("");
+  const [customerPhone, setCustomerPhone] = useState("");
+  // Editable customer reply; regenerated whenever the quote or name changes.
+  const [replyMsg, setReplyMsg] = useState("");
   const [addressInput, setAddressInput] = useState("");
   const [taps, setTaps] = useState("");
   const [loading, setLoading] = useState(false);
@@ -90,8 +133,14 @@ export default function QuoteGenerator({ onClose }) {
 
   useEffect(() => { loadLeads(); }, []);
 
+  useEffect(() => {
+    setReplyMsg(result ? buildReply({ ...result, name: customerName }) : "");
+  }, [result, customerName]);
+
   const useLead = (lead) => {
     setCustomerName(lead.name || "");
+    setCustomerEmail(lead.email || "");
+    setCustomerPhone(lead.phone || "");
     setAddressInput(lead.quote.matchedAddress || "");
     setTaps(String(lead.quote.taps));
     setResult(lead.quote);
@@ -148,22 +197,14 @@ export default function QuoteGenerator({ onClose }) {
     setLoading(false);
   };
 
-  const quoteText = () => {
-    if (!result) return "";
-    const lines = [];
-    lines.push("⛳ Beer Line Cleaning Quote" + (customerName.trim() ? " — " + customerName.trim() : ""));
-    lines.push(tapLineText(result.taps, result.rate, result.tapSubtotal, result.minimumApplied));
-    lines.push("Travel (" + result.roundTripMiles + " mi round trip) = " + fmt(result.travel));
-    lines.push("Total: " + fmt(result.total));
-    return lines.join("\n");
-  };
-
   const saveQuote = () => {
     if (!result) return;
     const entry = {
       id: Date.now(),
       date: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
       customerName: customerName.trim() || "Unnamed",
+      customerEmail: customerEmail.trim(),
+      customerPhone: customerPhone.trim(),
       address: result.matchedAddress,
       ...result,
     };
@@ -219,6 +260,16 @@ export default function QuoteGenerator({ onClose }) {
           React.createElement("label", { style: styles.fieldLabel }, "Customer name (optional)"),
           React.createElement("input", { style: styles.input, type: "text", value: customerName, onChange: e => setCustomerName(e.target.value) })
         ),
+        React.createElement("div", { style: { display: "flex", gap: 8 } },
+          React.createElement("div", { style: { ...styles.fieldGroup, flex: 1, minWidth: 0 } },
+            React.createElement("label", { style: styles.fieldLabel }, "Email (optional)"),
+            React.createElement("input", { style: styles.input, type: "email", value: customerEmail, onChange: e => setCustomerEmail(e.target.value) })
+          ),
+          React.createElement("div", { style: { ...styles.fieldGroup, flex: 1, minWidth: 0 } },
+            React.createElement("label", { style: styles.fieldLabel }, "Phone (optional)"),
+            React.createElement("input", { style: styles.input, type: "tel", value: customerPhone, onChange: e => setCustomerPhone(e.target.value) })
+          )
+        ),
         React.createElement("div", { style: styles.fieldGroup },
           React.createElement("label", { style: styles.fieldLabel }, "Customer address or zip"),
           React.createElement("input", {
@@ -255,9 +306,21 @@ export default function QuoteGenerator({ onClose }) {
             React.createElement("span", null, "Total"),
             React.createElement("span", null, fmt(result.total))
           ),
-          React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 12 } },
-            React.createElement("button", { style: { ...styles.btnSecondary, flex: 1 }, onClick: () => shareQuote(quoteText()) }, "📱 Text Quote"),
-            React.createElement("button", { style: { ...styles.btnSecondary, flex: 1 }, onClick: saveQuote }, "💾 Save Quote")
+          React.createElement("label", { style: { ...styles.fieldLabel, marginTop: 12 } }, "Reply to customer (edit before sending)"),
+          React.createElement("textarea", {
+            style: styles.replyBox, rows: 9, value: replyMsg,
+            onChange: e => setReplyMsg(e.target.value),
+          }),
+          React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 8 } },
+            React.createElement("button", {
+              style: { ...styles.btnSecondary, flex: 1 }, onClick: () => shareQuote(replyMsg, customerPhone),
+              title: customerPhone ? "Text " + customerPhone : "No phone — opens Messages without a recipient",
+            }, "📱 Text"),
+            React.createElement("button", {
+              style: { ...styles.btnSecondary, flex: 1 }, onClick: () => emailQuote(replyMsg, customerEmail),
+              title: customerEmail ? "Email " + customerEmail : "No email — opens a blank-recipient email",
+            }, "✉️ Email"),
+            React.createElement("button", { style: { ...styles.btnSecondary, flex: 1 }, onClick: saveQuote }, "💾 Save")
           )
         ),
 
@@ -280,10 +343,8 @@ export default function QuoteGenerator({ onClose }) {
                     React.createElement("div", { style: styles.savedSub }, q.date + " · " + q.taps + " taps · " + rtMiles + " mi RT · " + fmt(q.total))
                   ),
                   React.createElement("button", { style: styles.iconBtn, title: "Text this quote", onClick: () => shareQuote(
-                    "⛳ Beer Line Cleaning Quote — " + q.customerName + "\n" +
-                    tapLineText(q.taps, q.rate, q.tapSubtotal, q.minimumApplied) + "\n" +
-                    "Travel (" + rtMiles + " mi round trip) = " + fmt(q.travel) + "\n" +
-                    "Total: " + fmt(q.total)
+                    buildReply({ ...q, roundTripMiles: rtMiles, name: q.customerName === "Unnamed" ? "" : q.customerName }),
+                    q.customerPhone
                   ) }, "📱"),
                   React.createElement("button", { style: { ...styles.iconBtn, color: "#A32D2D" }, title: "Delete", onClick: () => deleteQuote(q.id) }, "🗑")
                   );
@@ -308,6 +369,7 @@ const styles = {
   errorBox: { fontSize: 13, color: "#c0392b", background: "#fef0f0", padding: "8px 12px", borderRadius: 8, marginBottom: 10 },
   btnPrimary: { padding: "12px", borderRadius: 10, background: "#185FA5", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontSize: 15 },
   btnSecondary: { padding: "10px", borderRadius: 8, background: "#f0f4ff", color: "#185FA5", border: "none", cursor: "pointer", fontWeight: 600, fontSize: 13 },
+  replyBox: { width: "100%", padding: "9px 12px", fontSize: 13, lineHeight: 1.45, border: "0.5px solid #ccc", borderRadius: 8, background: "#fff", color: "#1a1a1a", boxSizing: "border-box", fontFamily: "inherit", resize: "vertical" },
   resultBox: { background: "#f9f9f9", border: "0.5px solid #e0e0e0", borderRadius: 10, padding: "0.9rem 1rem" },
   resultAddress: { fontSize: 12, color: "#888", marginBottom: 8 },
   resultRow: { display: "flex", justifyContent: "space-between", fontSize: 13, color: "#444", padding: "4px 0" },
