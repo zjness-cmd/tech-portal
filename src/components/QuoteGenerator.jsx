@@ -92,6 +92,34 @@ function shareQuote(text, phone) {
   window.location.href = "sms:" + sep + "body=" + encodeURIComponent(text);
 }
 
+// Google Voice has no API for sending texts, so "Voice" copies the message
+// and opens Voice; the user starts the conversation and pastes. Texts then
+// come from the business Voice number instead of the personal cell.
+const GOOGLE_VOICE_URL = "https://voice.google.com/u/0/messages";
+
+// Clipboard API first; falls back to a hidden textarea + execCommand for
+// browsers/webviews where navigator.clipboard isn't available.
+function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    return navigator.clipboard.writeText(text).then(() => true, () => legacyCopy(text));
+  }
+  return Promise.resolve(legacyCopy(text));
+}
+function legacyCopy(text) {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch { return false; }
+}
+
 // Base64url of a UTF-8 string (Gmail API "raw" format, and RFC 2047 headers).
 function b64utf8(str, url) {
   const bytes = new TextEncoder().encode(str);
@@ -143,6 +171,9 @@ export default function QuoteGenerator({ accessToken, onClose }) {
   const [replyMsg, setReplyMsg] = useState("");
   // "" | "sending" | "sent" | "needs-permission" | "error:<message>"
   const [emailStatus, setEmailStatus] = useState("");
+  // "" | "copied" | "copy-failed" — after tapping Voice
+  const [voiceStatus, setVoiceStatus] = useState("");
+  const [numberCopied, setNumberCopied] = useState(false);
   const [addressInput, setAddressInput] = useState("");
   const [taps, setTaps] = useState("");
   const [loading, setLoading] = useState(false);
@@ -172,7 +203,21 @@ export default function QuoteGenerator({ accessToken, onClose }) {
   useEffect(() => {
     setReplyMsg(result ? buildReply({ ...result, name: customerName }) : "");
     setEmailStatus("");
+    setVoiceStatus("");
   }, [result, customerName]);
+
+  const textViaVoice = () => {
+    // Start the copy before opening Voice: both must happen inside the tap
+    // (popup blockers), and the copy needs this page to still have focus.
+    const copying = copyText(replyMsg);
+    window.open(GOOGLE_VOICE_URL, "_blank", "noopener");
+    setNumberCopied(false);
+    copying.then(ok => setVoiceStatus(ok ? "copied" : "copy-failed"));
+  };
+
+  const copyNumber = () => {
+    copyText(customerPhone.trim()).then(ok => setNumberCopied(ok));
+  };
 
   const sendEmail = async () => {
     const to = customerEmail.trim();
@@ -362,17 +407,32 @@ export default function QuoteGenerator({ accessToken, onClose }) {
             style: styles.replyBox, rows: 9, value: replyMsg,
             onChange: e => setReplyMsg(e.target.value),
           }),
-          React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 8 } },
+          React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 } },
             React.createElement("button", {
-              style: { ...styles.btnSecondary, flex: 1 }, onClick: () => shareQuote(replyMsg, customerPhone),
-              title: customerPhone ? "Text " + customerPhone : "No phone — opens Messages without a recipient",
+              style: { ...styles.btnSecondary, flex: "1 1 22%" }, onClick: () => shareQuote(replyMsg, customerPhone),
+              title: customerPhone ? "Text " + customerPhone + " from this phone" : "No phone — opens Messages without a recipient",
             }, "📱 Text"),
             React.createElement("button", {
-              style: { ...styles.btnSecondary, flex: 1, opacity: emailStatus === "sending" ? 0.6 : 1 },
+              style: { ...styles.btnSecondary, flex: "1 1 22%" }, onClick: textViaVoice,
+              title: "Copy the message and open Google Voice",
+            }, "💬 Voice"),
+            React.createElement("button", {
+              style: { ...styles.btnSecondary, flex: "1 1 22%", opacity: emailStatus === "sending" ? 0.6 : 1 },
               disabled: emailStatus === "sending", onClick: sendEmail,
               title: customerEmail ? "Send to " + customerEmail + " from your Gmail" : "Add the customer's email first",
             }, emailStatus === "sending" ? "Sending…" : emailStatus === "sent" ? "✅ Sent" : "✉️ Email"),
-            React.createElement("button", { style: { ...styles.btnSecondary, flex: 1 }, onClick: saveQuote }, "💾 Save")
+            React.createElement("button", { style: { ...styles.btnSecondary, flex: "1 1 22%" }, onClick: saveQuote }, "💾 Save")
+          ),
+          voiceStatus === "copied" && React.createElement("div", { style: styles.okBox },
+            "Message copied. In Google Voice, start a new message" +
+              (customerPhone.trim() ? " to " + customerPhone.trim() : "") + " and paste it. ",
+            customerPhone.trim() && React.createElement("div", { style: { display: "flex", gap: 14, marginTop: 6 } },
+              React.createElement("button", { style: styles.linkBtn, onClick: copyNumber }, numberCopied ? "Number copied ✓" : "Copy number"),
+              React.createElement("button", { style: styles.linkBtn, onClick: () => copyText(replyMsg).then(() => setNumberCopied(false)) }, "Copy message")
+            )
+          ),
+          voiceStatus === "copy-failed" && React.createElement("div", { style: styles.errorBox },
+            "Couldn't copy automatically — select the message above and copy it, then paste it into Google Voice."
           ),
           emailStatus === "sent" && React.createElement("div", { style: styles.okBox }, "Sent to " + customerEmail.trim() + " — it's in your Gmail Sent folder."),
           emailStatus === "needs-permission" && React.createElement("div", { style: styles.errorBox },
