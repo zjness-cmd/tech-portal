@@ -62,7 +62,7 @@ const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
 // (merged B20:C20, navy, two-line real link), checks-payable bar and
 // Total amount recolored navy to match the logo, thin outer border
 // added around the item table, footer line added under Total.
-const APP_VERSION = "1.3.71";
+const APP_VERSION = "1.3.72";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -1041,7 +1041,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     const hasTab = (info.sheets || []).find(s => s.properties.title === CLIENT_PHOTOS_SHEET_NAME);
     if (!hasTab) {
       await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + ":batchUpdate", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ requests: [{ addSheet: { properties: { title: CLIENT_PHOTOS_SHEET_NAME } } }] }) });
-      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_PHOTOS_SHEET_NAME + "'!A1:E1?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [["Client Key", "Client Name", "Photo URL", "Drive File ID", "Tap Count"]] }) });
+      await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_PHOTOS_SHEET_NAME + "'!A1:E1?valueInputOption=USER_ENTERED", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [["Client Key", "Client Name", "Photo URLs", "Drive File IDs", "Tap Count"]] }) });
     }
   };
 
@@ -1193,7 +1193,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
       rows.forEach((r, i) => {
         if (i === 0 || !r[0]) return; // header / blank key
         const tapCount = r[4] != null && r[4] !== "" && !isNaN(parseInt(r[4])) ? parseInt(r[4]) : null;
-        photosByKey[r[0]] = { name: r[1] || "", photoUrl: r[2] || "", driveFileId: r[3] || "", tapCount, _sheetRow: i + 1 };
+        // Photo URLs/Drive File IDs are comma-separated lists (same convention
+        // JobDetailModal uses for per-job photos) so a legacy single-photo row
+        // just reads back as a one-element array — no migration needed.
+        const urls = (r[2] || "").split(",").map(s => s.trim()).filter(Boolean);
+        const ids = (r[3] || "").split(",").map(s => s.trim());
+        const photos = urls.map((url, idx) => ({ url, driveFileId: ids[idx] || "" }));
+        photosByKey[r[0]] = { name: r[1] || "", photos, tapCount, _sheetRow: i + 1 };
       });
       setClientTapPhotos(photosByKey);
       try { localStorage.setItem("techportal_clientTapPhotos", JSON.stringify(photosByKey)); } catch {}
@@ -1203,13 +1209,13 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     }
   };
 
-  const saveClientTapPhoto = async (clientKey, clientName, photoUrl, driveFileId, tapCount) => {
+  const saveClientTapPhoto = async (clientKey, clientName, photos, tapCount) => {
     const token = accessTokenRef.current;
     if (!token || !clientKey) return;
     try {
       const sheetId = await getOrCreateLogSheet();
       if (!sheetId) return;
-      const row = [clientKey, clientName, photoUrl, driveFileId, tapCount != null ? String(tapCount) : ""];
+      const row = [clientKey, clientName, photos.map(p => p.url).join(","), photos.map(p => p.driveFileId).join(","), tapCount != null ? String(tapCount) : ""];
       let sheetRow = clientTapPhotos[clientKey]?._sheetRow;
       if (!sheetRow) {
         const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_PHOTOS_SHEET_NAME + "'!A:E", { headers: { Authorization: "Bearer " + token } });
@@ -1223,28 +1229,32 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/'" + CLIENT_PHOTOS_SHEET_NAME + "'!A:E:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ values: [row] }) });
       }
       setClientTapPhotos(prev => {
-        const next = { ...prev, [clientKey]: { name: clientName, photoUrl, driveFileId, tapCount: tapCount ?? null, _sheetRow: sheetRow } };
+        const next = { ...prev, [clientKey]: { name: clientName, photos, tapCount: tapCount ?? null, _sheetRow: sheetRow } };
         try { localStorage.setItem("techportal_clientTapPhotos", JSON.stringify(next)); } catch {}
         return next;
       });
-      dbg("📷 Saved tap photo for " + clientName + (tapCount != null ? " (" + tapCount + " taps)" : ""));
+      dbg("📷 Saved " + photos.length + " tap photo(s) for " + clientName + (tapCount != null ? " (" + tapCount + " taps)" : ""));
     } catch (e) {
       dbg("❌ saveClientTapPhoto failed for " + clientName + ": " + e.message, "error");
     }
   };
 
-  // Uploads a tap-tower photo taken/picked in the field to Drive (same
-  // "TechPortal Photos" folder + public-read pattern JobDetailModal already
-  // uses for per-job photos), then links it to this client permanently via
-  // saveClientTapPhoto — so unlike a per-job photo, it shows up again on
-  // every future visit to the same account, not just today's job card.
-  const handleUploadClientTapPhoto = async (jobTitle, file) => {
+  // Uploads one or more tap-tower photos taken/picked in the field to Drive
+  // (same "TechPortal Photos" folder + public-read pattern JobDetailModal
+  // already uses for per-job photos), then links them to this client
+  // permanently via saveClientTapPhoto — so unlike a per-job photo, they
+  // show up again on every future visit to the same account, not just
+  // today's job card. New photos are APPENDED to whatever's already on
+  // file for this client, not replaced — a tech adding a second angle of
+  // the tower shouldn't lose the first photo.
+  const handleUploadClientTapPhoto = async (jobTitle, files) => {
     const token = accessTokenRef.current;
-    if (!token || !file) return;
+    const fileList = Array.isArray(files) ? files : [files]; // tolerate a single File for safety
+    if (!token || !fileList.length) return;
     const cleanTitle = jobTitle.replace(/^(⚠️ MISSED - )+/, "").trim();
     const key = clientKeyFor(jobTitle);
     if (!key) return;
-    dbg("📷 Uploading tap photo for " + cleanTitle + "...");
+    dbg("📷 Uploading " + fileList.length + " tap photo(s) for " + cleanTitle + "...");
     try {
       const folderRes = await fetch(
         "https://www.googleapis.com/drive/v3/files?q=name='TechPortal Photos'+and+mimeType='application/vnd.google-apps.folder'&fields=files(id)",
@@ -1259,31 +1269,36 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         });
         folderId = (await createRes.json()).id;
       }
-      const metadata = { name: cleanTitle + " - tap tower - " + new Date().toLocaleDateString(), parents: [folderId] };
-      const form = new FormData();
-      form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
-      form.append("file", file);
-      const uploadRes = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id", {
-        method: "POST", headers: { Authorization: "Bearer " + token }, body: form,
-      });
-      const uploadData = await uploadRes.json();
-      if (!uploadData.id) { dbg("❌ Tap photo upload failed for " + cleanTitle, "error"); return; }
-      await fetch("https://www.googleapis.com/drive/v3/files/" + uploadData.id + "/permissions", {
-        method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-        body: JSON.stringify({ role: "reader", type: "anyone" }),
-      });
-      const photoUrl = "https://drive.google.com/thumbnail?id=" + uploadData.id + "&sz=w800";
+      const uploaded = [];
+      for (const file of fileList) {
+        const metadata = { name: cleanTitle + " - tap tower - " + new Date().toLocaleDateString(), parents: [folderId] };
+        const form = new FormData();
+        form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
+        form.append("file", file);
+        const uploadRes = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id", {
+          method: "POST", headers: { Authorization: "Bearer " + token }, body: form,
+        });
+        const uploadData = await uploadRes.json();
+        if (!uploadData.id) { dbg("❌ One tap photo upload failed for " + cleanTitle, "error"); continue; }
+        await fetch("https://www.googleapis.com/drive/v3/files/" + uploadData.id + "/permissions", {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+          body: JSON.stringify({ role: "reader", type: "anyone" }),
+        });
+        uploaded.push({ url: "https://drive.google.com/thumbnail?id=" + uploadData.id + "&sz=w800", driveFileId: uploadData.id });
+      }
+      if (!uploaded.length) { dbg("❌ All tap photo uploads failed for " + cleanTitle, "error"); return; }
+      const combined = [...(clientTapPhotos[key]?.photos || []), ...uploaded];
       // Asked right here rather than run through an AI vision count — the
       // tech is already standing there holding the camera and knows the
       // number faster and more reliably than an image analysis would.
       // Cancelling (or leaving it blank) keeps whatever count was already
-      // on file instead of wiping it out, since a retake usually means the
-      // photo angle was bad, not that the tap count changed.
+      // on file instead of wiping it out, since adding another photo
+      // usually doesn't mean the tap count changed.
       const countInput = prompt("How many taps on this tower?", clientTapPhotos[key]?.tapCount != null ? String(clientTapPhotos[key].tapCount) : "");
       const tapCount = countInput != null && countInput.trim() !== "" && !isNaN(parseInt(countInput))
         ? parseInt(countInput)
         : (clientTapPhotos[key]?.tapCount ?? null);
-      await saveClientTapPhoto(key, cleanTitle, photoUrl, uploadData.id, tapCount);
+      await saveClientTapPhoto(key, cleanTitle, combined, tapCount);
     } catch (e) {
       dbg("❌ Tap photo upload error for " + cleanTitle + ": " + e.message, "error");
     }
@@ -1300,7 +1315,7 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
     if (input === null) return;
     const tapCount = input.trim() === "" ? null : parseInt(input);
     if (input.trim() !== "" && (isNaN(tapCount) || tapCount < 0)) { alert("Enter a valid number."); return; }
-    saveClientTapPhoto(key, existing.name, existing.photoUrl, existing.driveFileId, tapCount);
+    saveClientTapPhoto(key, existing.name, existing.photos, tapCount);
   };
 
   // Auto-discovers a client's website via api/places.js (Google Places —
@@ -3595,8 +3610,8 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
               },
               onTogglePaid: () => handleTogglePaid(nid, job.title),
               website: clientWebsites[clientKeyFor(job.title)]?.website || "",
-              tapPhotoUrl: clientTapPhotos[clientKeyFor(job.title)]?.photoUrl || "",
-              onUploadTapPhoto: (file) => handleUploadClientTapPhoto(job.title, file),
+              tapPhotoUrls: clientTapPhotos[clientKeyFor(job.title)]?.photos?.map(p => p.url) || [],
+              onUploadTapPhoto: (files) => handleUploadClientTapPhoto(job.title, files),
               tapCount: clientTapPhotos[clientKeyFor(job.title)]?.tapCount ?? null,
               onUpdateTapCount: () => handleUpdateTapCount(job.title),
             });

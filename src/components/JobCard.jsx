@@ -79,20 +79,20 @@ export default function JobCard({
   onCheckIn, onCheckOut, onComplete, onNavigate, onUndo, onInvoice, onTextInvoice, onMissed,
   isNearby, isAmbiguous, accessToken, onTimeUpdated, onNotesSaved, logSheetId,
   paymentStatus, paymentMethod, onTogglePaid, website, onReschedule,
-  tapPhotoUrl: dynamicTapPhotoUrl, onUploadTapPhoto, tapCount, onUpdateTapCount,
+  tapPhotoUrls: dynamicTapPhotoUrls, onUploadTapPhoto, tapCount, onUpdateTapCount,
 }) {
   const [imgFailed, setImgFailed] = useState(false);
   const [imgChecked, setImgChecked] = useState(false);
   const [imgExists, setImgExists] = useState(false);
   const [uploadingTapPhoto, setUploadingTapPhoto] = useState(false);
   const tapFileInputRef = useRef(null);
+  const [tapLightboxIndex, setTapLightboxIndex] = useState(null);
   const [logoFailed, setLogoFailed] = useState(false);
   const [showCompleteChoice, setShowCompleteChoice] = useState(false);
   const [showTimeEdit, setShowTimeEdit] = useState(false);
   const [newTime, setNewTime] = useState("");
   const [timeSaving, setTimeSaving] = useState(false);
   const [timeError, setTimeError] = useState("");
-  const [showTapLightbox, setShowTapLightbox] = useState(false);
   const [showDetail, setShowDetail] = useState(false);
 
   React.useEffect(() => {
@@ -124,14 +124,18 @@ export default function JobCard({
   // logo, not a best-effort guess from a domain.
   const logoUrl = findClientLogo(job.title) || getLogoUrl(website);
   const showLogo = logoUrl && !logoFailed;
-  // A reference photo of the client's actual tap tower/lines — shown
+  // Reference photos of the client's actual tap tower/lines — shown
   // alongside Street View, not instead of it: Street View is for finding
-  // the building, this is for what's on tap once you're there. A photo
-  // taken in the field (dynamicTapPhotoUrl, stored per-client in Sheets —
-  // see Dashboard's handleUploadClientTapPhoto) always wins over one
-  // dropped into src/assets/client-taps/ at build time, since it's the
-  // more current, self-service source.
-  const tapPhotoUrl = dynamicTapPhotoUrl || findClientTapPhoto(job.title);
+  // the building, these are for what's on tap once you're there. Photos
+  // taken in the field (dynamicTapPhotoUrls, stored per-client in Sheets —
+  // see Dashboard's handleUploadClientTapPhoto) always win over the single
+  // one dropped into src/assets/client-taps/ at build time, since they're
+  // the more current, self-service source. The card shows the first photo
+  // as the thumbnail; the lightbox pages through all of them.
+  const tapPhotoUrls = (dynamicTapPhotoUrls && dynamicTapPhotoUrls.length > 0)
+    ? dynamicTapPhotoUrls
+    : (findClientTapPhoto(job.title) ? [findClientTapPhoto(job.title)] : []);
+  const tapPhotoUrl = tapPhotoUrls[0] || null;
 
   React.useEffect(() => { setLogoFailed(false); }, [website, job.title]);
 
@@ -195,12 +199,12 @@ export default function JobCard({
   };
 
   const handleTapPhotoFileChange = async (e) => {
-    const file = e.target.files?.[0];
+    const files = Array.from(e.target.files || []);
     e.target.value = ""; // lets the same/another file be picked again immediately (e.g. retake)
-    if (!file || !onUploadTapPhoto) return;
+    if (!files.length || !onUploadTapPhoto) return;
     setUploadingTapPhoto(true);
     try {
-      await onUploadTapPhoto(file);
+      await onUploadTapPhoto(files);
     } finally {
       setUploadingTapPhoto(false);
     }
@@ -213,7 +217,7 @@ export default function JobCard({
       // No CSS files in this project — everything's inline styles — so the
       // zoom-in keyframes are injected as a plain <style> tag right here,
       // scoped to existing only while the lightbox itself is mounted.
-      showTapLightbox && React.createElement(React.Fragment, null,
+      tapLightboxIndex !== null && React.createElement(React.Fragment, null,
         React.createElement("style", null, `
           @keyframes tapLightboxFadeIn { from { opacity: 0; } to { opacity: 1; } }
           @keyframes tapLightboxZoomIn { from { transform: scale(0.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
@@ -232,7 +236,7 @@ export default function JobCard({
             background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "center", justifyContent: "center",
             padding: "1.5rem", animation: "tapLightboxFadeIn 0.15s ease-out",
           },
-          onClick: () => setShowTapLightbox(false),
+          onClick: () => setTapLightboxIndex(null),
         },
           React.createElement("div", {
             style: {
@@ -241,7 +245,7 @@ export default function JobCard({
             },
           },
             React.createElement("img", {
-              src: tapPhotoUrl, alt: "Tap tower",
+              src: tapPhotoUrls[tapLightboxIndex], alt: "Tap tower",
               style: { maxWidth: "92vw", maxHeight: "85vh", borderRadius: 12, display: "block", boxShadow: "0 12px 40px rgba(0,0,0,0.5)" },
             }),
             // Large tap count overlay, top-left corner of the enlarged
@@ -275,10 +279,33 @@ export default function JobCard({
                   lineHeight: 1, userSelect: "none", position: "relative",
                 },
               }, tapCount)
-            )
+            ),
+            // Photo N of M readout + prev/next — only shown when there's
+            // more than one photo to page through.
+            tapPhotoUrls.length > 1 && React.createElement("div", {
+              style: {
+                position: "absolute", bottom: "4%", left: "50%", transform: "translateX(-50%)",
+                background: "rgba(0,0,0,0.6)", color: "#fff", fontSize: 12, fontWeight: 600,
+                padding: "4px 10px", borderRadius: 12, pointerEvents: "none",
+              },
+            }, (tapLightboxIndex + 1) + " / " + tapPhotoUrls.length)
           ),
+          tapPhotoUrls.length > 1 && React.createElement("button", {
+            onClick: (e) => { e.stopPropagation(); setTapLightboxIndex((tapLightboxIndex - 1 + tapPhotoUrls.length) % tapPhotoUrls.length); },
+            style: {
+              position: "fixed", top: "50%", left: 10, transform: "translateY(-50%)", fontSize: 24, lineHeight: 1, width: 44, height: 44,
+              borderRadius: "50%", background: "rgba(255,255,255,0.15)", color: "#fff", border: "none", cursor: "pointer",
+            },
+          }, "‹"),
+          tapPhotoUrls.length > 1 && React.createElement("button", {
+            onClick: (e) => { e.stopPropagation(); setTapLightboxIndex((tapLightboxIndex + 1) % tapPhotoUrls.length); },
+            style: {
+              position: "fixed", top: "50%", right: 10, transform: "translateY(-50%)", fontSize: 24, lineHeight: 1, width: 44, height: 44,
+              borderRadius: "50%", background: "rgba(255,255,255,0.15)", color: "#fff", border: "none", cursor: "pointer",
+            },
+          }, "›"),
           React.createElement("button", {
-            onClick: () => setShowTapLightbox(false),
+            onClick: () => setTapLightboxIndex(null),
             style: {
               position: "fixed", top: 16, right: 16, fontSize: 28, lineHeight: 1, width: 44, height: 44,
               borderRadius: "50%", background: "rgba(255,255,255,0.15)", color: "#fff", border: "none", cursor: "pointer",
@@ -358,7 +385,7 @@ export default function JobCard({
       // camera on mobile, skipping the OS's own camera-vs-existing-photo
       // chooser. Leaving it off gets that native picker instead.
       onUploadTapPhoto && React.createElement("input", {
-        type: "file", accept: "image/*", ref: tapFileInputRef,
+        type: "file", accept: "image/*", multiple: true, ref: tapFileInputRef,
         style: { display: "none" }, onChange: handleTapPhotoFileChange,
       }),
       (showImage || tapPhotoUrl || onUploadTapPhoto) && React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 8 } },
@@ -377,12 +404,12 @@ export default function JobCard({
               React.createElement("img", {
                 src: tapPhotoUrl, alt: "Tap tower",
                 style: { width: "100%", height: 110, objectFit: "cover", borderRadius: 8, display: "block", cursor: "zoom-in" },
-                onClick: (e) => { e.stopPropagation(); setShowTapLightbox(true); },
+                onClick: (e) => { e.stopPropagation(); setTapLightboxIndex(0); },
               }),
               // Tap count badge — typed in by the tech (at upload time, or
               // any time after by tapping the badge), not detected from the
               // photo. Separate tap target from the photo itself, same
-              // reasoning as the retake button below.
+              // reasoning as the add-more button below.
               onUpdateTapCount && React.createElement("button", {
                 onClick: (e) => { e.stopPropagation(); onUpdateTapCount(); },
                 title: tapCount != null ? "Tap to change" : "Tap to set tap count",
@@ -391,12 +418,23 @@ export default function JobCard({
                   background: "rgba(0,0,0,0.6)", color: "#fff", border: "none", cursor: "pointer",
                 },
               }, tapCount != null ? tapCount + (tapCount === 1 ? " tap" : " taps") : "+ count"),
-              // Retake — separate tap target from the photo itself (which
-              // opens the lightbox), same as a camera app's "retake" corner
-              // button.
+              // Photo count badge — only shown once there's more than one,
+              // so the single-photo case looks exactly like it used to.
+              // Tapping it opens the lightbox the same as tapping the photo.
+              tapPhotoUrls.length > 1 && React.createElement("button", {
+                onClick: (e) => { e.stopPropagation(); setTapLightboxIndex(0); },
+                title: "View all " + tapPhotoUrls.length + " photos",
+                style: {
+                  position: "absolute", top: 4, right: 4, fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 10,
+                  background: "rgba(0,0,0,0.6)", color: "#fff", border: "none", cursor: "pointer",
+                },
+              }, "📷 " + tapPhotoUrls.length),
+              // Add more — separate tap target from the photo itself (which
+              // opens the lightbox); uploads append rather than replace, so
+              // this grows the set instead of swapping out the one photo.
               onUploadTapPhoto && React.createElement("button", {
                 onClick: (e) => { e.stopPropagation(); tapFileInputRef.current?.click(); },
-                title: "Retake tap photo",
+                title: "Add more tap photos",
                 disabled: uploadingTapPhoto,
                 style: {
                   position: "absolute", bottom: 4, right: 4, fontSize: 13, width: 26, height: 26, borderRadius: "50%",
@@ -414,7 +452,7 @@ export default function JobCard({
               },
             },
               React.createElement("span", { style: { fontSize: 20 } }, uploadingTapPhoto ? "⏳" : "📷"),
-              uploadingTapPhoto ? "Uploading..." : "Add tap photo"
+              uploadingTapPhoto ? "Uploading..." : "Add tap photos"
             )
       ),
 
