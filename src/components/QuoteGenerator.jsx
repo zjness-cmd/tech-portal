@@ -230,7 +230,7 @@ export default function QuoteGenerator({ accessToken, onClose }) {
       if (existing) {
         // Turning off — best-effort tell the server to forget this device,
         // but unsubscribe locally regardless of whether that call succeeds.
-        await fetch("/api/push-subscribe", {
+        await fetch("/api/quote-leads", {
           method: "DELETE", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ endpoint: existing.endpoint }),
         }).catch(() => {});
@@ -248,7 +248,7 @@ export default function QuoteGenerator({ accessToken, onClose }) {
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(vapidKey),
       });
-      const r = await fetch("/api/push-subscribe", {
+      const r = await fetch("/api/quote-leads", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ subscription }),
       });
