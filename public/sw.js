@@ -220,9 +220,33 @@ self.addEventListener("notificationclick", (event) => {
         if (event.notification.data?.jobId) {
           clients[0].postMessage({ type: "NOTIFICATION_CHECKIN", jobId: event.notification.data.jobId });
         }
+        if (event.notification.data?.openLeads) {
+          clients[0].postMessage({ type: "NOTIFICATION_OPEN_LEADS" });
+        }
       } else {
-        self.clients.openWindow("/");
+        self.clients.openWindow(event.notification.data?.openLeads ? "/?openLeads=1" : "/");
       }
+    })
+  );
+});
+
+// ── Real server-sent push (website leads) ──────────────────────────────────────
+// Separate from showTrackingNotification()/checkUpcomingJobs() above, which
+// are purely local — this fires when api/quote-lead.js (via api/_push.js)
+// sends an actual Web Push message, which works even when the app/tab is
+// fully closed (not just backgrounded), as long as the device has
+// subscribed via the "Enable notifications" button in the Quote Generator.
+self.addEventListener("push", (event) => {
+  let payload = {};
+  try { payload = event.data ? event.data.json() : {}; } catch (e) {}
+  const title = payload.title || "TechPortal";
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body: payload.body || "",
+      icon: "/favicon-96x96.png",
+      badge: "/favicon-96x96.png",
+      tag: payload.tag || "website-lead",
+      data: { openLeads: true },
     })
   );
 });

@@ -164,6 +164,8 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+const { sendPushToAllSubscribers } = require("./_push");
+
 // Drafts a customer-facing reply with Claude — NOT sent automatically. It's
 // attached to the lead (Firebase + the notification email) so it's sitting
 // ready in QuoteGenerator.jsx's reply box for the shop owner to read over,
@@ -333,6 +335,20 @@ export default async function handler(req, res) {
         // out, which is the part the shop owner actually needs to not miss.
         console.error("[quote-lead] Firebase push failed:", e.message);
       }
+    }
+
+    // Phone push notification — same "nice-to-have, never fail the request
+    // over it" treatment as the Firebase push above. Awaited (not fired and
+    // forgotten) because Vercel can freeze/kill this function the instant
+    // the response below is sent, which would cut an in-flight push short.
+    try {
+      await sendPushToAllSubscribers({
+        title: isQuoteRequest ? "New quote request — " + name : "New message — " + name,
+        body: isQuoteRequest ? quote.taps + " taps · " + fmt(quote.total) : (notes || "Tap to open TechPortal"),
+        tag: "website-lead",
+      });
+    } catch (e) {
+      console.error("[quote-lead] push notify failed:", e.message);
     }
 
     res.status(200).json({ ok: true, quote });

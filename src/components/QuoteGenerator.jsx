@@ -57,6 +57,17 @@ const REPLY_SUBJECT = "Your beer line cleaning quote — Ness Draft Beer Service
 
 const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
 
+// Web Push's subscribe() wants the VAPID public key as a raw Uint8Array, not
+// the base64url string it's distributed as.
+function urlBase64ToUint8Array(base64) {
+  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
+  const b64 = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(b64);
+  const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return arr;
+}
+
 // Customer-facing reply for a quote — pre-filled into the editable message
 // box, then sent by text or email. Greets by first name when there is one.
 function buildReply({ name, taps, rate, tapSubtotal, minimumApplied, roundTripMiles, travel, total }) {
@@ -194,6 +205,59 @@ export default function QuoteGenerator({ accessToken, onClose }) {
   const [websiteLeads, setWebsiteLeads] = useState([]);
   const [loadingLeads, setLoadingLeads] = useState(true);
   const [showLeads, setShowLeads] = useState(true);
+  // Phone push notifications for new website leads — "unsupported" (no
+  // Push API, e.g. iOS <16.4 or not installed as a home-screen app on iOS),
+  // "denied" (user blocked the browser permission prompt), "off"/"on"
+  // (not subscribed / subscribed on this device), or "working" mid-toggle.
+  const [pushStatus, setPushStatus] = useState("off");
+
+  useEffect(() => {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) { setPushStatus("unsupported"); return; }
+    if (Notification.permission === "denied") { setPushStatus("denied"); return; }
+    navigator.serviceWorker.ready
+      .then(reg => reg.pushManager.getSubscription())
+      .then(sub => setPushStatus(sub ? "on" : "off"))
+      .catch(() => setPushStatus("off"));
+  }, []);
+
+  const togglePush = async () => {
+    if (pushStatus === "unsupported") return;
+    setPushStatus("working");
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const existing = await reg.pushManager.getSubscription();
+
+      if (existing) {
+        // Turning off — best-effort tell the server to forget this device,
+        // but unsubscribe locally regardless of whether that call succeeds.
+        await fetch("/api/push-subscribe", {
+          method: "DELETE", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ endpoint: existing.endpoint }),
+        }).catch(() => {});
+        await existing.unsubscribe();
+        setPushStatus("off");
+        return;
+      }
+
+      const vapidKey = import.meta.env.VITE_VAPID_PUBLIC_KEY;
+      if (!vapidKey) { setPushStatus("error"); return; }
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") { setPushStatus(permission === "denied" ? "denied" : "off"); return; }
+
+      const subscription = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapidKey),
+      });
+      const r = await fetch("/api/push-subscribe", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subscription }),
+      });
+      if (!r.ok) throw new Error("save failed");
+      setPushStatus("on");
+    } catch (e) {
+      setPushStatus("error");
+    }
+  };
 
   const loadLeads = () => {
     setLoadingLeads(true);
@@ -343,8 +407,19 @@ export default function QuoteGenerator({ accessToken, onClose }) {
             React.createElement("button", {
               style: styles.sectionToggle, onClick: () => setShowLeads(!showLeads),
             }, (showLeads ? "▾" : "▸") + " Website Leads (" + websiteLeads.length + ")"),
-            React.createElement("button", { style: styles.refreshBtn, onClick: loadLeads, title: "Check for new leads" }, "↻")
+            React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 4 } },
+              pushStatus !== "unsupported" && React.createElement("button", {
+                style: { ...styles.refreshBtn, opacity: pushStatus === "working" ? 0.5 : 1 },
+                disabled: pushStatus === "working", onClick: togglePush,
+                title: pushStatus === "on" ? "Notifications on — tap to turn off"
+                  : pushStatus === "denied" ? "Blocked — enable notifications for this site in your browser/phone settings"
+                  : pushStatus === "error" ? "Couldn't enable notifications — try again"
+                  : "Get a phone notification when a new lead comes in",
+              }, pushStatus === "on" ? "🔔" : pushStatus === "error" ? "⚠️" : "🔕"),
+              React.createElement("button", { style: styles.refreshBtn, onClick: loadLeads, title: "Check for new leads" }, "↻")
+            )
           ),
+          pushStatus === "error" && React.createElement("div", { style: { ...styles.empty, color: "#c0392b", marginBottom: 6 } }, "Couldn't turn on notifications — try again."),
           showLeads && (
             loadingLeads
               ? React.createElement("div", { style: styles.empty }, "Checking for leads...")

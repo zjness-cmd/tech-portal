@@ -10,7 +10,8 @@
   "dependencies": {
     "@react-oauth/google": "^0.12.1",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.0.0",

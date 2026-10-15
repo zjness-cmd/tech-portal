@@ -62,7 +62,7 @@ const GEOFENCE_HARD_ACCURACY_CUTOFF_M = 500;
 // (merged B20:C20, navy, two-line real link), checks-payable bar and
 // Total amount recolored navy to match the logo, thin outer border
 // added around the item table, footer line added under Total.
-const APP_VERSION = "1.3.74";
+const APP_VERSION = "1.3.75";
 
 // Used to build the mailto: invoice sent from Unpaid Accounts — matches the
 // info already used in InvoiceModal.jsx's Sheets invoice path, so both
@@ -636,9 +636,22 @@ const Dashboard = forwardRef(function Dashboard({ user, accessToken, onLogout },
         const job = jobsRef.current.find(j => normalizeId(j.id) === event.data.jobId);
         if (job) handleCheckIn(event.data.jobId, job.title);
       }
+      if (event.data?.type === "NOTIFICATION_OPEN_LEADS") {
+        setShowQuoteGenerator(true);
+      }
     };
     navigator.serviceWorker.addEventListener("message", handler);
     return () => navigator.serviceWorker.removeEventListener("message", handler);
+  }, []);
+
+  // Tapping a "new lead" push notification when the app was fully closed
+  // (no existing window for the SW to postMessage into) opens a fresh tab
+  // at /?openLeads=1 instead — this picks that up on first mount.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("openLeads") === "1") {
+      setShowQuoteGenerator(true);
+      window.history.replaceState({}, "", window.location.pathname);
+    }
   }, []);
 
   const isToday = new Date().toDateString() === selectedDate.toDateString();
