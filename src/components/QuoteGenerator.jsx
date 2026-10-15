@@ -179,6 +179,12 @@ export default function QuoteGenerator({ accessToken, onClose }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState(null); // { miles, matchedAddress, ... }
+  // An AI-drafted reply attached to a website lead (api/quote-lead.js) — not
+  // sent automatically, just pre-filled here for the tech to review, edit,
+  // and send with the existing Text/Voice/Email buttons. Separate from
+  // `result` so it works for message-only leads too (no quote to build a
+  // templated reply from) and takes priority over buildReply() when present.
+  const [leadDraftReply, setLeadDraftReply] = useState(null);
   const [savedQuotes, setSavedQuotes] = useState(() => loadJSON(QUOTES_KEY, []));
   const [showSaved, setShowSaved] = useState(false);
   // Leads from the tapbeercleaning.com website's quote form — pushed by
@@ -201,10 +207,10 @@ export default function QuoteGenerator({ accessToken, onClose }) {
   useEffect(() => { loadLeads(); }, []);
 
   useEffect(() => {
-    setReplyMsg(result ? buildReply({ ...result, name: customerName }) : "");
+    setReplyMsg(leadDraftReply || (result ? buildReply({ ...result, name: customerName }) : ""));
     setEmailStatus("");
     setVoiceStatus("");
-  }, [result, customerName]);
+  }, [result, customerName, leadDraftReply]);
 
   const textViaVoice = () => {
     // Start the copy before opening Voice: both must happen inside the tap
@@ -243,6 +249,7 @@ export default function QuoteGenerator({ accessToken, onClose }) {
     setAddressInput(lead.quote?.matchedAddress || "");
     setTaps(lead.quote ? String(lead.quote.taps) : "");
     setResult(lead.quote || null);
+    setLeadDraftReply(lead.draftReply || null);
     setError("");
   };
 
@@ -279,6 +286,7 @@ export default function QuoteGenerator({ accessToken, onClose }) {
     setLoading(true);
     setError("");
     setResult(null);
+    setLeadDraftReply(null); // a fresh manual calculation shouldn't keep a stale AI draft from a previously loaded lead
     try {
       const [home, dest] = await Promise.all([getHomeCoords(), geocode(addressInput.trim())]);
       const miles = await getDrivingMiles(home.lat, home.lng, dest.lat, dest.lng);
@@ -346,7 +354,8 @@ export default function QuoteGenerator({ accessToken, onClose }) {
                     React.createElement("div", { style: { flex: 1, minWidth: 0 } },
                       React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" } },
                         React.createElement("span", { style: styles.savedName }, lead.name),
-                        React.createElement("span", { style: lead.quote ? styles.tagQuote : styles.tagMessage }, lead.quote ? "Quote" : "Message")
+                        React.createElement("span", { style: lead.quote ? styles.tagQuote : styles.tagMessage }, lead.quote ? "Quote" : "Message"),
+                        lead.draftReply && React.createElement("span", { style: styles.tagDraft, title: "An AI-drafted reply is ready to review" }, "✍️ Draft ready")
                       ),
                       React.createElement("div", { style: styles.savedSub }, [lead.email, lead.phone].filter(Boolean).join(" · ") || "No contact info"),
                       // Quote requests show the computed price; general
@@ -400,21 +409,25 @@ export default function QuoteGenerator({ accessToken, onClose }) {
           disabled: loading, onClick: calculate,
         }, loading ? "Calculating..." : "Calculate Quote"),
 
-        result && React.createElement("div", { style: styles.resultBox },
-          React.createElement("div", { style: styles.resultAddress }, "📍 " + result.matchedAddress),
-          React.createElement("div", { style: styles.resultRow },
-            React.createElement("span", null, result.minimumApplied ? "Minimum service charge (" + result.taps + " taps)" : result.taps + " taps @ " + fmt(result.rate) + "/tap"),
-            React.createElement("span", null, fmt(result.tapSubtotal))
+        (result || leadDraftReply) && React.createElement("div", { style: styles.resultBox },
+          result && React.createElement(React.Fragment, null,
+            React.createElement("div", { style: styles.resultAddress }, "📍 " + result.matchedAddress),
+            React.createElement("div", { style: styles.resultRow },
+              React.createElement("span", null, result.minimumApplied ? "Minimum service charge (" + result.taps + " taps)" : result.taps + " taps @ " + fmt(result.rate) + "/tap"),
+              React.createElement("span", null, fmt(result.tapSubtotal))
+            ),
+            React.createElement("div", { style: styles.resultRow },
+              React.createElement("span", null, "Travel — " + result.roundTripMiles + " mi round trip (" + HOME_ZIP + ")"),
+              React.createElement("span", null, fmt(result.travel))
+            ),
+            React.createElement("div", { style: { ...styles.resultRow, ...styles.resultTotal } },
+              React.createElement("span", null, "Total"),
+              React.createElement("span", null, fmt(result.total))
+            )
           ),
-          React.createElement("div", { style: styles.resultRow },
-            React.createElement("span", null, "Travel — " + result.roundTripMiles + " mi round trip (" + HOME_ZIP + ")"),
-            React.createElement("span", null, fmt(result.travel))
+          React.createElement("label", { style: { ...styles.fieldLabel, marginTop: 12 } },
+            "Reply to customer (edit before sending)" + (leadDraftReply ? " — AI draft" : "")
           ),
-          React.createElement("div", { style: { ...styles.resultRow, ...styles.resultTotal } },
-            React.createElement("span", null, "Total"),
-            React.createElement("span", null, fmt(result.total))
-          ),
-          React.createElement("label", { style: { ...styles.fieldLabel, marginTop: 12 } }, "Reply to customer (edit before sending)"),
           React.createElement("textarea", {
             style: styles.replyBox, rows: 9, value: replyMsg,
             onChange: e => setReplyMsg(e.target.value),
@@ -433,7 +446,10 @@ export default function QuoteGenerator({ accessToken, onClose }) {
               disabled: emailStatus === "sending", onClick: sendEmail,
               title: customerEmail ? "Send to " + customerEmail + " from your Gmail" : "Add the customer's email first",
             }, emailStatus === "sending" ? "Sending…" : emailStatus === "sent" ? "✅ Sent" : "✉️ Email"),
-            React.createElement("button", { style: { ...styles.btnSecondary, flex: "1 1 22%" }, onClick: saveQuote }, "💾 Save")
+            React.createElement("button", {
+              style: { ...styles.btnSecondary, flex: "1 1 22%", opacity: result ? 1 : 0.5 },
+              disabled: !result, onClick: saveQuote, title: result ? undefined : "Nothing to save — this lead has no quote attached",
+            }, "💾 Save")
           ),
           voiceStatus === "copied" && React.createElement("div", { style: styles.okBox },
             "Message copied. In Google Voice, start a new message" +
@@ -516,6 +532,7 @@ const styles = {
   savedName: { fontSize: 13, fontWeight: 600, color: "#1a1a1a" },
   tagQuote: { fontSize: 10, fontWeight: 700, color: "#185FA5", background: "#eef4fb", padding: "1px 6px", borderRadius: 8 },
   tagMessage: { fontSize: 10, fontWeight: 700, color: "#6b5b1e", background: "#fbf3df", padding: "1px 6px", borderRadius: 8 },
+  tagDraft: { fontSize: 10, fontWeight: 700, color: "#1e7a46", background: "#eefaf2", padding: "1px 6px", borderRadius: 8 },
   savedSub: { fontSize: 11, color: "#888", marginTop: 2 },
   iconBtn: { fontSize: 15, background: "none", border: "none", cursor: "pointer", padding: "4px 6px", color: "#185FA5" },
 };

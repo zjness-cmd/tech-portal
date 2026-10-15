@@ -107,8 +107,12 @@ async function getDrivingMiles(home, dest, apiKey) {
   return { miles: straightLine, estimated: true };
 }
 
-async function sendLeadEmail({ apiKey, to, from, lead, quote }) {
+async function sendLeadEmail({ apiKey, to, from, lead, quote, draftReply }) {
   const contactLine = [lead.email, lead.phone].filter(Boolean).join(" · ") || "No contact info given";
+  const draftBlock = draftReply
+    ? { html: `<p><strong>Suggested reply (edit before sending — also waiting for you in the Quote Generator's Website Leads):</strong><br>${escapeHtml(draftReply).replace(/\n/g, "<br>")}</p>`,
+        text: "\n\nSuggested reply (edit before sending):\n" + draftReply }
+    : { html: "", text: "" };
 
   let subject, html, text;
   if (quote) {
@@ -125,12 +129,14 @@ async function sendLeadEmail({ apiKey, to, from, lead, quote }) {
         <tr><td><strong>Total: ${fmt(quote.total)}</strong></td></tr>
       </table>
       ${lead.notes ? `<p><strong>Notes:</strong> ${escapeHtml(lead.notes)}</p>` : ""}
+      ${draftBlock.html}
     `;
     text = lead.name + "\n" + contactLine + "\n" + quote.matchedAddress + "\n\n" +
       tapLine + "\n" +
       "Travel (" + quote.roundTripMiles + " mi round trip" + (quote.estimatedDistance ? ", estimated" : "") + ") = " + fmt(quote.travel) + "\n" +
       "Total: " + fmt(quote.total) +
-      (lead.notes ? "\n\nNotes: " + lead.notes : "");
+      (lead.notes ? "\n\nNotes: " + lead.notes : "") +
+      draftBlock.text;
   } else {
     // General inquiry (e.g. the Contact Us form) — no address/taps to price
     // a job from, so just relay who reached out and what they said.
@@ -139,8 +145,9 @@ async function sendLeadEmail({ apiKey, to, from, lead, quote }) {
       <h2>New message from the website</h2>
       <p><strong>${escapeHtml(lead.name)}</strong><br>${escapeHtml(contactLine)}</p>
       ${lead.notes ? `<p>${escapeHtml(lead.notes).replace(/\n/g, "<br>")}</p>` : "<p><em>No message included.</em></p>"}
+      ${draftBlock.html}
     `;
-    text = lead.name + "\n" + contactLine + "\n\n" + (lead.notes || "No message included.");
+    text = lead.name + "\n" + contactLine + "\n\n" + (lead.notes || "No message included.") + draftBlock.text;
   }
 
   const r = await fetch("https://api.resend.com/emails", {
@@ -155,6 +162,89 @@ async function sendLeadEmail({ apiKey, to, from, lead, quote }) {
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// Drafts a customer-facing reply with Claude — NOT sent automatically. It's
+// attached to the lead (Firebase + the notification email) so it's sitting
+// ready in QuoteGenerator.jsx's reply box for the shop owner to read over,
+// edit, and send themselves via the existing Text/Voice/Email buttons.
+// Deliberately optional: if ANTHROPIC_API_KEY isn't set, or the call fails,
+// this just returns null and the rest of the request proceeds normally —
+// QuoteGenerator.jsx already falls back to its own template-based reply.
+async function draftCustomerReply({ apiKey, lead, quote }) {
+  if (!apiKey) return null;
+  const system = [
+    "You are drafting a short reply for Zach, owner of Ness Draft Beer Service",
+    "(beer line cleaning and draft system service, Twin Cities metro, family-owned,",
+    "40+ years experience). The draft is reviewed and sent by Zach himself — it is",
+    "never sent automatically — so write it in his voice: direct, friendly,",
+    "down-to-earth, not salesy or corporate.",
+    "",
+    "Hard rules:",
+    "- Under 120 words.",
+    "- Plain text only — no markdown, no bullet points, no headers.",
+    "- Never invent specific availability, appointment times, discounts, or",
+    "  policies you weren't given. If their question needs info you don't have,",
+    "  say Zach will follow up or invite them to call/text instead of guessing.",
+    "- If a computed quote is provided, state it plainly and accurately — don't",
+    "  recompute or round it differently.",
+    "- End by inviting them to call/text 612-293-9459 or reply with questions.",
+    "- Sign off exactly as: – Zach, Ness Draft Beer Service",
+  ].join("\n");
+
+  let userContent;
+  if (quote) {
+    const tapLine = quote.minimumApplied
+      ? "Minimum service charge = " + fmt(quote.tapSubtotal)
+      : quote.taps + " taps @ " + fmt(quote.rate) + "/tap = " + fmt(quote.tapSubtotal);
+    userContent = [
+      "Customer name: " + lead.name,
+      "They requested a quote via the website's Free Quote form for " + quote.taps + " taps at " + quote.matchedAddress + ".",
+      "Computed quote (state these numbers exactly, don't recompute):",
+      "  " + tapLine,
+      "  Travel (" + quote.roundTripMiles + " mi round trip) = " + fmt(quote.travel),
+      "  Total: " + fmt(quote.total),
+      lead.notes ? "Additional notes from the customer: " + lead.notes : "",
+      "",
+      "Write the reply presenting this quote to them.",
+    ].filter(Boolean).join("\n");
+  } else {
+    userContent = [
+      "Customer name: " + lead.name,
+      "They sent this message via the website's Contact Us form:",
+      "\"" + (lead.notes || "(no message included)") + "\"",
+      "",
+      "Write a helpful reply that actually addresses what they asked, without",
+      "inventing facts you don't have.",
+    ].join("\n");
+  }
+
+  try {
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 400,
+        system,
+        messages: [{ role: "user", content: userContent }],
+      }),
+    });
+    if (!r.ok) {
+      console.error("[quote-lead] Anthropic API error:", r.status, await r.text().catch(() => ""));
+      return null;
+    }
+    const data = await r.json();
+    const text = data?.content?.[0]?.text?.trim();
+    return text || null;
+  } catch (e) {
+    console.error("[quote-lead] draftCustomerReply failed:", e.message);
+    return null;
+  }
 }
 
 export default async function handler(req, res) {
@@ -198,6 +288,10 @@ export default async function handler(req, res) {
   // side is still being set up.
   const firebaseDbUrl = process.env.VITE_FIREBASE_DB_URL;
   const firebaseSecret = process.env.FIREBASE_DB_SECRET;
+  // Optional, same pattern as Firebase above — AI-drafted replies are a nice-
+  // to-have on top of the core notify-the-owner flow, not a requirement for
+  // this endpoint to work.
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
   if (isQuoteRequest && !geocodeKey) return res.status(500).json({ error: "GOOGLE_GEOCODE_KEY not set in Vercel env vars." });
   if (!resendKey || !toEmail) return res.status(500).json({ error: "RESEND_API_KEY and/or QUOTE_LEAD_EMAIL_TO not set in Vercel env vars." });
 
@@ -216,12 +310,15 @@ export default async function handler(req, res) {
       quote = { taps, rate, tapSubtotal, minimumApplied, miles, roundTripMiles, estimatedDistance: estimated, travel, total, matchedAddress: dest.formatted };
     }
 
+    const draftReply = await draftCustomerReply({ apiKey: anthropicKey, lead: { name, notes }, quote });
+
     await sendLeadEmail({
       apiKey: resendKey,
       to: toEmail,
       from: process.env.QUOTE_LEAD_EMAIL_FROM || "TechPortal Quotes <onboarding@resend.dev>",
       lead: { name, email, phone, notes },
       quote,
+      draftReply,
     });
 
     if (firebaseDbUrl && firebaseSecret) {
@@ -229,7 +326,7 @@ export default async function handler(req, res) {
         await fetch(firebaseDbUrl + "/quoteLeads.json?auth=" + firebaseSecret, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, email: email || null, phone: phone || null, notes: notes || null, quote, source: isQuoteRequest ? "quote_form" : "contact_form", receivedAt: Date.now() }),
+          body: JSON.stringify({ name, email: email || null, phone: phone || null, notes: notes || null, quote, draftReply: draftReply || null, source: isQuoteRequest ? "quote_form" : "contact_form", receivedAt: Date.now() }),
         });
       } catch (e) {
         // Don't fail the whole request over this — the email already went
