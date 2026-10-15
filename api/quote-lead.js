@@ -281,13 +281,18 @@ export default async function handler(req, res) {
   const isQuoteRequest = !!address && !!taps && taps >= 1;
 
   const geocodeKey = process.env.GOOGLE_GEOCODE_KEY;
+  // Email notification is optional — once Firebase + push are both working
+  // (the Website Leads list + the phone push notification cover the same
+  // "new lead came in" job), QUOTE_LEAD_EMAIL_TO can simply be unset in
+  // Vercel to stop the email side without touching any code. RESEND_API_KEY
+  // is left alone either way in case it's wanted back later.
   const resendKey = process.env.RESEND_API_KEY;
   const toEmail = process.env.QUOTE_LEAD_EMAIL_TO;
   // Pushing the lead into Firebase (so it shows up in QuoteGenerator.jsx's
-  // "Website Leads" list) is optional — if these aren't set yet, the
-  // endpoint still works in email-only mode rather than hard-failing, so
-  // this doesn't break an already-working deployment while the Firebase
-  // side is still being set up.
+  // "Website Leads" list, and so the push-notification subscriber list is
+  // reachable) is optional in principle, but with email now also optional,
+  // at least one of the two needs to be configured or a lead would vanish
+  // with no record at all — see the check below.
   const firebaseDbUrl = process.env.VITE_FIREBASE_DB_URL;
   const firebaseSecret = process.env.FIREBASE_DB_SECRET;
   // Optional, same pattern as Firebase above — AI-drafted replies are a nice-
@@ -295,7 +300,11 @@ export default async function handler(req, res) {
   // this endpoint to work.
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
   if (isQuoteRequest && !geocodeKey) return res.status(500).json({ error: "GOOGLE_GEOCODE_KEY not set in Vercel env vars." });
-  if (!resendKey || !toEmail) return res.status(500).json({ error: "RESEND_API_KEY and/or QUOTE_LEAD_EMAIL_TO not set in Vercel env vars." });
+  const emailConfigured = !!(resendKey && toEmail);
+  const firebaseConfigured = !!(firebaseDbUrl && firebaseSecret);
+  if (!emailConfigured && !firebaseConfigured) {
+    return res.status(500).json({ error: "Need either RESEND_API_KEY+QUOTE_LEAD_EMAIL_TO or VITE_FIREBASE_DB_URL+FIREBASE_DB_SECRET set — otherwise a lead has nowhere to go." });
+  }
 
   try {
     let quote = null;
@@ -314,14 +323,16 @@ export default async function handler(req, res) {
 
     const draftReply = await draftCustomerReply({ apiKey: anthropicKey, lead: { name, notes }, quote });
 
-    await sendLeadEmail({
-      apiKey: resendKey,
-      to: toEmail,
-      from: process.env.QUOTE_LEAD_EMAIL_FROM || "TechPortal Quotes <onboarding@resend.dev>",
-      lead: { name, email, phone, notes },
-      quote,
-      draftReply,
-    });
+    if (emailConfigured) {
+      await sendLeadEmail({
+        apiKey: resendKey,
+        to: toEmail,
+        from: process.env.QUOTE_LEAD_EMAIL_FROM || "TechPortal Quotes <onboarding@resend.dev>",
+        lead: { name, email, phone, notes },
+        quote,
+        draftReply,
+      });
+    }
 
     if (firebaseDbUrl && firebaseSecret) {
       try {
