@@ -6,10 +6,20 @@
 // already-authenticated TechPortal session — so it needs CORS handling and
 // basic abuse resistance that the rest of api/ doesn't.
 //
-// Expected POST body (JSON) from the website form:
-//   { name, email, phone, address, taps, website }
-// - name, address, taps: required. taps must be a positive integer.
-// - email and/or phone: at least one required (so there's a way to follow up).
+// Expected POST body (JSON). Two shapes share this one endpoint:
+//   Quote request (tapbeercleaning.com's "Free Quote" form):
+//     { name, email, phone, address, taps, notes, website }
+//   General inquiry (tapbeercleaning.com's "Contact Us" form — no address/
+//   taps to price a job from):
+//     { name, email, phone, business, message, website }
+// - name: always required.
+// - email and/or phone: at least one always required (so there's a way to
+//   follow up).
+// - address + taps (a positive integer): when BOTH are present, this is
+//   treated as a quote request and priced like the in-app Quote Generator.
+//   When either is missing, no pricing is attempted — it's logged as a
+//   general inquiry instead, with whatever notes/business/message came
+//   with it.
 // - website: honeypot field. Real visitors never fill it (it's hidden via
 //   CSS on the form) — bots that blindly fill every field do. If present,
 //   we return 200 (so the bot doesn't learn to try harder) but skip the
@@ -99,25 +109,39 @@ async function getDrivingMiles(home, dest, apiKey) {
 
 async function sendLeadEmail({ apiKey, to, from, lead, quote }) {
   const contactLine = [lead.email, lead.phone].filter(Boolean).join(" · ") || "No contact info given";
-  const subject = "New quote request — " + lead.name + " (" + quote.taps + " taps, " + fmt(quote.total) + ")";
-  const tapLine = quote.minimumApplied
-    ? "Minimum service charge = " + fmt(quote.tapSubtotal)
-    : quote.taps + " taps @ " + fmt(quote.rate) + "/tap = " + fmt(quote.tapSubtotal);
-  const html = `
-    <h2>New quote request from the website</h2>
-    <p><strong>${escapeHtml(lead.name)}</strong><br>${escapeHtml(contactLine)}<br>${escapeHtml(quote.matchedAddress)}</p>
-    <table cellpadding="4" style="border-collapse:collapse">
-      <tr><td>${escapeHtml(tapLine)}</td></tr>
-      <tr><td>Travel (${quote.roundTripMiles} mi round trip${quote.estimatedDistance ? ", estimated" : ""}) = ${fmt(quote.travel)}</td></tr>
-      <tr><td><strong>Total: ${fmt(quote.total)}</strong></td></tr>
-    </table>
-    ${lead.notes ? `<p><strong>Notes:</strong> ${escapeHtml(lead.notes)}</p>` : ""}
-  `;
-  const text = lead.name + "\n" + contactLine + "\n" + quote.matchedAddress + "\n\n" +
-    tapLine + "\n" +
-    "Travel (" + quote.roundTripMiles + " mi round trip" + (quote.estimatedDistance ? ", estimated" : "") + ") = " + fmt(quote.travel) + "\n" +
-    "Total: " + fmt(quote.total) +
-    (lead.notes ? "\n\nNotes: " + lead.notes : "");
+
+  let subject, html, text;
+  if (quote) {
+    subject = "New quote request — " + lead.name + " (" + quote.taps + " taps, " + fmt(quote.total) + ")";
+    const tapLine = quote.minimumApplied
+      ? "Minimum service charge = " + fmt(quote.tapSubtotal)
+      : quote.taps + " taps @ " + fmt(quote.rate) + "/tap = " + fmt(quote.tapSubtotal);
+    html = `
+      <h2>New quote request from the website</h2>
+      <p><strong>${escapeHtml(lead.name)}</strong><br>${escapeHtml(contactLine)}<br>${escapeHtml(quote.matchedAddress)}</p>
+      <table cellpadding="4" style="border-collapse:collapse">
+        <tr><td>${escapeHtml(tapLine)}</td></tr>
+        <tr><td>Travel (${quote.roundTripMiles} mi round trip${quote.estimatedDistance ? ", estimated" : ""}) = ${fmt(quote.travel)}</td></tr>
+        <tr><td><strong>Total: ${fmt(quote.total)}</strong></td></tr>
+      </table>
+      ${lead.notes ? `<p><strong>Notes:</strong> ${escapeHtml(lead.notes)}</p>` : ""}
+    `;
+    text = lead.name + "\n" + contactLine + "\n" + quote.matchedAddress + "\n\n" +
+      tapLine + "\n" +
+      "Travel (" + quote.roundTripMiles + " mi round trip" + (quote.estimatedDistance ? ", estimated" : "") + ") = " + fmt(quote.travel) + "\n" +
+      "Total: " + fmt(quote.total) +
+      (lead.notes ? "\n\nNotes: " + lead.notes : "");
+  } else {
+    // General inquiry (e.g. the Contact Us form) — no address/taps to price
+    // a job from, so just relay who reached out and what they said.
+    subject = "New message from the website — " + lead.name;
+    html = `
+      <h2>New message from the website</h2>
+      <p><strong>${escapeHtml(lead.name)}</strong><br>${escapeHtml(contactLine)}</p>
+      ${lead.notes ? `<p>${escapeHtml(lead.notes).replace(/\n/g, "<br>")}</p>` : "<p><em>No message included.</em></p>"}
+    `;
+    text = lead.name + "\n" + contactLine + "\n\n" + (lead.notes || "No message included.");
+  }
 
   const r = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -147,15 +171,22 @@ export default async function handler(req, res) {
   if (typeof body === "string") {
     try { body = JSON.parse(body); } catch { body = {}; }
   }
-  const { name, email, phone, address, notes, website } = body || {};
+  const { name, email, phone, address, business, message, website } = body || {};
   const taps = parseInt(body?.taps);
+  // "notes" is the quote form's field name for this; "message" is the
+  // Contact Us form's. A business name (Contact Us only) gets folded in
+  // ahead of whichever of those is present.
+  const notes = [business ? "Business: " + business : null, body?.notes || message || null].filter(Boolean).join(" | ") || null;
 
   // Honeypot tripped — pretend success, do nothing.
   if (website) return res.status(200).json({ ok: true });
 
-  if (!name || !address) return res.status(400).json({ error: "Missing name or address" });
-  if (!taps || taps < 1) return res.status(400).json({ error: "Missing or invalid taps" });
+  if (!name) return res.status(400).json({ error: "Missing name" });
   if (!email && !phone) return res.status(400).json({ error: "Provide an email or phone number" });
+  // A quote needs BOTH an address and a tap count to price — anything short
+  // of that (the Contact Us form has neither) is logged as a general
+  // inquiry instead of a priced quote request.
+  const isQuoteRequest = !!address && !!taps && taps >= 1;
 
   const geocodeKey = process.env.GOOGLE_GEOCODE_KEY;
   const resendKey = process.env.RESEND_API_KEY;
@@ -167,20 +198,23 @@ export default async function handler(req, res) {
   // side is still being set up.
   const firebaseDbUrl = process.env.VITE_FIREBASE_DB_URL;
   const firebaseSecret = process.env.FIREBASE_DB_SECRET;
-  if (!geocodeKey) return res.status(500).json({ error: "GOOGLE_GEOCODE_KEY not set in Vercel env vars." });
+  if (isQuoteRequest && !geocodeKey) return res.status(500).json({ error: "GOOGLE_GEOCODE_KEY not set in Vercel env vars." });
   if (!resendKey || !toEmail) return res.status(500).json({ error: "RESEND_API_KEY and/or QUOTE_LEAD_EMAIL_TO not set in Vercel env vars." });
 
   try {
-    const [home, dest] = await Promise.all([geocode(HOME_ZIP, geocodeKey), geocode(address, geocodeKey)]);
-    const { miles, estimated } = await getDrivingMiles(home, dest, geocodeKey);
-    const roundTripMiles = Math.round(miles * 2 * 10) / 10;
-    const rate = tapRate(taps);
-    const rawTapSubtotal = Math.round(taps * rate * 100) / 100;
-    const minimumApplied = rawTapSubtotal < MIN_SERVICE_CHARGE;
-    const tapSubtotal = minimumApplied ? MIN_SERVICE_CHARGE : rawTapSubtotal;
-    const travel = travelFee(miles);
-    const total = Math.round((tapSubtotal + travel) * 100) / 100;
-    const quote = { taps, rate, tapSubtotal, minimumApplied, miles, roundTripMiles, estimatedDistance: estimated, travel, total, matchedAddress: dest.formatted };
+    let quote = null;
+    if (isQuoteRequest) {
+      const [home, dest] = await Promise.all([geocode(HOME_ZIP, geocodeKey), geocode(address, geocodeKey)]);
+      const { miles, estimated } = await getDrivingMiles(home, dest, geocodeKey);
+      const roundTripMiles = Math.round(miles * 2 * 10) / 10;
+      const rate = tapRate(taps);
+      const rawTapSubtotal = Math.round(taps * rate * 100) / 100;
+      const minimumApplied = rawTapSubtotal < MIN_SERVICE_CHARGE;
+      const tapSubtotal = minimumApplied ? MIN_SERVICE_CHARGE : rawTapSubtotal;
+      const travel = travelFee(miles);
+      const total = Math.round((tapSubtotal + travel) * 100) / 100;
+      quote = { taps, rate, tapSubtotal, minimumApplied, miles, roundTripMiles, estimatedDistance: estimated, travel, total, matchedAddress: dest.formatted };
+    }
 
     await sendLeadEmail({
       apiKey: resendKey,
@@ -195,7 +229,7 @@ export default async function handler(req, res) {
         await fetch(firebaseDbUrl + "/quoteLeads.json?auth=" + firebaseSecret, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, email: email || null, phone: phone || null, notes: notes || null, quote, receivedAt: Date.now() }),
+          body: JSON.stringify({ name, email: email || null, phone: phone || null, notes: notes || null, quote, source: isQuoteRequest ? "quote_form" : "contact_form", receivedAt: Date.now() }),
         });
       } catch (e) {
         // Don't fail the whole request over this — the email already went

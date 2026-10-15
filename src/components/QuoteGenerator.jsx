@@ -237,9 +237,12 @@ export default function QuoteGenerator({ accessToken, onClose }) {
     setCustomerName(lead.name || "");
     setCustomerEmail(lead.email || "");
     setCustomerPhone(lead.phone || "");
-    setAddressInput(lead.quote.matchedAddress || "");
-    setTaps(String(lead.quote.taps));
-    setResult(lead.quote);
+    // General inquiries (e.g. the Contact Us form) never have a quote
+    // attached — just bring over the contact info and let the tech fill in
+    // an address/tap count manually if they want to quote it.
+    setAddressInput(lead.quote?.matchedAddress || "");
+    setTaps(lead.quote ? String(lead.quote.taps) : "");
+    setResult(lead.quote || null);
     setError("");
   };
 
@@ -341,9 +344,18 @@ export default function QuoteGenerator({ accessToken, onClose }) {
                 ? React.createElement("div", { style: styles.empty }, "No new leads from the website.")
                 : websiteLeads.map(lead => React.createElement("div", { key: lead.id, style: styles.savedRow },
                     React.createElement("div", { style: { flex: 1, minWidth: 0 } },
-                      React.createElement("div", { style: styles.savedName }, lead.name),
+                      React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" } },
+                        React.createElement("span", { style: styles.savedName }, lead.name),
+                        React.createElement("span", { style: lead.quote ? styles.tagQuote : styles.tagMessage }, lead.quote ? "Quote" : "Message")
+                      ),
                       React.createElement("div", { style: styles.savedSub }, [lead.email, lead.phone].filter(Boolean).join(" · ") || "No contact info"),
-                      React.createElement("div", { style: styles.savedSub }, lead.quote.taps + " taps · " + lead.quote.matchedAddress + " · " + fmt(lead.quote.total)),
+                      // Quote requests show the computed price; general
+                      // inquiries (e.g. Contact Us — no address/taps to
+                      // price from) have no quote, so the message itself is
+                      // the main content.
+                      lead.quote
+                        ? React.createElement("div", { style: styles.savedSub }, lead.quote.taps + " taps · " + lead.quote.matchedAddress + " · " + fmt(lead.quote.total))
+                        : null,
                       lead.notes && React.createElement("div", { style: styles.savedSub }, lead.notes)
                     ),
                     React.createElement("button", { style: styles.iconBtn, title: "Use this lead", onClick: () => useLead(lead) }, "➡️"),
@@ -502,6 +514,8 @@ const styles = {
   empty: { fontSize: 13, color: "#888", fontStyle: "italic" },
   savedRow: { display: "flex", alignItems: "center", gap: 8, padding: "0.6rem 0", borderBottom: "0.5px solid #f0f0f0" },
   savedName: { fontSize: 13, fontWeight: 600, color: "#1a1a1a" },
+  tagQuote: { fontSize: 10, fontWeight: 700, color: "#185FA5", background: "#eef4fb", padding: "1px 6px", borderRadius: 8 },
+  tagMessage: { fontSize: 10, fontWeight: 700, color: "#6b5b1e", background: "#fbf3df", padding: "1px 6px", borderRadius: 8 },
   savedSub: { fontSize: 11, color: "#888", marginTop: 2 },
   iconBtn: { fontSize: 15, background: "none", border: "none", cursor: "pointer", padding: "4px 6px", color: "#185FA5" },
 };
